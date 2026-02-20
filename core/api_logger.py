@@ -7,19 +7,25 @@ different assets, etc.).
 
 Rate-limited responses (HTTP 429) are automatically retried with exponential
 backoff, respecting Retry-After headers when present.
+
+Thread-safe: uses a lock for log file writes and configures connection pooling
+for concurrent HTTP requests.
 """
 
 import json
 import os
+import random
 import time
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
 
-from defaults import API_RAW_DIR
+from core.defaults import API_RAW_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +33,27 @@ MAX_RETRIES = 4
 INITIAL_BACKOFF_S = 1.0
 MAX_BACKOFF_S = 30.0
 
+# Module-level lock for JSONL file writes
+_write_lock = threading.Lock()
+
 
 class LoggingSession(requests.Session):
-    """A requests.Session that logs every request/response and retries on 429."""
+    """A requests.Session that logs every request/response and retries on 429.
+
+    Thread-safe for concurrent GET requests (no shared cookie/auth state).
+    Connection pool sized for high-frequency parallel polling.
+    """
+
+    def __init__(self, default_timeout=15):
+        super().__init__()
+        self._default_timeout = default_timeout
+        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20)
+        self.mount("https://", adapter)
+        self.mount("http://", adapter)
 
     def request(self, method, url, **kwargs):
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = self._default_timeout
         parsed = urlparse(url)
         host = parsed.hostname or "unknown"
         path = parsed.path
@@ -75,6 +97,7 @@ class LoggingSession(requests.Session):
                 if resp.status_code == 429 and attempt <= MAX_RETRIES:
                     retry_after = _parse_retry_after(resp)
                     wait = retry_after if retry_after is not None else backoff
+                    wait *= (0.5 + random.random())  # jitter: 50%-150% of base
                     logger.warning(
                         f"Rate limited (429) on {method} {path} "
                         f"(attempt {attempt}), retrying in {wait:.1f}s"
@@ -110,14 +133,16 @@ def _parse_retry_after(resp: requests.Response) -> Optional[float]:
 
 
 def _write_entry(host: str, ts: datetime, entry: dict):
-    """Append one log entry to the appropriate JSONL file."""
+    """Append one log entry to the appropriate JSONL file (thread-safe)."""
     date_str = ts.strftime("%Y-%m-%d")
     host_dir = os.path.join(API_RAW_DIR, host)
     os.makedirs(host_dir, exist_ok=True)
     filepath = os.path.join(host_dir, f"{date_str}.jsonl")
 
+    line = json.dumps(entry, default=str) + "\n"
     try:
-        with open(filepath, "a") as f:
-            f.write(json.dumps(entry, default=str) + "\n")
+        with _write_lock:
+            with open(filepath, "a") as f:
+                f.write(line)
     except Exception as e:
         logger.warning(f"Failed to write API log entry: {e}")

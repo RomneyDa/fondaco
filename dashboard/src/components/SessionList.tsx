@@ -54,11 +54,13 @@ export function SessionList() {
               className="session-list-item"
             >
               <span className="name">{s.file.replace(".json", "")}</span>
-              {s.outcome && (
-                <span className={`outcome ${s.outcome.toLowerCase()}`}>
-                  {s.outcome}
-                </span>
-              )}
+              <span
+                className={`outcome ${
+                  s.outcome ? s.outcome.toLowerCase() : "unresolved"
+                }`}
+              >
+                {s.outcome === undefined ? "" : s.outcome || "Unresolved"}
+              </span>
             </Link>
           ))}
         </div>

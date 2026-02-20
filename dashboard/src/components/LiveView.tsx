@@ -74,6 +74,10 @@ export function LiveView({ liveData }: Props) {
       ? "collecting"
       : "waiting";
 
+  // Extract trading info from payload
+  const trading =
+    payload && "trading" in payload ? (payload as any).trading : undefined;
+
   return (
     <div>
       <h2>Live: {prefix}</h2>
@@ -87,10 +91,44 @@ export function LiveView({ liveData }: Props) {
           )}
       </div>
 
+      {trading && (
+        <div className="trading-badge-row">
+          <span className="status-badge collecting">
+            {trading.strategy || "Trading"}
+          </span>
+          {trading.dry_run && (
+            <span className="dry-run-tag">DRY RUN</span>
+          )}
+          {trading.trades && (
+            <span className="trade-count-badge">
+              {Array.isArray(trading.trades)
+                ? trading.trades.length
+                : trading.trades}{" "}
+              trade{(Array.isArray(trading.trades)
+                ? trading.trades.length
+                : trading.trades) !== 1
+                ? "s"
+                : ""}
+            </span>
+          )}
+          {trading.cash != null && (
+            <span className="trade-count-badge">${trading.cash.toFixed(2)}</span>
+          )}
+        </div>
+      )}
+
       {payload && isSessionData(payload) ? (
         <>
           <MetaGrid session={payload} />
-          <SessionCharts session={payload} />
+          <SessionCharts
+            session={payload}
+            trades={
+              trading?.trades && Array.isArray(trading.trades)
+                ? trading.trades
+                : undefined
+            }
+            isDryRun={trading?.dry_run}
+          />
         </>
       ) : payload && isLiveStatus(payload) ? (
         <p className="subtitle">

@@ -1,26 +1,54 @@
-"""BTC spot price and Polymarket token price fetching."""
+"""BTC spot price and Polymarket token price fetching.
+
+Supports concurrent HTTP requests via a ThreadPoolExecutor so the 4 CLOB
+calls per sample can run in parallel (~200ms instead of ~800ms).
+"""
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 
 import requests
 
-from defaults import CLOB_API_BASE, COINBASE_BTC_URL, COINGECKO_BTC_URL
-from models import PriceSample
+from core.defaults import CLOB_API_BASE, COINBASE_BTC_URL, COINGECKO_BTC_URL
+from core.models import PriceSample
+
+if TYPE_CHECKING:
+    from core.rtds_client import RTDSClient
 
 logger = logging.getLogger(__name__)
 
+FUTURE_TIMEOUT_S = 10
+
 
 class PriceFetcher:
-    """Fetches BTC spot price and Polymarket token prices."""
+    """Fetches BTC spot price and Polymarket token prices.
 
-    def __init__(self, session: Optional[requests.Session] = None):
+    Uses a thread pool for parallel CLOB requests within each sample.
+    """
+
+    def __init__(
+        self,
+        session: Optional[requests.Session] = None,
+        rtds_client: "Optional[RTDSClient]" = None,
+    ):
         self.session = session or requests.Session()
         self.session.headers.update({"Accept": "application/json"})
+        self.rtds = rtds_client
+        self._pool = ThreadPoolExecutor(max_workers=20)
 
     def get_btc_price(self) -> Optional[float]:
-        """Get current BTC/USD price. Coinbase primary, CoinGecko fallback."""
+        """Get current BTC/USD price.
+
+        Priority: RTDS Chainlink -> Coinbase -> CoinGecko.
+        Chainlink is the actual resolution price source for Polymarket markets.
+        """
+        if self.rtds is not None:
+            price = self.rtds.get_price()
+            if price is not None:
+                return price
+
         try:
             resp = self.session.get(COINBASE_BTC_URL, timeout=5)
             resp.raise_for_status()
@@ -33,7 +61,7 @@ class PriceFetcher:
             resp.raise_for_status()
             return float(resp.json()["bitcoin"]["usd"])
         except Exception:
-            logger.warning("Failed to fetch BTC price from both sources")
+            logger.warning("Failed to fetch BTC price from all sources")
             return None
 
     def get_token_midpoint(self, token_id: str) -> Optional[float]:
@@ -77,12 +105,11 @@ class PriceFetcher:
         down_token_id: str,
         window_start_utc: str,
     ) -> PriceSample:
-        """Take a complete price sample (BTC + both tokens).
+        """Take a complete price sample.
 
-        Makes up to 5 HTTP requests:
-        - 1x BTC spot price
-        - 2x token midpoints (up, down)
-        - 2x token order books (up, down) for bid/ask
+        Fires 4 CLOB requests in parallel via the thread pool (~200ms
+        instead of ~800ms sequential).  BTC price comes from the RTDS
+        Chainlink WebSocket (zero-cost, no HTTP call).
         """
         now = datetime.now(timezone.utc)
         window_start_dt = datetime.fromisoformat(
@@ -90,11 +117,18 @@ class PriceFetcher:
         )
         elapsed = (now - window_start_dt).total_seconds()
 
-        btc_price = self.get_btc_price()
-        up_mid = self.get_token_midpoint(up_token_id)
-        down_mid = self.get_token_midpoint(down_token_id)
-        up_bid, up_ask = self.get_token_book_top(up_token_id)
-        down_bid, down_ask = self.get_token_book_top(down_token_id)
+        btc_price = self.rtds.get_price() if self.rtds is not None else None
+
+        # Fire all 4 CLOB requests in parallel
+        f_up_mid = self._pool.submit(self.get_token_midpoint, up_token_id)
+        f_down_mid = self._pool.submit(self.get_token_midpoint, down_token_id)
+        f_up_book = self._pool.submit(self.get_token_book_top, up_token_id)
+        f_down_book = self._pool.submit(self.get_token_book_top, down_token_id)
+
+        up_mid = f_up_mid.result(timeout=FUTURE_TIMEOUT_S)
+        down_mid = f_down_mid.result(timeout=FUTURE_TIMEOUT_S)
+        up_bid, up_ask = f_up_book.result(timeout=FUTURE_TIMEOUT_S)
+        down_bid, down_ask = f_down_book.result(timeout=FUTURE_TIMEOUT_S)
 
         return PriceSample(
             timestamp_utc=now.isoformat(),
@@ -109,5 +143,6 @@ class PriceFetcher:
         )
 
     def close(self):
-        """Close the underlying HTTP session (no-op if session is shared)."""
+        """Close the thread pool and underlying HTTP session."""
+        self._pool.shutdown(wait=False)
         self.session.close()

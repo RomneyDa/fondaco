@@ -1,9 +1,11 @@
 import { useMemo } from "react";
-import type { SessionData } from "../types";
+import type { BotTrade, SessionData } from "../types";
 import { Plot } from "./Plot";
 
 interface Props {
   session: SessionData;
+  trades?: BotTrade[];
+  isDryRun?: boolean;
 }
 
 const LAYOUT_BASE = {
@@ -26,10 +28,143 @@ const LAYOUT_BASE = {
 
 const PLOT_CFG = { responsive: true, displayModeBar: false };
 
-export function SessionCharts({ session }: Props) {
+function buildTradeTraces(trades: BotTrade[], isDryRun: boolean) {
+  const buyUp = trades.filter((t) => t.side === "buy_up");
+  const buyDown = trades.filter((t) => t.side === "buy_down");
+  const sellUp = trades.filter((t) => t.side === "sell_up");
+  const sellDown = trades.filter((t) => t.side === "sell_down");
+
+  const opacity = isDryRun ? 0.5 : 1.0;
+
+  const traces: any[] = [];
+
+  if (buyUp.length > 0) {
+    traces.push({
+      x: buyUp.map((t) => t.elapsed_seconds),
+      y: buyUp.map((t) => t.price),
+      type: "scatter",
+      mode: "markers",
+      name: "Buy Up",
+      marker: {
+        symbol: "triangle-up",
+        size: 12,
+        color: "#3fb950",
+        opacity,
+        line: isDryRun
+          ? { color: "#3fb950", width: 2, dash: "dot" }
+          : undefined,
+      },
+      text: buyUp.map(
+        (t) => `buy_up $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
+      ),
+      hoverinfo: "text+x",
+    });
+  }
+
+  if (buyDown.length > 0) {
+    traces.push({
+      x: buyDown.map((t) => t.elapsed_seconds),
+      y: buyDown.map((t) => t.price),
+      type: "scatter",
+      mode: "markers",
+      name: "Buy Down",
+      marker: {
+        symbol: "triangle-up",
+        size: 12,
+        color: "#f85149",
+        opacity,
+        line: isDryRun
+          ? { color: "#f85149", width: 2, dash: "dot" }
+          : undefined,
+      },
+      text: buyDown.map(
+        (t) =>
+          `buy_down $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
+      ),
+      hoverinfo: "text+x",
+    });
+  }
+
+  if (sellUp.length > 0) {
+    traces.push({
+      x: sellUp.map((t) => t.elapsed_seconds),
+      y: sellUp.map((t) => t.price),
+      type: "scatter",
+      mode: "markers",
+      name: "Sell Up",
+      marker: {
+        symbol: "triangle-down",
+        size: 12,
+        color: "#3fb950",
+        opacity,
+        line: isDryRun
+          ? { color: "#3fb950", width: 2, dash: "dot" }
+          : undefined,
+      },
+      text: sellUp.map(
+        (t) =>
+          `sell_up $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
+      ),
+      hoverinfo: "text+x",
+    });
+  }
+
+  if (sellDown.length > 0) {
+    traces.push({
+      x: sellDown.map((t) => t.elapsed_seconds),
+      y: sellDown.map((t) => t.price),
+      type: "scatter",
+      mode: "markers",
+      name: "Sell Down",
+      marker: {
+        symbol: "triangle-down",
+        size: 12,
+        color: "#f85149",
+        opacity,
+        line: isDryRun
+          ? { color: "#f85149", width: 2, dash: "dot" }
+          : undefined,
+      },
+      text: sellDown.map(
+        (t) =>
+          `sell_down $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
+      ),
+      hoverinfo: "text+x",
+    });
+  }
+
+  return traces;
+}
+
+export function SessionCharts({ session, trades, isDryRun }: Props) {
   const samples = session.samples || [];
 
-  const elapsed = useMemo(() => samples.map((s) => s.elapsed_seconds), [samples]);
+  const elapsed = useMemo(
+    () => samples.map((s) => s.elapsed_seconds),
+    [samples]
+  );
+
+  // BTC price only changes ~1/sec (Chainlink) vs ~18/sec (CLOB), so deduplicate
+  // to reduce render cost while keeping the same visual shape.
+  const btcDeduped = useMemo(() => {
+    const x: number[] = [];
+    const y: (number | null)[] = [];
+    let prev: number | null = null;
+    for (let i = 0; i < samples.length; i++) {
+      const v = samples[i].btc_price_usd;
+      if (v !== prev || i === samples.length - 1) {
+        x.push(samples[i].elapsed_seconds);
+        y.push(v);
+        prev = v;
+      }
+    }
+    return { x, y };
+  }, [samples]);
+
+  const tradeTraces = useMemo(
+    () => (trades && trades.length > 0 ? buildTradeTraces(trades, !!isDryRun) : []),
+    [trades, isDryRun]
+  );
 
   if (samples.length === 0) {
     return <p className="subtitle">No samples yet</p>;
@@ -42,8 +177,8 @@ export function SessionCharts({ session }: Props) {
         className="chart"
         data={[
           {
-            x: elapsed,
-            y: samples.map((s) => s.btc_price_usd),
+            x: btcDeduped.x,
+            y: btcDeduped.y,
             type: "scatter",
             mode: "lines",
             name: "BTC/USD",
@@ -58,7 +193,7 @@ export function SessionCharts({ session }: Props) {
         config={PLOT_CFG}
       />
 
-      {/* Token Midpoints */}
+      {/* Token Midpoints + Trade Markers */}
       <Plot
         className="chart"
         data={[
@@ -78,6 +213,7 @@ export function SessionCharts({ session }: Props) {
             name: "Down",
             line: { color: "#f85149", width: 2 },
           },
+          ...tradeTraces,
         ]}
         layout={{
           ...LAYOUT_BASE,
@@ -87,13 +223,13 @@ export function SessionCharts({ session }: Props) {
         config={PLOT_CFG}
       />
 
-      {/* BTC + Midpoints overlay */}
+      {/* BTC + Midpoints overlay + Trade Markers */}
       <Plot
         className="chart"
         data={[
           {
-            x: elapsed,
-            y: samples.map((s) => s.btc_price_usd),
+            x: btcDeduped.x,
+            y: btcDeduped.y,
             type: "scatter",
             mode: "lines",
             name: "BTC/USD",
@@ -116,11 +252,19 @@ export function SessionCharts({ session }: Props) {
             name: "Down Mid",
             line: { color: "#f85149", width: 2 },
           },
+          ...tradeTraces,
         ]}
         layout={{
           ...LAYOUT_BASE,
-          title: { text: "BTC Price vs Token Midpoints", font: { size: 14 } },
-          yaxis: { ...LAYOUT_BASE.yaxis, title: "Token Price", side: "left" },
+          title: {
+            text: "BTC Price vs Token Midpoints",
+            font: { size: 14 },
+          },
+          yaxis: {
+            ...LAYOUT_BASE.yaxis,
+            title: "Token Price",
+            side: "left",
+          },
           yaxis2: {
             title: "BTC (USD)",
             overlaying: "y",

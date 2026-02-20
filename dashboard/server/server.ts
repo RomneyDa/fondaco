@@ -10,10 +10,12 @@ const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, "../../data");
 const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
 const LIVE_DIR = path.join(DATA_DIR, "live");
+const APP_JSON = path.join(DATA_DIR, "app.json");
 const CLIENT_DIR = path.resolve(__dirname, "../dist/client");
 const PORT = parseInt(process.env.PORT || "3456", 10);
 
 const app = express();
+app.use(express.json());
 const sseClients = new Set<Response>();
 
 // --- Helpers ---
@@ -22,6 +24,41 @@ function safePath(base: string, ...segments: string[]): string | null {
   const resolved = path.resolve(base, ...segments);
   if (!resolved.startsWith(base)) return null;
   return resolved;
+}
+
+function getControlPort(): number | null {
+  try {
+    const data = JSON.parse(fs.readFileSync(APP_JSON, "utf-8"));
+    return data.port || null;
+  } catch {
+    return null;
+  }
+}
+
+async function proxyToControl(
+  endpoint: string,
+  method: "GET" | "POST" = "GET",
+  body?: object
+): Promise<{ status: number; data: any }> {
+  const port = getControlPort();
+  if (!port) {
+    return { status: 503, data: { error: "App not running (no app.json)" } };
+  }
+  try {
+    const opts: RequestInit = { method };
+    if (body && method === "POST") {
+      opts.headers = { "Content-Type": "application/json" };
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(`http://localhost:${port}${endpoint}`, opts);
+    const data = await res.json();
+    return { status: res.status, data };
+  } catch (e) {
+    return {
+      status: 502,
+      data: { error: `Cannot reach control server on port ${port}: ${e}` },
+    };
+  }
 }
 
 // --- REST API ---
@@ -56,7 +93,7 @@ app.get("/api/sessions/:prefix", (req: Request, res: Response) => {
     }
     const files = fs
       .readdirSync(dir)
-      .filter((f) => f.endsWith(".json"))
+      .filter((f) => f.endsWith(".json") && !f.includes(".trading."))
       .sort()
       .reverse();
     res.json({ sessions: files });
@@ -86,6 +123,28 @@ app.get("/api/session/:prefix/:file", (req: Request, res: Response) => {
     res.status(500).json({ error: String(err) });
   }
 });
+
+app.get(
+  "/api/session/:prefix/:file/trading",
+  (req: Request, res: Response) => {
+    try {
+      const sidecarFile = req.params.file + ".trading.json";
+      const filepath = safePath(SESSIONS_DIR, req.params.prefix, sidecarFile);
+      if (!filepath) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      if (!fs.existsSync(filepath)) {
+        res.status(404).json({ error: "No trading data" });
+        return;
+      }
+      const data = JSON.parse(fs.readFileSync(filepath, "utf-8"));
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
 
 app.get("/api/live", (_req: Request, res: Response) => {
   try {
@@ -117,6 +176,35 @@ app.get("/api/live/:prefix", (req: Request, res: Response) => {
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
+});
+
+// --- Bot control proxy ---
+
+app.get("/api/bot/status", async (_req: Request, res: Response) => {
+  const { status, data } = await proxyToControl("/api/control/status");
+  res.status(status).json(data);
+});
+
+app.post("/api/bot/trade-on", async (req: Request, res: Response) => {
+  const { status, data } = await proxyToControl(
+    "/api/control/trade-on",
+    "POST",
+    req.body
+  );
+  res.status(status).json(data);
+});
+
+app.post("/api/bot/trade-off", async (_req: Request, res: Response) => {
+  const { status, data } = await proxyToControl(
+    "/api/control/trade-off",
+    "POST"
+  );
+  res.status(status).json(data);
+});
+
+app.post("/api/bot/stop", async (_req: Request, res: Response) => {
+  const { status, data } = await proxyToControl("/api/control/stop", "POST");
+  res.status(status).json(data);
 });
 
 // --- SSE ---
@@ -154,13 +242,20 @@ function startWatcher() {
   fs.mkdirSync(SESSIONS_DIR, { recursive: true });
   fs.mkdirSync(LIVE_DIR, { recursive: true });
 
-  const watcher = watch(
-    [path.join(SESSIONS_DIR, "**/*.json"), path.join(LIVE_DIR, "*.json")],
-    {
-      ignoreInitial: true,
-      awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
-    }
-  );
+  const watchPaths = [
+    path.join(SESSIONS_DIR, "**/*.json"),
+    path.join(LIVE_DIR, "*.json"),
+  ];
+
+  // Also watch app.json for bot status changes
+  if (fs.existsSync(path.dirname(APP_JSON))) {
+    watchPaths.push(APP_JSON);
+  }
+
+  const watcher = watch(watchPaths, {
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
+  });
 
   watcher.on("add", (filepath: string) => {
     if (filepath.startsWith(LIVE_DIR)) {
@@ -169,13 +264,20 @@ function startWatcher() {
     } else if (filepath.startsWith(SESSIONS_DIR)) {
       const rel = path.relative(SESSIONS_DIR, filepath);
       const parts = rel.split(path.sep);
-      if (parts.length === 2) {
+      if (parts.length === 2 && !parts[1].includes(".trading.")) {
         broadcast("session-saved", { prefix: parts[0], file: parts[1] });
       }
     }
   });
 
   watcher.on("change", (filepath: string) => {
+    if (filepath === APP_JSON) {
+      // Broadcast bot status change
+      proxyToControl("/api/control/status")
+        .then(({ data }) => broadcast("bot-status", data))
+        .catch(() => {});
+      return;
+    }
     if (filepath.startsWith(LIVE_DIR)) {
       try {
         const raw = fs.readFileSync(filepath, "utf-8");
@@ -189,6 +291,10 @@ function startWatcher() {
   });
 
   watcher.on("unlink", (filepath: string) => {
+    if (filepath === APP_JSON) {
+      broadcast("bot-status", { running: false });
+      return;
+    }
     if (filepath.startsWith(LIVE_DIR)) {
       const prefix = path.basename(filepath, ".json");
       broadcast("live-end", { prefix });

@@ -1,188 +1,128 @@
-# Polymarket Up/Down Market Data Collector
+# Polymarket Up/Down Trading System
 
-## Project Goal
+Collect data, backtest strategies, and trade live on Polymarket crypto up/down prediction markets. Each market is a binary bet on whether an asset goes up or down over a time window (5m, 15m).
 
-Collect historical price data from Polymarket's crypto up/down prediction markets to develop and train trading strategies. Each market is a binary bet on whether a crypto asset will go up or down over a time window (e.g. 5 minutes, 15 minutes).
+## Architecture: Simulate First, Trade Live
 
-## How It Works
+The simulator and bot share all core logic via `core/`. Strategies, position math, trade sizing, and the tick loop (`Trader.process_tick`) are identical between backtesting and live trading. The only difference is the Executor: `SimExecutor` replays historical data, `ClobExecutor` places real CLOB orders.
 
-The collector runs continuously, capturing data for each session:
+**This is a hard constraint.** Any behavior change to how trades are decided, sized, or executed MUST go through shared code in `core/` so it can be validated in simulation before risking real money. Never add trading logic only in `app/` — if the simulator can't test it, it shouldn't go live.
 
-1. **Discovers** the active market using deterministic slug computation (`{slug_prefix}{unix_timestamp}`)
-2. **Polls** at a configurable interval during the window, recording:
-   - BTC spot price (from Coinbase/CoinGecko)
-   - Up/Down token midpoint prices (from Polymarket CLOB API)
-   - Up/Down token best bid/ask (from CLOB order book)
-3. **Waits for resolution** and records the outcome (Up or Down)
-4. **Saves** each session as a JSON file in `data/sessions/{slug_prefix}/`
+The `app/` module is a unified process that always collects data and optionally trades. Trading is toggled on/off via CLI or HTTP control server (port 8420). The Runner (`app/runner.py`) manages both modes, snapshotting trading state at session boundaries. State file at `data/app.json` tracks PID + port.
 
 ## Usage
 
 ```bash
-pip install -r requirements.txt
+uv sync
 
-# Required: slug prefix. Everything else has sensible defaults.
-python collector.py btc-updown-5m-
+# Start unified app (always collects data; optionally trades)
+uv run python -m app start btc-updown-5m-
+uv run python -m app start btc-updown-5m- --strategy LateSniper --params min_elapsed=0.7 --cash 100 --dry-run
 
-# Override defaults:
-python collector.py btc-updown-5m- --sessions 50
-python collector.py eth-updown-5m- --window 300 --poll 2.5
-python collector.py btc-updown-15m- --window 900 --poll 5.0 --sessions 200
+# Toggle trading on a running app (HTTP calls to control server)
+uv run python -m app trade-on --strategy LateSniper --params min_elapsed=0.7 --cash 100
+uv run python -m app trade-off
 
-# See all options:
-python collector.py --help
+# Control
+uv run python -m app status
+uv run python -m app stop
+
+# Standalone claim (no running app needed)
+uv run python -m app claim [--no-wait]
+
+# Backtest strategies
+uv run python -m simulator.backtest data/sessions/btc-updown-5m --strategy all --top 10
 ```
 
-### CLI flags
-
-| Flag | Default | Description |
-|---|---|---|
-| `slug_prefix` (positional, **required**) | — | Market slug prefix, e.g. `btc-updown-5m-` |
-| `--sessions` | 100 | Number of sessions to collect |
-| `--window` | 300 | Window duration in seconds |
-| `--poll` | 2.5 | Poll interval in seconds |
-| `--resolution-poll` | 5.0 | Resolution poll interval in seconds |
-| `--resolution-timeout` | 300 | Resolution timeout in seconds |
-
-Press Ctrl+C for graceful shutdown (current session is saved).
-
-### Known slug prefixes
-
-See `slugs.json` for a list of known active slug prefixes (git-ignored, fetched from Polymarket). Currently active: `btc-updown-5m-`, `btc-updown-15m-`, `eth-updown-5m-`, `eth-updown-15m-`, `sol-updown-5m-`, `sol-updown-15m-`, `xrp-updown-5m-`, `xrp-updown-15m-`.
-
-## Backtesting
-
-Replay collected session data through trading strategies, optimize parameters via grid search, and compare results.
-
-```bash
-# Run all strategies against collected data
-python backtest.py data/sessions/btc-updown-5m
-
-# Single strategy
-python backtest.py data/sessions/btc-updown-5m --strategy MomentumEntry
-
-# Customize execution model
-python backtest.py data/sessions/btc-updown-5m --execution midpoint --slippage 0.03 --cash 200
-
-# Show per-session breakdown for best result
-python backtest.py data/sessions/btc-updown-5m --strategy all --top 10 --verbose
-```
-
-### Backtest CLI flags
-
-| Flag | Default | Description |
-|---|---|---|
-| `data_dir` (positional, **required**) | — | Path to session files directory |
-| `--strategy` | `all` | Strategy name or `all` |
-| `--optimize` | `sharpe` | Metric: `sharpe`, `total_pnl`, `win_rate` |
-| `--execution` | `midpoint_slippage` | `midpoint_slippage`, `midpoint`, `book` |
-| `--slippage` | 0.02 | Half-spread for midpoint_slippage mode |
-| `--cash` | 100 | Starting cash per session |
-| `--top` | 10 | Show top N param combos |
-| `--verbose` | off | Per-session breakdown for best params |
-
-### Execution modes
-
-The order book bid/ask is typically 0.01/0.99 (98-cent spread), so `book` mode is unrealistic. Default `midpoint_slippage` uses midpoint +/- a configurable half-spread (default 0.02) for more realistic execution.
-
-### Built-in strategies
-
-- **AlwaysBuyUp / AlwaysBuyDown** — baselines, buy at first tick
-- **MomentumEntry** — buy direction of BTC move if it exceeds a threshold early in window
-- **MidpointMomentum** — follow token midpoint trend over last N ticks
-- **LateSniper** — wait until late in window when outcome is more certain
-- **FadeTheMarket** — mean reversion: bet against early midpoint extremes
-
-## Trading Bot
-
-Live trading bot that uses the same Strategy interface from backtesting to place real orders on Polymarket via py-clob-client.
-
-```bash
-# Set Polymarket private key
-export POLYMARKET_PRIVATE_KEY="0x..."
-
-# Start bot (foreground, PID written to data/bot.pid)
-python bot.py up btc-updown-5m- --strategy LateSniper --params min_elapsed=0.7,bet_fraction=0.5
-
-# Stop from another terminal
-python bot.py down
-
-# Check if running
-python bot.py status
-```
-
-### Bot CLI flags (up command)
-
-| Flag | Default | Description |
-|---|---|---|
-| `slug_prefix` (positional, **required**) | — | Market slug prefix, e.g. `btc-updown-5m-` |
-| `--strategy` (**required**) | — | Strategy name from ALL_STRATEGIES |
-| `--params` | — | Strategy params as k=v,k=v string |
-| `--window` | 300 | Window duration in seconds |
-| `--poll` | 2.5 | Poll interval in seconds |
-| `--resolution-poll` | 5.0 | Resolution poll interval in seconds |
-| `--resolution-timeout` | 300 | Resolution timeout in seconds |
-| `--cash` | 100 | Starting virtual cash |
-
-### Environment variables
-
-| Variable | Description |
-|---|---|
-| `POLYMARKET_PRIVATE_KEY` | Polygon wallet private key for CLOB authentication |
-
-### Bot data files
-
-- `data/bot.pid` — PID file for process management (git-ignored)
-- `data/bot.log` — Bot log file with DEBUG-level detail (git-ignored)
-- `data/bot_trades.jsonl` — Every order attempt logged as JSONL (git-ignored)
-- `data/bot_log.jsonl` — Per-session summary log (git-ignored)
+Slug prefix is always required (positional arg). Known prefixes in `slugs.json` (git-ignored). Use `--window` matching the slug (300 for 5m, 900 for 15m).
 
 ## File Structure
 
-- `collector.py` - CLI entry point and main orchestration loop
-- `defaults.py` - Default values for timing, API URLs, paths
-- `models.py` - Data classes (PriceSample, MarketMetadata, SessionData)
-- `market_discovery.py` - Gamma API market lookup and resolution checking
-- `price_fetcher.py` - BTC price and CLOB token price polling
-- `api_logger.py` - LoggingSession that records every API request/response
-- `session_recorder.py` - JSON file I/O and collection logging
-- `simulator.py` - Core backtesting engine (data classes, trade execution, session replay)
-- `strategies.py` - Trading strategy definitions (base class + 6 built-in strategies)
-- `backtest.py` - CLI runner for grid search and strategy comparison
-- `bot.py` - Live trading bot with CLI (up/down/status) and CLOB order execution
-- `slugs.json` - Known slug prefixes (git-ignored)
-- `data/sessions/{slug_prefix}/*.json` - Collected session data
-- `data/api_raw/{host}/{date}.jsonl` - Raw API request/response logs (git-ignored)
-- `data/collection_log.jsonl` - Append-only run log
+```
+core/
+  defaults.py               Timing, API URLs, paths (BASE_DIR resolves to project root)
+  models.py                 PriceSample, MarketMetadata, SessionData
+  api_logger.py             LoggingSession — all HTTP requests go through this
+  trader.py                 TradeAction, Position, TickContext, Trade, Executor ABC,
+                            SimExecutor, ClobExecutor, Trader (shared tick loop)
+  rtds_client.py            WebSocket client for Chainlink prices (resolution source)
+  market_discovery.py       Gamma API market lookup and resolution
+  price_fetcher.py          BTC price + CLOB token price polling
+  window_ops.py             Window wait, metadata retry, resolution polling
+  session_recorder.py       Session JSON I/O and logging
+  strategies/
+    __init__.py             ALL_STRATEGIES registry
+    base.py                 Strategy ABC (on_session_start, on_tick, param_grid)
+    always_buy_up.py        Baseline: buy Up at first tick
+    always_buy_down.py      Baseline: buy Down at first tick
+    momentum_entry.py       BTC momentum threshold entry
+    midpoint_momentum.py    Token midpoint trend following
+    late_sniper.py          Late-window confident entry
+    fade_the_market.py      Mean reversion against early extremes
+    ema_crossover.py        Dual EMA crossover, multi-trade with position flips
+    ols_slope.py            Rolling OLS regression slope, trend entry/exit
+    scalper.py              Mean reversion scalper, take-profit/stop-loss
+    trailing_stop_momentum.py  Momentum entry with trailing stop management
+app/
+  __main__.py               CLI: start, trade-on, trade-off, status, stop, claim
+  runner.py                 Runner class (unified collect + trade loop)
+  server.py                 HTTP control server (stdlib, daemon thread)
+  auth.py                   CLOB auth helpers (Safe derivation, API creds, cache)
+  claim.py                  Claim/redeem logic via Builder Relayer
+simulator/
+  engine.py                 Simulator, SessionResult, BacktestResult, load_sessions
+  backtest.py               CLI grid search runner (logs to data/backtest_log.jsonl)
+dashboard/                  React dashboard (separate)
+data/                       All runtime data (sessions, logs, etc.)
+```
 
-## APIs Used
+## Tick Scale
 
-- **Gamma Markets API** (`gamma-api.polymarket.com`) - Market discovery, no auth needed
-- **CLOB API** (`clob.polymarket.com`) - Token prices/order books, no auth for reads
-- **Coinbase** / **CoinGecko** - BTC spot price, no auth needed
+Sessions sample at ~18 ticks/sec. A 5-minute (300s) session has ~5,400 ticks; a 15-minute (900s) session has ~16,200 ticks. Strategy warmup/lookback params (EMA spans, OLS window sizes, rolling lookbacks) are measured in **ticks**, not seconds. A `slow_span=200` EMA burns only ~11 seconds of warmup in a 5-minute window. Keep param grids calibrated to this scale — a span of 50 means ~3 seconds, not 50 seconds. BTC price variance per tick is tiny (~0.01–0.15 bps), so slope/momentum thresholds in bps/tick must be correspondingly small.
 
-## Rate Limits
+## CLOB API Constraints
 
-~100 req/min per host. The collector makes ~5 requests per 2.5s sample across multiple hosts, staying well within limits. `LoggingSession` handles 429 responses with automatic exponential backoff.
+| Constraint | Value |
+|---|---|
+| Min order size | 5 tokens (`CLOB_MIN_ORDER_TOKENS`) |
+| Tick size | 0.01 |
+| Price range | 0.01–0.99 |
+| Price precision | 2 decimal places |
+| Order type | FAK (Fill-and-Kill) |
+| neg_risk | False |
+| Book spread | Typically 0.01/0.99 (use `midpoint_slippage` execution, not `book`) |
 
-## Session Data Format
+Buy token sizes are floored to integer in `ClobExecutor` for clean maker amounts. Sell token sizes use `math.floor` to 4 decimals — never round up sells.
 
-Each JSON file contains: market metadata (token IDs, condition ID, timestamps), initial/final BTC price, outcome (Up/Down), and an array of price samples with BTC price, token midpoints, and bid/ask spreads.
+## Guardrails (shared, constants in core/defaults.py)
+
+| Guardrail | Constant | Default |
+|---|---|---|
+| Min order size | CLOB_MIN_ORDER_TOKENS | 5 tokens |
+| Max position exposure | MAX_POSITION_FRACTION / MAX_POSITION_DOLLARS | 50% of balance or $10,000 |
+| Max loss per session/day | MAX_LOSS_FRACTION / MAX_LOSS_DOLLARS | 30% of balance or $1,000 |
+
+Enforced in `Trader.process_tick()` (shared tick loop). App caches balance to `.cache/balance.json`; use `--cash cached` in backtest/app to start from real balance.
+
+## CRITICAL RULES — REAL MONEY
+
+This bot trades real money. No sandbox, no undo.
+
+1. **All trades flow through `ClobExecutor.execute_trade`** — no ad-hoc scripts, no direct `create_and_post_order` calls outside the app's execution path.
+
+2. **Read before modifying trade execution code** — before changing `ClobExecutor.execute_trade`, `SimExecutor.execute_trade`, `Position.compute_trade_size`, `Position.apply_trade`, `Position.resolve`, or `Trader.process_tick`: read it, understand it, confirm no path where money is lost silently.
+
+3. **Position must stay in sync** — `position.apply_trade()` is called only after a successful CLOB order. Failed order = position unchanged. No exceptions.
+
+4. **Private keys are sacred** — loaded from `.env` via `python-dotenv`, never logged/printed/committed. `.env` is gitignored.
+
+5. **Log everything** — every order attempt → `data/bot_trades.jsonl`, every session → `data/bot_log.jsonl`, every API call → `data/api_raw/`. Never bypass logging. Backtest runs → `data/backtest_log.jsonl`.
+
+6. **When in doubt, do not trade** — ask the user. The cost of asking is zero.
 
 ## Rules
 
-### Python 3.9 compatibility
-
-The runtime is Python 3.9. Do not use syntax or features added in 3.10+ (e.g. `X | Y` union types, `match` statements, `ParamSpec`). Use `typing.Optional`, `typing.Union`, etc. instead.
-
-### All API requests MUST be logged
-
-Every HTTP request made to any external API must go through `LoggingSession` (from `api_logger.py`), which records the full request and response to `data/api_raw/{host}/{YYYY-MM-DD}.jsonl`. This is non-negotiable — no direct `requests.get()` or bare `requests.Session()` calls. When adding new API calls or new modules, always use the shared `LoggingSession` instance. The raw API logs are git-ignored but must always be captured locally for analysis.
-
-### API log data structure
-
-Logs are organized by API host and date. Each JSONL entry contains: timestamp, method, full URL, host, path, query params, status code, elapsed time in ms, the full JSON response body, and any error. This structure is intentionally generic so the same format works across different Polymarket market types (5-min BTC, 1-min BTC, other assets, etc.).
-
-### Slug prefix is always required
-
-The slug prefix (e.g. `btc-updown-5m-`) must be passed as a positional CLI argument. There is no default — this forces the caller to be explicit about which market they're collecting. The `--window` flag should match the slug's actual window duration (300 for 5m, 900 for 15m, etc.).
+- **uv** for package management. `uv sync` to install, `uv add <pkg>` to add deps. Run via `uv run python -m <module>`.
+- **Python >=3.10** — use `typing.Optional`/`typing.Union`, not `X | Y` syntax.
+- **All HTTP requests through `LoggingSession`** — no bare `requests.get()`. Logs to `data/api_raw/{host}/{date}.jsonl`.
+- **Auth**: `.env` has `POLYMARKET_PRIVATE_KEY`. App derives Gnosis Safe address via Polygon RPC (`CTF_EXCHANGE` at `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E`), caches creds in `.cache/auth.json` (git-ignored, auto-invalidates on key change). Auth is lazy-initialized when trading is enabled.

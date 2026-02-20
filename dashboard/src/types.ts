@@ -33,11 +33,41 @@ export interface SessionData {
   collection_ended_utc: string;
   error_count: number;
   errors: string[];
+  trading?: TradingInfo;
+}
+
+export interface BotTrade {
+  elapsed_seconds: number;
+  side: string;
+  price: number;
+  amount: number;
+  tokens: number;
+  success: boolean | null;
+}
+
+export interface TradingInfo {
+  enabled: boolean;
+  strategy: string;
+  params?: Record<string, any>;
+  dry_run: boolean;
+  cash: number;
+  trades: BotTrade[];
+}
+
+export interface BotStatus {
+  running: boolean;
+  slug_prefix?: string;
+  session_count?: number;
+  trading_enabled?: boolean;
+  strategy?: string;
+  dry_run?: boolean;
+  cash?: number | null;
 }
 
 export interface PrefixInfo {
   name: string;
   count: number;
+  recentSessions: string[];
 }
 
 /** Status-only payload written when collector is waiting or resolving */
@@ -46,6 +76,7 @@ export interface LiveStatus {
   slug_key: string;
   timestamp: string;
   next_window_utc: string | null;
+  trading?: TradingInfo;
 }
 
 /** Data from the live file — either a status object or a full session */

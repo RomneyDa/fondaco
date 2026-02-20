@@ -1,11 +1,12 @@
 import { useEffect, useRef } from "react";
-import type { LivePayload } from "../types";
+import type { BotStatus, LivePayload } from "../types";
 
 export interface SSEHandlers {
   onLiveUpdate?: (prefix: string, data: LivePayload) => void;
   onLiveStart?: (prefix: string) => void;
   onLiveEnd?: (prefix: string) => void;
   onSessionSaved?: (prefix: string, file: string) => void;
+  onBotStatus?: (status: BotStatus) => void;
 }
 
 export function useSSE(handlers: SSEHandlers) {
@@ -46,6 +47,11 @@ export function useSSE(handlers: SSEHandlers) {
           (e as MessageEvent).data
         ) as { prefix: string; file: string };
         ref.current.onSessionSaved?.(prefix, file);
+      });
+
+      es.addEventListener("bot-status", (e) => {
+        const data = JSON.parse((e as MessageEvent).data) as BotStatus;
+        ref.current.onBotStatus?.(data);
       });
 
       es.onerror = () => {

@@ -10,10 +10,15 @@ Usage:
 
 import argparse
 import itertools
+import json
+import os
 import sys
+from dataclasses import asdict
+from datetime import datetime, timezone
 
-from simulator import Simulator, BacktestResult, load_sessions
-from strategies import ALL_STRATEGIES
+from simulator.engine import Simulator, BacktestResult, load_sessions
+from core.defaults import BALANCE_CACHE_FILE, BACKTEST_LOG_FILE
+from core.strategies import ALL_STRATEGIES
 
 
 def build_variants(strategy_cls):
@@ -114,19 +119,84 @@ def print_verbose(result):
     """Print per-session breakdown for a single result."""
     print("\n--- {} [{}] ---".format(result.strategy_name, format_params(result.params)))
     for sr in result.sessions:
-        trade_str = ""
-        if sr.trades:
-            t = sr.trades[0]
-            trade_str = " | {}@{:.3f}".format(t.side, t.price)
-        print("  {} outcome={:<4} pnl={:>+7.2f}{}".format(
+        trade_parts = []
+        for t in sr.trades:
+            trade_parts.append("{}@{:.3f}".format(t.side, t.price))
+        trade_str = " | " + ", ".join(trade_parts) if trade_parts else ""
+        print("  {} outcome={:<4} pnl={:>+7.2f} trades={:<2}{}".format(
             sr.session_file.split("/")[-1] if sr.session_file else "?",
             sr.outcome,
             sr.pnl,
+            len(sr.trades),
             trade_str,
         ))
     print("  TOTAL: pnl={:+.2f}  mean={:+.2f}  win_rate={:.1f}%  sharpe={:.3f}".format(
         result.total_pnl, result.mean_pnl, result.win_rate * 100, result.sharpe,
     ))
+
+
+def log_backtest_run(args, sessions, all_results, optimize):
+    # type: (argparse.Namespace, list, list, str) -> None
+    """Append a JSONL entry with the full backtest run inputs and results."""
+    sort_key = {
+        "sharpe": lambda r: r.sharpe,
+        "total_pnl": lambda r: r.total_pnl,
+        "win_rate": lambda r: r.win_rate,
+    }.get(optimize, lambda r: r.sharpe)
+
+    ranked = sorted(all_results, key=sort_key, reverse=True)
+
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "inputs": {
+            "data_dir": args.data_dir,
+            "strategy": args.strategy,
+            "execution": args.execution,
+            "slippage": args.slippage,
+            "starting_cash": args.cash,
+            "optimize": optimize,
+            "num_sessions": len(sessions),
+        },
+        "results": [
+            {
+                "rank": i + 1,
+                "strategy": r.strategy_name,
+                "params": r.params,
+                "sharpe": round(r.sharpe, 4),
+                "total_pnl": round(r.total_pnl, 4),
+                "mean_pnl": round(r.mean_pnl, 4),
+                "win_rate": round(r.win_rate, 4),
+                "num_sessions": r.num_sessions,
+                "sessions": [
+                    {
+                        "file": sr.session_file,
+                        "outcome": sr.outcome,
+                        "pnl": round(sr.pnl, 4),
+                        "num_trades": len(sr.trades),
+                        "trades": [
+                            {
+                                "tick": t.tick_index,
+                                "side": t.side,
+                                "price": t.price,
+                                "tokens": t.tokens,
+                                "amount": round(t.amount, 4),
+                            }
+                            for t in sr.trades
+                        ],
+                    }
+                    for sr in r.sessions
+                ],
+            }
+            for i, r in enumerate(ranked)
+        ],
+    }
+
+    os.makedirs(os.path.dirname(BACKTEST_LOG_FILE), exist_ok=True)
+    try:
+        with open(BACKTEST_LOG_FILE, "a") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+    except Exception as e:
+        print("Warning: failed to write backtest log: {}".format(e))
 
 
 def main():
@@ -162,9 +232,9 @@ def main():
     )
     parser.add_argument(
         "--cash",
-        type=float,
-        default=100.0,
-        help="Starting cash per session (default: 100)",
+        type=str,
+        default="100",
+        help='Starting cash per session (default: 100). Use "cached" to load from .cache/balance.json',
     )
     parser.add_argument(
         "--top",
@@ -179,6 +249,23 @@ def main():
     )
     args = parser.parse_args()
 
+    # Resolve starting cash
+    if args.cash == "cached":
+        try:
+            with open(BALANCE_CACHE_FILE, "r") as _f:
+                _cached = json.load(_f)
+            starting_cash = _cached["cash"]
+            print("Loaded cached balance: ${:.2f} (from {}, session {})".format(
+                starting_cash, _cached.get("slug_prefix"), _cached.get("session_count"),
+            ))
+        except (OSError, KeyError, json.JSONDecodeError):
+            print("No cached balance found. Use a numeric value or run the bot first.")
+            sys.exit(1)
+    else:
+        starting_cash = float(args.cash)
+    # Update args.cash so log_backtest_run logs the numeric value
+    args.cash = starting_cash
+
     # Load sessions
     sessions = load_sessions(args.data_dir)
     if not sessions:
@@ -187,7 +274,7 @@ def main():
 
     print("Loaded {} resolved sessions from {}".format(len(sessions), args.data_dir))
     print("Execution: {} (slippage={})  Starting cash: ${}".format(
-        args.execution, args.slippage, args.cash,
+        args.execution, args.slippage, starting_cash,
     ))
 
     # Select strategies
@@ -202,7 +289,7 @@ def main():
         strategy_names = [args.strategy]
 
     sim = Simulator(
-        starting_cash=args.cash,
+        starting_cash=starting_cash,
         execution_mode=args.execution,
         slippage=args.slippage,
     )
@@ -236,6 +323,10 @@ def main():
         }.get(args.optimize, lambda r: r.sharpe)
         best = max(all_results, key=sort_key)
         print_verbose(best)
+
+    # Persist full run to JSONL log
+    log_backtest_run(args, sessions, all_results, args.optimize)
+    print("Results logged to {}".format(BACKTEST_LOG_FILE))
 
 
 if __name__ == "__main__":

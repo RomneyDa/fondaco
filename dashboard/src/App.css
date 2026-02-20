@@ -102,6 +102,21 @@ body {
   50% { opacity: 0.4; }
 }
 
+.nav-item.nav-prefix {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.nav-item.nav-session {
+  padding: 3px 20px 3px 32px;
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--text-dim);
+}
+
+.nav-item.nav-session:hover { color: var(--text); }
+.nav-item.nav-session.active { color: var(--accent); }
+
 .nav-item.dim {
   color: var(--text-dim);
   font-style: italic;
@@ -233,6 +248,7 @@ h2 {
 
 .session-list-item .outcome.up { color: var(--green); }
 .session-list-item .outcome.down { color: var(--red); }
+.session-list-item .outcome.unresolved { color: var(--text-dim); }
 
 /* ---- Home stats ---- */
 
@@ -259,4 +275,208 @@ h2 {
 .stat-card .value {
   font-size: 24px;
   font-weight: 600;
+}
+
+/* ---- Bot Panel ---- */
+
+.bot-status-section {
+  margin-bottom: 24px;
+}
+
+.bot-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+}
+
+.bot-status-dot.running {
+  background: var(--green);
+  animation: pulse 2s infinite;
+}
+
+.bot-status-dot.stopped {
+  background: var(--red);
+}
+
+.bot-controls {
+  display: flex;
+  gap: 32px;
+  align-items: flex-start;
+}
+
+.bot-form {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  min-width: 320px;
+}
+
+.bot-form h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: var(--text);
+}
+
+.bot-form-row {
+  margin-bottom: 12px;
+}
+
+.bot-form-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.bot-form-row select,
+.bot-form-row input[type="text"],
+.bot-form-row input[type="number"] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+}
+
+.bot-form-row select:focus,
+.bot-form-row input:focus {
+  border-color: var(--accent);
+}
+
+.bot-checkbox {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  cursor: pointer;
+}
+
+.bot-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.bot-btn {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.bot-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bot-btn-start {
+  background: var(--green);
+  color: #fff;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.bot-btn-start:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.bot-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bot-btn-stop-trading {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--red);
+  border: 1px solid var(--red);
+}
+
+.bot-btn-stop-trading:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.25);
+}
+
+.bot-btn-stop {
+  background: rgba(248, 81, 73, 0.08);
+  color: var(--red);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+.bot-btn-stop:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.15);
+}
+
+.bot-offline-msg {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  margin-top: 16px;
+}
+
+.bot-offline-msg code {
+  display: block;
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.bot-message {
+  margin-top: 16px;
+  padding: 8px 14px;
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px solid rgba(88, 166, 255, 0.2);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+/* ---- Trading badges ---- */
+
+.dry-run-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-left: 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
+  vertical-align: middle;
+}
+
+.trading-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.trade-count-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(139, 148, 158, 0.15);
+  color: var(--text-dim);
+}
+
+.trading-summary {
+  margin-bottom: 8px;
 }

@@ -1,2 +1,0 @@
-requests>=2.28.0
-py-clob-client>=0.1.0

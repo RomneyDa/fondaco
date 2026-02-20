@@ -7,8 +7,8 @@ from typing import Optional
 
 import requests
 
-from defaults import GAMMA_API_BASE
-from models import MarketMetadata
+from core.defaults import GAMMA_API_BASE
+from core.models import MarketMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,8 @@ def fetch_market_metadata(slug_prefix: str, window_start_ts: int) -> Optional[Ma
         return None
 
     market = markets[0]
+    if market.get("closed"):
+        return None
     clob_token_ids = json.loads(market["clobTokenIds"])
 
     return MarketMetadata(
