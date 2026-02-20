@@ -369,17 +369,13 @@ class ClobExecutor(Executor):
             self._log_trade(trade)
             return trade
 
-        # CLOB minimum order size: at least CLOB_MIN_ORDER_TOKENS tokens
+        # CLOB minimum order size: silently skip if below threshold
         if tokens < CLOB_MIN_ORDER_TOKENS:
-            trade = Trade(
-                tick_index=tick_index, side=action.side, price=price, amount=0,
-                tokens=tokens, order_id=None, token_id=token_id, success=False,
-                error="Below minimum order size ({} tokens, need {})".format(
-                    tokens, CLOB_MIN_ORDER_TOKENS),
-                timestamp=now,
+            logger.debug(
+                "Skipping trade: %d tokens below minimum %d",
+                tokens, CLOB_MIN_ORDER_TOKENS,
             )
-            self._log_trade(trade)
-            return trade
+            return None
 
         # Place the order (FAK = fill what's available, cancel remainder)
         requested_tokens = tokens
@@ -410,16 +406,17 @@ class ClobExecutor(Executor):
                         "CLOB rejected order: {}".format(resp.get("errorMsg", "unknown"))
                     )
 
-                # Parse actual fill amounts from response (6-decimal integer strings)
+                # Parse actual fill amounts from response (6-decimal strings,
+                # may be int-like "13188404" or float-like "13188404.0")
                 taking = resp.get("takingAmount")
                 making = resp.get("makingAmount")
                 if taking and making:
                     if order_side == "BUY":
-                        actual_tokens = int(taking) / 1_000_000
-                        actual_dollars = int(making) / 1_000_000
+                        actual_tokens = int(float(taking)) / 1_000_000
+                        actual_dollars = int(float(making)) / 1_000_000
                     else:  # SELL
-                        actual_tokens = int(making) / 1_000_000
-                        actual_dollars = int(taking) / 1_000_000
+                        actual_tokens = int(float(making)) / 1_000_000
+                        actual_dollars = int(float(taking)) / 1_000_000
 
                     if actual_tokens <= 0:
                         raise RuntimeError("FAK order got zero fill (no liquidity)")

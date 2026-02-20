@@ -29,6 +29,7 @@ RTDS_WS_URL = "wss://ws-live-data.polymarket.com"
 RECONNECT_DELAY_S = 2.0
 MAX_RECONNECT_DELAY_S = 30.0
 STALE_THRESHOLD_S = 10.0
+WATCHDOG_TIMEOUT_S = 30.0  # force reconnect if no ticks for this long
 
 
 class RTDSClient:
@@ -47,12 +48,14 @@ class RTDSClient:
 
     def start(self):
         # type: () -> None
-        """Start the background WebSocket thread."""
+        """Start the background WebSocket thread and watchdog."""
         if self._running:
             return
         self._running = True
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
+        self._watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
+        self._watchdog_thread.start()
         logger.info("RTDS client started for %s", self.symbol)
 
     def stop(self):
@@ -86,11 +89,28 @@ class RTDSClient:
         """Number of price ticks received since start."""
         return self._tick_count
 
+    def _watchdog_loop(self):
+        # type: () -> None
+        """Kill the WebSocket if no ticks arrive within WATCHDOG_TIMEOUT_S."""
+        while self._running:
+            time.sleep(5)
+            with self._lock:
+                age = time.monotonic() - self._latest_ts if self._latest_ts > 0 else 0
+            if age > WATCHDOG_TIMEOUT_S and self._ws is not None:
+                logger.warning(
+                    "RTDS watchdog: no ticks for %.0fs, forcing reconnect", age,
+                )
+                try:
+                    self._ws.close()
+                except Exception:
+                    pass
+
     def _run_loop(self):
         # type: () -> None
         """Reconnection loop — runs in the background thread."""
         delay = RECONNECT_DELAY_S
         while self._running:
+            ticks_before = self._tick_count
             try:
                 self._connect()
             except Exception as e:
@@ -99,9 +119,14 @@ class RTDSClient:
             if not self._running:
                 break
 
+            # Reset backoff if we received ticks during this connection
+            if self._tick_count > ticks_before:
+                delay = RECONNECT_DELAY_S
+            else:
+                delay = min(delay * 1.5, MAX_RECONNECT_DELAY_S)
+
             logger.info("RTDS reconnecting in %.1fs...", delay)
             time.sleep(delay)
-            delay = min(delay * 1.5, MAX_RECONNECT_DELAY_S)
 
     def _connect(self):
         # type: () -> None

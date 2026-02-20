@@ -37,6 +37,7 @@ class PriceFetcher:
         self.session.headers.update({"Accept": "application/json"})
         self.rtds = rtds_client
         self._pool = ThreadPoolExecutor(max_workers=20)
+        self._last_btc_price = None  # type: Optional[float]
 
     def get_btc_price(self) -> Optional[float]:
         """Get current BTC/USD price.
@@ -118,6 +119,15 @@ class PriceFetcher:
         elapsed = (now - window_start_dt).total_seconds()
 
         btc_price = self.rtds.get_price() if self.rtds is not None else None
+        if btc_price is not None:
+            self._last_btc_price = btc_price
+        else:
+            # RTDS stale/disconnected — use last known price, then HTTP fallback
+            btc_price = self._last_btc_price
+            if btc_price is None:
+                btc_price = self.get_btc_price()
+                if btc_price is not None:
+                    self._last_btc_price = btc_price
 
         # Fire all 4 CLOB requests in parallel
         f_up_mid = self._pool.submit(self.get_token_midpoint, up_token_id)

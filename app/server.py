@@ -63,6 +63,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_trade_on()
         elif self.path == "/api/control/trade-off":
             self._handle_trade_off()
+        elif self.path == "/api/control/set-cash":
+            self._handle_set_cash()
         elif self.path == "/api/control/stop":
             self._handle_stop()
         else:
@@ -101,6 +103,22 @@ class _Handler(BaseHTTPRequestHandler):
             return
         runner.disable_trading()
         self._send_json({"ok": True, "trading": False})
+
+    def _handle_set_cash(self):
+        runner = self.runner
+        if runner is None:
+            self._send_json({"error": "No runner"}, 500)
+            return
+        try:
+            body = self._read_json_body()
+            cash = body.get("cash")
+            if cash is None:
+                self._send_json({"error": "Missing 'cash' field"}, 400)
+                return
+            runner.set_cash(float(cash))
+            self._send_json({"ok": True, "cash": round(float(cash), 4)})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
 
     def _handle_stop(self):
         runner = self.runner

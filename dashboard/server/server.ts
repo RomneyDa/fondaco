@@ -102,6 +102,47 @@ app.get("/api/sessions/:prefix", (req: Request, res: Response) => {
   }
 });
 
+app.get("/api/sessions/:prefix/summaries", (req: Request, res: Response) => {
+  try {
+    const dir = safePath(SESSIONS_DIR, req.params.prefix);
+    if (!dir) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+    if (!fs.existsSync(dir)) {
+      res.json({ sessions: [] });
+      return;
+    }
+    const files = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith(".json") && !f.includes(".trading."))
+      .sort()
+      .reverse();
+
+    const limit = Math.min(
+      parseInt(req.query.limit as string) || 20,
+      100
+    );
+    const summaries = files.slice(0, limit).map((file) => {
+      let outcome: string | null = null;
+      try {
+        const filepath = path.join(dir, file);
+        const fd = fs.openSync(filepath, "r");
+        const buf = Buffer.alloc(1024);
+        fs.readSync(fd, buf, 0, 1024, 0);
+        fs.closeSync(fd);
+        const header = buf.toString("utf-8");
+        const match = header.match(/"outcome":\s*"([^"]+)"/);
+        if (match) outcome = match[1];
+      } catch {}
+      return { file, outcome };
+    });
+    res.json({ sessions: summaries });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 app.get("/api/session/:prefix/:file", (req: Request, res: Response) => {
   try {
     const filepath = safePath(
@@ -202,6 +243,15 @@ app.post("/api/bot/trade-off", async (_req: Request, res: Response) => {
   res.status(status).json(data);
 });
 
+app.post("/api/bot/set-cash", async (req: Request, res: Response) => {
+  const { status, data } = await proxyToControl(
+    "/api/control/set-cash",
+    "POST",
+    req.body
+  );
+  res.status(status).json(data);
+});
+
 app.post("/api/bot/stop", async (_req: Request, res: Response) => {
   const { status, data } = await proxyToControl("/api/control/stop", "POST");
   res.status(status).json(data);
@@ -254,7 +304,7 @@ function startWatcher() {
 
   const watcher = watch(watchPaths, {
     ignoreInitial: true,
-    awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
+    awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 250 },
   });
 
   watcher.on("add", (filepath: string) => {

@@ -445,6 +445,66 @@ h2 {
   color: var(--accent);
 }
 
+/* ---- Editable cash card ---- */
+
+.meta-card-editable {
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.meta-card-editable:hover {
+  border-color: var(--accent);
+}
+
+.edit-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.5;
+  margin-left: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.cash-edit input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.cash-edit input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.25);
+}
+
+.cash-edit-btns {
+  display: flex;
+  gap: 4px;
+}
+
+.cash-btn {
+  flex: 1;
+  padding: 3px 0;
+  border: none;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cash-btn.save {
+  background: var(--green);
+  color: #fff;
+}
+.cash-btn.save:hover { opacity: 0.85; }
+.cash-btn.cancel {
+  background: var(--border);
+  color: var(--text-dim);
+}
+.cash-btn.cancel:hover { opacity: 0.85; }
+
 /* ---- Trading badges ---- */
 
 .dry-run-tag {

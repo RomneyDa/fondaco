@@ -64,10 +64,15 @@ export interface BotStatus {
   cash?: number | null;
 }
 
+export interface SessionSummary {
+  file: string;
+  outcome: string | null;
+}
+
 export interface PrefixInfo {
   name: string;
   count: number;
-  recentSessions: string[];
+  recentSessions: SessionSummary[];
 }
 
 /** Status-only payload written when collector is waiting or resolving */

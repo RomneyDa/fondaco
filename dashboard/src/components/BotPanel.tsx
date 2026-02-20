@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { fetchBotStatus, tradeBotOn, tradeBotOff, stopBot } from "../api";
+import { fetchBotStatus, tradeBotOn, tradeBotOff, stopBot, setBotCash } from "../api";
 import type { BotStatus } from "../types";
 
 const STRATEGIES = [
@@ -27,6 +27,8 @@ export function BotPanel({ botStatus, onRefresh }: Props) {
   const [dryRun, setDryRun] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [editingCash, setEditingCash] = useState(false);
+  const [cashInput, setCashInput] = useState("");
 
   async function handleTradeOn() {
     setLoading(true);
@@ -58,6 +60,30 @@ export function BotPanel({ botStatus, onRefresh }: Props) {
     setMessage(null);
     const res = await tradeBotOff();
     setMessage(res.ok ? "Trading disabled" : res.error || "Failed");
+    setLoading(false);
+    onRefresh();
+  }
+
+  function startEditCash() {
+    setCashInput(botStatus?.cash?.toFixed(2) ?? "");
+    setEditingCash(true);
+  }
+
+  async function handleSetCash() {
+    const val = parseFloat(cashInput);
+    if (isNaN(val) || val <= 0) {
+      setMessage("Invalid cash amount");
+      return;
+    }
+    setLoading(true);
+    setMessage(null);
+    const res = await setBotCash(val);
+    if (res.ok) {
+      setMessage(`Cash updated to $${val.toFixed(2)}`);
+    } else {
+      setMessage(res.error || "Failed to update cash");
+    }
+    setEditingCash(false);
     setLoading(false);
     onRefresh();
   }
@@ -104,11 +130,33 @@ export function BotPanel({ botStatus, onRefresh }: Props) {
                   )}
                 </div>
               </div>
-              <div className="meta-card">
-                <div className="meta-label">Cash</div>
-                <div className="meta-value">
-                  {botStatus?.cash != null ? `$${botStatus.cash.toFixed(2)}` : "—"}
-                </div>
+              <div className="meta-card meta-card-editable" onClick={() => !editingCash && isTrading && startEditCash()}>
+                <div className="meta-label">Cash {isTrading && !editingCash && <span className="edit-hint">click to edit</span>}</div>
+                {editingCash ? (
+                  <div className="cash-edit">
+                    <input
+                      type="number"
+                      value={cashInput}
+                      onChange={(e) => setCashInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleSetCash();
+                        if (e.key === "Escape") setEditingCash(false);
+                      }}
+                      autoFocus
+                      min="0"
+                      step="0.01"
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <div className="cash-edit-btns">
+                      <button className="cash-btn save" onClick={(e) => { e.stopPropagation(); handleSetCash(); }} disabled={loading}>Save</button>
+                      <button className="cash-btn cancel" onClick={(e) => { e.stopPropagation(); setEditingCash(false); }}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="meta-value">
+                    {botStatus?.cash != null ? `$${botStatus.cash.toFixed(2)}` : "—"}
+                  </div>
+                )}
               </div>
               <div className="meta-card">
                 <div className="meta-label">Sessions</div>

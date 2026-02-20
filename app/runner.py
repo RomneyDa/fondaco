@@ -141,7 +141,7 @@ class Runner:
         resolution_timeout=RESOLUTION_TIMEOUT_SECONDS,  # type: int
         strategy_name=None,                             # type: Optional[str]
         strategy_params=None,                           # type: Optional[Dict[str, Any]]
-        starting_cash=100.0,                            # type: float
+        starting_cash=None,                             # type: Optional[float]
         dry_run=False,                                  # type: bool
         max_sessions=0,                                 # type: int
     ):
@@ -174,6 +174,7 @@ class Runner:
         self._executor = None       # type: Optional[Any]
         self._position = None       # type: Optional[Position]
         self._starting_cash = starting_cash
+        self._cash_explicit = False  # True when --cash was given explicitly
         self._dry_run = dry_run
         self._private_key = None    # type: Optional[str]
         self._safe_address = None   # type: Optional[str]
@@ -233,13 +234,7 @@ class Runner:
 
             if cash is not None:
                 self._starting_cash = float(cash)
-
-            # Init position: dry runs always start fresh, live loads from disk
-            if self._position is None:
-                if dry_run:
-                    self._position = Position(cash=self._starting_cash)
-                else:
-                    self._position = _load_position(self._starting_cash)
+                self._cash_explicit = True
 
             # Init executor (lazy — deferred until we know dry_run)
             if dry_run:
@@ -248,6 +243,29 @@ class Runner:
                 logger.info("DRY RUN mode — no real orders will be placed.")
             else:
                 self._init_clob_executor()
+                # Fetch real balance — use it directly, or cap explicit --cash
+                try:
+                    real_balance = self._fetch_clob_balance()
+                except Exception as e:
+                    if cash is None:
+                        logger.error("Failed to fetch CLOB balance: %s", e)
+                        raise RuntimeError(
+                            "Cannot start live trading without balance. "
+                            "Provide --cash or fix CLOB connection."
+                        )
+                    real_balance = None
+
+                if cash is None:
+                    self._starting_cash = real_balance
+                elif real_balance is not None and real_balance < self._starting_cash:
+                    logger.info(
+                        "Capping cash to on-chain balance: requested=$%.2f, available=$%.4f",
+                        self._starting_cash, real_balance,
+                    )
+                    self._starting_cash = real_balance
+
+            # Init position: fresh with explicit cash or loaded from disk
+            self._position = Position(cash=self._starting_cash)
 
             self._trading_enabled = True
 
@@ -272,6 +290,30 @@ class Runner:
         self._private_key = private_key
         self._safe_address = auth["safe_address"]
         self._executor = ClobExecutor(client, trade_log_file=BOT_TRADES_FILE)
+
+    def _fetch_clob_balance(self):
+        # type: () -> float
+        """Fetch actual USDC balance from Polymarket CLOB API."""
+        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+        resp = self._executor.client.get_balance_allowance(
+            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
+        # Balance is returned in micro-USDC (6 decimals)
+        balance = float(resp.get("balance", 0)) / 1_000_000
+        logger.info("Fetched CLOB balance: $%.4f", balance)
+        return balance
+
+    def set_cash(self, cash):
+        # type: (float) -> None
+        """Update position cash (takes effect immediately)."""
+        with self._lock:
+            if self._position is None:
+                raise RuntimeError("Trading not enabled — no position to update")
+            old = self._position.cash
+            self._position.cash = cash
+            self._starting_cash = cash
+            self._cash_explicit = True
+        logger.info("Cash updated: $%.4f -> $%.4f", old, cash)
 
     def disable_trading(self):
         # type: () -> None
@@ -391,6 +433,21 @@ class Runner:
         # 1. Snapshot trading state (determines this session's mode)
         trading_enabled, strategy, executor, position = self._snapshot_trading_state()
         mode = "trading" if trading_enabled and strategy and executor else "collect-only"
+
+        # Re-sync balance from CLOB at session start (live mode, auto-balance only)
+        if mode == "trading" and not self._dry_run and not self._cash_explicit and position is not None:
+            if position.up_tokens == 0 and position.down_tokens == 0:
+                try:
+                    real_balance = self._fetch_clob_balance()
+                    if abs(real_balance - position.cash) > 0.01:
+                        logger.info(
+                            "Balance re-sync: tracked=$%.4f on-chain=$%.4f",
+                            position.cash, real_balance,
+                        )
+                        position.cash = real_balance
+                        self._starting_cash = real_balance
+                except Exception as e:
+                    logger.warning("Balance re-sync failed (using tracked): %s", e)
 
         # 2. Wait for next window
         last_status_write = [0.0]
@@ -546,7 +603,7 @@ class Runner:
             pending = still_pending
 
             # Write live session periodically
-            if now - last_live_write >= 0.5 and session.samples:
+            if now - last_live_write >= 2.0 and session.samples:
                 self.recorder.write_live_session(session)
                 last_live_write = now
 
@@ -615,9 +672,9 @@ class Runner:
                     trade = trader.process_tick(sample_dict)
 
                     if trade is not None:
+                        trade_dicts.append(_trade_to_dashboard_dict(trade))
                         if trade.success is not False:
                             trade_count += 1
-                            trade_dicts.append(_trade_to_dashboard_dict(trade))
                             if trade.success is True and not self._dry_run:
                                 _save_position(position)
                             logger.info(
@@ -656,7 +713,7 @@ class Runner:
 
             # Write live session periodically (with trading info)
             now = time.time()
-            if now - last_live_write >= 0.5 and session.samples:
+            if now - last_live_write >= 2.0 and session.samples:
                 trading_info = {
                     "enabled": True,
                     "strategy": self._strategy_name,

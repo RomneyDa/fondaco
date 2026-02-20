@@ -1,21 +1,30 @@
-import type { BotStatus, LivePayload, PrefixInfo, SessionData, TradingInfo } from "./types";
+import type { BotStatus, LivePayload, PrefixInfo, SessionData, SessionSummary, TradingInfo } from "./types";
 
 export async function fetchPrefixes(): Promise<PrefixInfo[]> {
   const res = await fetch("/api/prefixes");
   const { prefixes } = (await res.json()) as { prefixes: string[] };
 
-  const sessionLists = await Promise.all(
-    prefixes.map((p) =>
-      fetch(`/api/sessions/${p}`)
-        .then((r) => r.json())
-        .then((d: { sessions: string[] }) => d.sessions)
-    )
-  );
+  const [sessionCounts, summaries] = await Promise.all([
+    Promise.all(
+      prefixes.map((p) =>
+        fetch(`/api/sessions/${p}`)
+          .then((r) => r.json())
+          .then((d: { sessions: string[] }) => d.sessions.length)
+      )
+    ),
+    Promise.all(
+      prefixes.map((p) =>
+        fetch(`/api/sessions/${p}/summaries?limit=20`)
+          .then((r) => r.json())
+          .then((d: { sessions: SessionSummary[] }) => d.sessions)
+      )
+    ),
+  ]);
 
   return prefixes.map((name, i) => ({
     name,
-    count: sessionLists[i].length,
-    recentSessions: sessionLists[i].slice(0, 20),
+    count: sessionCounts[i],
+    recentSessions: summaries[i],
   }));
 }
 
@@ -89,6 +98,19 @@ export async function tradeBotOff(): Promise<{ ok: boolean; error?: string }> {
 export async function stopBot(): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await fetch("/api/bot/stop", { method: "POST" });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+export async function setBotCash(cash: number): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/bot/set-cash", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cash }),
+    });
     return res.json();
   } catch (e) {
     return { ok: false, error: String(e) };

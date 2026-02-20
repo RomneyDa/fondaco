@@ -172,8 +172,9 @@ def cmd_start(args):
     strategy_params = _parse_params(getattr(args, "params", "") or "")
 
     # Resolve starting cash
-    starting_cash = 100.0
-    cash_str = getattr(args, "cash", "100")
+    cash_str = getattr(args, "cash", None)
+    dry_run = getattr(args, "dry_run", False)
+
     if cash_str == "cached":
         from app.runner import _load_balance_cache
         cached = _load_balance_cache()
@@ -186,10 +187,14 @@ def cmd_start(args):
         else:
             print("No cached balance found. Use a numeric value or run first.")
             sys.exit(1)
-    else:
+    elif cash_str is not None:
         starting_cash = float(cash_str)
-
-    dry_run = getattr(args, "dry_run", False)
+    elif dry_run:
+        # Dry-run with no --cash: default to 100
+        starting_cash = 100.0
+    else:
+        # Live trading: None signals Runner to fetch real CLOB balance
+        starting_cash = None
     max_sessions = getattr(args, "sessions", 0)
 
     # Create runner
@@ -244,6 +249,17 @@ def cmd_trade_on(args):
     resp = _http_request("POST", "/api/control/trade-on", body)
     if resp.get("ok"):
         print("Trading enabled: strategy={}".format(resp.get("strategy")))
+    else:
+        print("Error: {}".format(resp.get("error", "unknown")))
+        sys.exit(1)
+
+
+def cmd_set_cash(args):
+    """Update cash on the running process."""
+    body = {"cash": float(args.amount)}
+    resp = _http_request("POST", "/api/control/set-cash", body)
+    if resp.get("ok"):
+        print("Cash updated: ${}".format(resp.get("cash")))
     else:
         print("Error: {}".format(resp.get("error", "unknown")))
         sys.exit(1)
@@ -437,8 +453,9 @@ def main():
     start_parser.add_argument(
         "--cash",
         type=str,
-        default="100",
-        help='Starting cash (default: 100). Use "cached" for .cache/balance.json',
+        default=None,
+        help='Starting cash. Omit for live trading (fetches real balance). '
+             'Use "cached" for .cache/balance.json. Required for --dry-run.',
     )
     start_parser.add_argument(
         "--port",
@@ -485,6 +502,10 @@ def main():
     # trade-off
     subparsers.add_parser("trade-off", help="Disable trading on running app")
 
+    # set-cash
+    set_cash_parser = subparsers.add_parser("set-cash", help="Update cash on running app")
+    set_cash_parser.add_argument("amount", type=float, help="New cash amount in dollars")
+
     # status
     subparsers.add_parser("status", help="Check app status")
 
@@ -505,6 +526,7 @@ def main():
         "start": cmd_start,
         "trade-on": cmd_trade_on,
         "trade-off": cmd_trade_off,
+        "set-cash": cmd_set_cash,
         "status": cmd_status,
         "stop": cmd_stop,
         "claim": cmd_claim,
