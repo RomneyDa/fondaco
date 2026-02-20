@@ -1,0 +1,35 @@
+# Raw API request/response logs (can be very large)
+data/api_raw/
+
+# Collected session data
+data/sessions/
+
+# Collection log
+data/collection_log.jsonl
+
+# Fetched slug prefixes (may go stale)
+slugs.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
