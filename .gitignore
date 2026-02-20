@@ -14,6 +14,12 @@ data/live/
 # Fetched slug prefixes (may go stale)
 slugs.json
 
+# Bot data
+data/bot.pid
+data/bot.log
+data/bot_trades.jsonl
+data/bot_log.jsonl
+
 # Python
 __pycache__/
 *.pyc

@@ -39,3 +39,22 @@ export interface PrefixInfo {
   name: string;
   count: number;
 }
+
+/** Status-only payload written when collector is waiting or resolving */
+export interface LiveStatus {
+  status: "waiting" | "resolving";
+  slug_key: string;
+  timestamp: string;
+  next_window_utc: string | null;
+}
+
+/** Data from the live file — either a status object or a full session */
+export type LivePayload = LiveStatus | SessionData;
+
+export function isSessionData(p: LivePayload): p is SessionData {
+  return "samples" in p;
+}
+
+export function isLiveStatus(p: LivePayload): p is LiveStatus {
+  return "status" in p && !("samples" in p);
+}

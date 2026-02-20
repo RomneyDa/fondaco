@@ -50,6 +50,17 @@ class SessionRecorder:
         with open(LOG_FILE, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
+    def write_live_status(self, status, next_window_utc=None):
+        """Write a status-only live file so the dashboard knows a collector is active."""
+        entry = {
+            "status": status,
+            "slug_key": self.slug_key,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "next_window_utc": next_window_utc,
+        }
+        with open(self.live_filepath, "w") as f:
+            json.dump(entry, f, indent=2)
+
     def write_live_session(self, session: SessionData):
         """Write in-progress session data to the live directory for dashboard consumption."""
         with open(self.live_filepath, "w") as f:

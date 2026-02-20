@@ -93,6 +93,50 @@ The order book bid/ask is typically 0.01/0.99 (98-cent spread), so `book` mode i
 - **LateSniper** — wait until late in window when outcome is more certain
 - **FadeTheMarket** — mean reversion: bet against early midpoint extremes
 
+## Trading Bot
+
+Live trading bot that uses the same Strategy interface from backtesting to place real orders on Polymarket via py-clob-client.
+
+```bash
+# Set Polymarket private key
+export POLYMARKET_PRIVATE_KEY="0x..."
+
+# Start bot (foreground, PID written to data/bot.pid)
+python bot.py up btc-updown-5m- --strategy LateSniper --params min_elapsed=0.7,bet_fraction=0.5
+
+# Stop from another terminal
+python bot.py down
+
+# Check if running
+python bot.py status
+```
+
+### Bot CLI flags (up command)
+
+| Flag | Default | Description |
+|---|---|---|
+| `slug_prefix` (positional, **required**) | — | Market slug prefix, e.g. `btc-updown-5m-` |
+| `--strategy` (**required**) | — | Strategy name from ALL_STRATEGIES |
+| `--params` | — | Strategy params as k=v,k=v string |
+| `--window` | 300 | Window duration in seconds |
+| `--poll` | 2.5 | Poll interval in seconds |
+| `--resolution-poll` | 5.0 | Resolution poll interval in seconds |
+| `--resolution-timeout` | 300 | Resolution timeout in seconds |
+| `--cash` | 100 | Starting virtual cash |
+
+### Environment variables
+
+| Variable | Description |
+|---|---|
+| `POLYMARKET_PRIVATE_KEY` | Polygon wallet private key for CLOB authentication |
+
+### Bot data files
+
+- `data/bot.pid` — PID file for process management (git-ignored)
+- `data/bot.log` — Bot log file with DEBUG-level detail (git-ignored)
+- `data/bot_trades.jsonl` — Every order attempt logged as JSONL (git-ignored)
+- `data/bot_log.jsonl` — Per-session summary log (git-ignored)
+
 ## File Structure
 
 - `collector.py` - CLI entry point and main orchestration loop
@@ -105,6 +149,7 @@ The order book bid/ask is typically 0.01/0.99 (98-cent spread), so `book` mode i
 - `simulator.py` - Core backtesting engine (data classes, trade execution, session replay)
 - `strategies.py` - Trading strategy definitions (base class + 6 built-in strategies)
 - `backtest.py` - CLI runner for grid search and strategy comparison
+- `bot.py` - Live trading bot with CLI (up/down/status) and CLOB order execution
 - `slugs.json` - Known slug prefixes (git-ignored)
 - `data/sessions/{slug_prefix}/*.json` - Collected session data
 - `data/api_raw/{host}/{date}.jsonl` - Raw API request/response logs (git-ignored)

@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
-import type { SessionData } from "../types";
+import type { LivePayload } from "../types";
 
 export interface SSEHandlers {
-  onLiveUpdate?: (prefix: string, session: SessionData) => void;
+  onLiveUpdate?: (prefix: string, data: LivePayload) => void;
   onLiveStart?: (prefix: string) => void;
   onLiveEnd?: (prefix: string) => void;
   onSessionSaved?: (prefix: string, file: string) => void;
@@ -23,7 +23,7 @@ export function useSSE(handlers: SSEHandlers) {
       es.addEventListener("live-update", (e) => {
         const { prefix, session } = JSON.parse(
           (e as MessageEvent).data
-        ) as { prefix: string; session: SessionData };
+        ) as { prefix: string; session: LivePayload };
         ref.current.onLiveUpdate?.(prefix, session);
       });
 

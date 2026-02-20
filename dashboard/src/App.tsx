@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Routes, Route } from "react-router-dom";
 import { fetchLivePrefixes, fetchPrefixes } from "./api";
 import { useSSE } from "./hooks/useSSE";
-import type { PrefixInfo, SessionData } from "./types";
+import type { LivePayload, PrefixInfo } from "./types";
 import { Sidebar } from "./components/Sidebar";
 import { Home } from "./components/Home";
 import { SessionList } from "./components/SessionList";
@@ -12,7 +12,7 @@ import { LiveView } from "./components/LiveView";
 export function App() {
   const [prefixes, setPrefixes] = useState<PrefixInfo[]>([]);
   const [livePrefixes, setLivePrefixes] = useState<string[]>([]);
-  const [liveData, setLiveData] = useState<Record<string, SessionData>>({});
+  const [liveData, setLiveData] = useState<Record<string, LivePayload>>({});
   const [navVersion, setNavVersion] = useState(0);
 
   const refreshNav = useCallback(() => setNavVersion((v) => v + 1), []);

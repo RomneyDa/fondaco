@@ -180,6 +180,7 @@ class Collector:
         )
 
         # PHASE 6: Wait for resolution
+        self.recorder.write_live_status("resolving")
         session.outcome = self._wait_for_resolution(window_ts)
         if session.outcome:
             session.outcome_prices = (
@@ -219,7 +220,12 @@ class Collector:
         next_dt = datetime.fromtimestamp(next_window_start, tz=timezone.utc)
         logger.info(f"Waiting {wait_seconds:.0f}s for next window at {next_dt.isoformat()}")
 
+        last_status_write = 0.0
         while time.time() < next_window_start and self.running:
+            now = time.time()
+            if now - last_status_write >= 5.0:
+                self.recorder.write_live_status("waiting", next_window_utc=next_dt.isoformat())
+                last_status_write = now
             time.sleep(min(1.0, next_window_start - time.time()))
 
         return next_window_start

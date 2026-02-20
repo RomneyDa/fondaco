@@ -1,4 +1,4 @@
-import type { PrefixInfo, SessionData } from "./types";
+import type { LivePayload, PrefixInfo, SessionData } from "./types";
 
 export async function fetchPrefixes(): Promise<PrefixInfo[]> {
   const res = await fetch("/api/prefixes");
@@ -39,7 +39,7 @@ export async function fetchLivePrefixes(): Promise<string[]> {
 
 export async function fetchLiveSession(
   prefix: string
-): Promise<SessionData | null> {
+): Promise<LivePayload | null> {
   const res = await fetch(`/api/live/${prefix}`);
   if (!res.ok) return null;
   return res.json();
