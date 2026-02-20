@@ -25,5 +25,7 @@ TARGET_SESSIONS = 100
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data", "sessions")
+LIVE_DIR = os.path.join(BASE_DIR, "data", "live")
 LOG_FILE = os.path.join(BASE_DIR, "data", "collection_log.jsonl")
+COLLECTOR_LOG_FILE = os.path.join(BASE_DIR, "data", "collector.log")
 API_RAW_DIR = os.path.join(BASE_DIR, "data", "api_raw")

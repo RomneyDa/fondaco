@@ -6,6 +6,10 @@ data/sessions/
 
 # Collection log
 data/collection_log.jsonl
+data/collector.log
+
+# Live session data (transient)
+data/live/
 
 # Fetched slug prefixes (may go stale)
 slugs.json
@@ -29,6 +33,10 @@ env/
 .vscode/
 *.swp
 *.swo
+
+# Dashboard
+dashboard/node_modules/
+dashboard/dist/
 
 # OS
 .DS_Store

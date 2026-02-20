@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime, timezone
 
-from defaults import DATA_DIR, LOG_FILE
+from defaults import DATA_DIR, LIVE_DIR, LOG_FILE
 from models import SessionData
 
 
@@ -17,8 +17,11 @@ class SessionRecorder:
 
     def __init__(self, slug_prefix: str):
         # Strip trailing dash for the folder name (e.g. "btc-updown-5m-" -> "btc-updown-5m")
-        self.market_dir = os.path.join(DATA_DIR, slug_prefix.rstrip("-"))
+        self.slug_key = slug_prefix.rstrip("-")
+        self.market_dir = os.path.join(DATA_DIR, self.slug_key)
+        self.live_filepath = os.path.join(LIVE_DIR, f"{self.slug_key}.json")
         os.makedirs(self.market_dir, exist_ok=True)
+        os.makedirs(LIVE_DIR, exist_ok=True)
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
     def session_filepath(self, window_start_utc: str) -> str:
@@ -46,6 +49,16 @@ class SessionRecorder:
         }
         with open(LOG_FILE, "a") as f:
             f.write(json.dumps(entry) + "\n")
+
+    def write_live_session(self, session: SessionData):
+        """Write in-progress session data to the live directory for dashboard consumption."""
+        with open(self.live_filepath, "w") as f:
+            f.write(session.to_json())
+
+    def clear_live_session(self):
+        """Remove the live session file after the session completes."""
+        if os.path.exists(self.live_filepath):
+            os.remove(self.live_filepath)
 
     def count_completed_sessions(self) -> int:
         """Count how many session files exist for this market type."""

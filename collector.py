@@ -19,6 +19,7 @@ from typing import Optional
 
 from api_logger import LoggingSession
 from defaults import (
+    COLLECTOR_LOG_FILE,
     POLL_INTERVAL_SECONDS,
     RESOLUTION_POLL_INTERVAL,
     RESOLUTION_TIMEOUT_SECONDS,
@@ -31,11 +32,20 @@ from models import SessionData
 from price_fetcher import PriceFetcher
 from session_recorder import SessionRecorder
 
+import os
+
+os.makedirs(os.path.dirname(COLLECTOR_LOG_FILE), exist_ok=True)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()],
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(COLLECTOR_LOG_FILE),
+    ],
 )
+# Console stays at INFO; file gets everything (DEBUG)
+logging.getLogger().handlers[0].setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -146,6 +156,7 @@ class Collector:
                     f"Up={sample.up_token_midpoint} "
                     f"Down={sample.down_token_midpoint}"
                 )
+                self.recorder.write_live_session(session)
             except Exception as e:
                 session.error_count += 1
                 session.errors.append(f"{datetime.now(timezone.utc).isoformat()}: {e}")
@@ -175,7 +186,8 @@ class Collector:
                 ["1", "0"] if session.outcome == "Up" else ["0", "1"]
             )
 
-        # PHASE 7: Save to disk
+        # PHASE 7: Save to disk and clear live file
+        self.recorder.clear_live_session()
         filepath = self.recorder.save_session(session)
         logger.info(
             f"Saved: {filepath} | Outcome: {session.outcome} | "

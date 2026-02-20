@@ -1,0 +1,41 @@
+export interface PriceSample {
+  timestamp_utc: string;
+  elapsed_seconds: number;
+  btc_price_usd: number | null;
+  up_token_midpoint: number | null;
+  down_token_midpoint: number | null;
+  up_token_best_bid: number | null;
+  up_token_best_ask: number | null;
+  down_token_best_bid: number | null;
+  down_token_best_ask: number | null;
+}
+
+export interface MarketMetadata {
+  event_id: string;
+  event_slug: string;
+  event_title: string;
+  condition_id: string;
+  up_token_id: string;
+  down_token_id: string;
+  window_start_utc: string;
+  window_end_utc: string;
+  resolution_source: string;
+}
+
+export interface SessionData {
+  metadata: MarketMetadata;
+  initial_btc_price_usd: number | null;
+  final_btc_price_usd: number | null;
+  outcome: string | null;
+  outcome_prices: string[] | null;
+  samples: PriceSample[];
+  collection_started_utc: string;
+  collection_ended_utc: string;
+  error_count: number;
+  errors: string[];
+}
+
+export interface PrefixInfo {
+  name: string;
+  count: number;
+}

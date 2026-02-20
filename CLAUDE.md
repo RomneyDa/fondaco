@@ -50,6 +50,49 @@ Press Ctrl+C for graceful shutdown (current session is saved).
 
 See `slugs.json` for a list of known active slug prefixes (git-ignored, fetched from Polymarket). Currently active: `btc-updown-5m-`, `btc-updown-15m-`, `eth-updown-5m-`, `eth-updown-15m-`, `sol-updown-5m-`, `sol-updown-15m-`, `xrp-updown-5m-`, `xrp-updown-15m-`.
 
+## Backtesting
+
+Replay collected session data through trading strategies, optimize parameters via grid search, and compare results.
+
+```bash
+# Run all strategies against collected data
+python backtest.py data/sessions/btc-updown-5m
+
+# Single strategy
+python backtest.py data/sessions/btc-updown-5m --strategy MomentumEntry
+
+# Customize execution model
+python backtest.py data/sessions/btc-updown-5m --execution midpoint --slippage 0.03 --cash 200
+
+# Show per-session breakdown for best result
+python backtest.py data/sessions/btc-updown-5m --strategy all --top 10 --verbose
+```
+
+### Backtest CLI flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `data_dir` (positional, **required**) | — | Path to session files directory |
+| `--strategy` | `all` | Strategy name or `all` |
+| `--optimize` | `sharpe` | Metric: `sharpe`, `total_pnl`, `win_rate` |
+| `--execution` | `midpoint_slippage` | `midpoint_slippage`, `midpoint`, `book` |
+| `--slippage` | 0.02 | Half-spread for midpoint_slippage mode |
+| `--cash` | 100 | Starting cash per session |
+| `--top` | 10 | Show top N param combos |
+| `--verbose` | off | Per-session breakdown for best params |
+
+### Execution modes
+
+The order book bid/ask is typically 0.01/0.99 (98-cent spread), so `book` mode is unrealistic. Default `midpoint_slippage` uses midpoint +/- a configurable half-spread (default 0.02) for more realistic execution.
+
+### Built-in strategies
+
+- **AlwaysBuyUp / AlwaysBuyDown** — baselines, buy at first tick
+- **MomentumEntry** — buy direction of BTC move if it exceeds a threshold early in window
+- **MidpointMomentum** — follow token midpoint trend over last N ticks
+- **LateSniper** — wait until late in window when outcome is more certain
+- **FadeTheMarket** — mean reversion: bet against early midpoint extremes
+
 ## File Structure
 
 - `collector.py` - CLI entry point and main orchestration loop
@@ -59,6 +102,9 @@ See `slugs.json` for a list of known active slug prefixes (git-ignored, fetched 
 - `price_fetcher.py` - BTC price and CLOB token price polling
 - `api_logger.py` - LoggingSession that records every API request/response
 - `session_recorder.py` - JSON file I/O and collection logging
+- `simulator.py` - Core backtesting engine (data classes, trade execution, session replay)
+- `strategies.py` - Trading strategy definitions (base class + 6 built-in strategies)
+- `backtest.py` - CLI runner for grid search and strategy comparison
 - `slugs.json` - Known slug prefixes (git-ignored)
 - `data/sessions/{slug_prefix}/*.json` - Collected session data
 - `data/api_raw/{host}/{date}.jsonl` - Raw API request/response logs (git-ignored)
