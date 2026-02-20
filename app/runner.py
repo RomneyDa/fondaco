@@ -592,8 +592,8 @@ class Runner:
         while self.running:
             now = time.time()
 
-            # Submit next sample if it's time and nothing in-flight
-            if pending_future is None and now >= next_sample_time and next_sample_time < window_end_ts:
+            # Submit next sample if it's time and window hasn't ended
+            if pending_future is None and now >= next_sample_time and now < window_end_ts:
                 pending_future = self._sample_pool.submit(
                     self.fetcher.take_sample,
                     metadata.up_token_id,
@@ -643,9 +643,9 @@ class Runner:
                     logger.warning("Sample error: %s", e)
                 pending_future = None
 
-                # Immediately submit next if behind schedule
+                # Immediately submit next if behind schedule and window still open
                 now = time.time()
-                if now >= next_sample_time and next_sample_time < window_end_ts:
+                if now >= next_sample_time and now < window_end_ts:
                     pending_future = self._sample_pool.submit(
                         self.fetcher.take_sample,
                         metadata.up_token_id,
