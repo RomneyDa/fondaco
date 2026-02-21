@@ -73,6 +73,8 @@ class TestLateSniper:
         sample = {
             "up_token_midpoint": 0.75,
             "down_token_midpoint": 0.25,
+            "up_token_best_ask": 0.76,
+            "down_token_best_ask": 0.26,
             "elapsed_seconds": 240.0,
         }
         ctx = make_tick_ctx(
@@ -89,6 +91,8 @@ class TestLateSniper:
         sample = {
             "up_token_midpoint": 0.25,
             "down_token_midpoint": 0.75,
+            "up_token_best_ask": 0.26,
+            "down_token_best_ask": 0.76,
             "elapsed_seconds": 240.0,
         }
         ctx = make_tick_ctx(sample=sample, elapsed_fraction=0.8, position=Position(cash=100.0))
@@ -112,11 +116,15 @@ class TestLateSniper:
         sample = {
             "up_token_midpoint": 0.75,
             "down_token_midpoint": 0.25,
+            "up_token_best_ask": 0.76,
+            "down_token_best_ask": 0.26,
             "elapsed_seconds": 240.0,
         }
         ctx = make_tick_ctx(sample=sample, elapsed_fraction=0.8, position=Position(cash=100.0))
-        s.on_tick(ctx)  # enters
-        assert s.on_tick(ctx).side == "hold"  # already entered
+        s.on_tick(ctx)  # decides to buy
+        # Simulate fill: position now holds tokens
+        ctx2 = make_tick_ctx(sample=sample, elapsed_fraction=0.8, position=Position(cash=50.0, up_tokens=66.0))
+        assert s.on_tick(ctx2).side == "hold"  # already holding
 
     def test_holds_when_midpoints_none(self):
         s = LateSniper(min_elapsed=0.7)
@@ -142,7 +150,7 @@ class TestLateSniper:
 class TestFadeTheMarket:
     def test_fades_high_up(self):
         from core.strategies.fade_the_market import FadeTheMarket
-        s = FadeTheMarket(overreaction_threshold=0.70)
+        s = FadeTheMarket(overreaction_threshold=0.70, persist_ticks=3)
         s.on_session_start({})
         sample = {
             "up_token_midpoint": 0.80,
@@ -150,12 +158,15 @@ class TestFadeTheMarket:
             "elapsed_seconds": 60.0,
         }
         ctx = make_tick_ctx(sample=sample, elapsed_fraction=0.2, position=Position(cash=100.0))
+        # Need persist_ticks consecutive ticks above threshold
+        for _ in range(2):
+            assert s.on_tick(ctx).side == "hold"
         action = s.on_tick(ctx)
         assert action.side == "buy_down"
 
     def test_fades_high_down(self):
         from core.strategies.fade_the_market import FadeTheMarket
-        s = FadeTheMarket(overreaction_threshold=0.70)
+        s = FadeTheMarket(overreaction_threshold=0.70, persist_ticks=3)
         s.on_session_start({})
         sample = {
             "up_token_midpoint": 0.20,
@@ -163,5 +174,7 @@ class TestFadeTheMarket:
             "elapsed_seconds": 60.0,
         }
         ctx = make_tick_ctx(sample=sample, elapsed_fraction=0.2, position=Position(cash=100.0))
+        for _ in range(2):
+            assert s.on_tick(ctx).side == "hold"
         action = s.on_tick(ctx)
         assert action.side == "buy_up"
