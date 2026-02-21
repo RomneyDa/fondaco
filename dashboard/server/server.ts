@@ -1,5 +1,6 @@
 import express, { Request, Response } from "express";
 import { watch } from "chokidar";
+import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -80,28 +81,6 @@ app.get("/api/prefixes", (_req: Request, res: Response) => {
   }
 });
 
-app.get("/api/sessions/:prefix", (req: Request, res: Response) => {
-  try {
-    const dir = safePath(SESSIONS_DIR, req.params.prefix);
-    if (!dir) {
-      res.status(403).json({ error: "Forbidden" });
-      return;
-    }
-    if (!fs.existsSync(dir)) {
-      res.json({ sessions: [] });
-      return;
-    }
-    const files = fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith(".json") && !f.includes(".trading."))
-      .sort()
-      .reverse();
-    res.json({ sessions: files });
-  } catch (err) {
-    res.status(500).json({ error: String(err) });
-  }
-});
-
 app.get("/api/sessions/:prefix/summaries", (req: Request, res: Response) => {
   try {
     const dir = safePath(SESSIONS_DIR, req.params.prefix);
@@ -138,6 +117,28 @@ app.get("/api/sessions/:prefix/summaries", (req: Request, res: Response) => {
       return { file, outcome };
     });
     res.json({ sessions: summaries });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/sessions/:prefix", (req: Request, res: Response) => {
+  try {
+    const dir = safePath(SESSIONS_DIR, req.params.prefix);
+    if (!dir) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+    if (!fs.existsSync(dir)) {
+      res.json({ sessions: [] });
+      return;
+    }
+    const files = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith(".json") && !f.includes(".trading."))
+      .sort()
+      .reverse();
+    res.json({ sessions: files });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -235,10 +236,11 @@ app.post("/api/bot/trade-on", async (req: Request, res: Response) => {
   res.status(status).json(data);
 });
 
-app.post("/api/bot/trade-off", async (_req: Request, res: Response) => {
+app.post("/api/bot/trade-off", async (req: Request, res: Response) => {
   const { status, data } = await proxyToControl(
     "/api/control/trade-off",
-    "POST"
+    "POST",
+    req.body
   );
   res.status(status).json(data);
 });
@@ -255,6 +257,155 @@ app.post("/api/bot/set-cash", async (req: Request, res: Response) => {
 app.post("/api/bot/stop", async (_req: Request, res: Response) => {
   const { status, data } = await proxyToControl("/api/control/stop", "POST");
   res.status(status).json(data);
+});
+
+// --- Slugs & App start ---
+
+const PROJECT_ROOT = path.resolve(__dirname, "../..");
+const SLUGS_JSON = path.join(PROJECT_ROOT, "slugs.json");
+
+app.get("/api/slugs", (_req: Request, res: Response) => {
+  try {
+    if (!fs.existsSync(SLUGS_JSON)) {
+      res.json({ slugs: [] });
+      return;
+    }
+    const data = JSON.parse(fs.readFileSync(SLUGS_JSON, "utf-8"));
+    res.json({ slugs: data.slug_prefixes || [] });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bot/start", async (req: Request, res: Response) => {
+  // Check if already running
+  if (fs.existsSync(APP_JSON)) {
+    try {
+      const state = JSON.parse(fs.readFileSync(APP_JSON, "utf-8"));
+      if (state.pid) {
+        try {
+          process.kill(state.pid, 0);
+          res.status(409).json({
+            error: `App already running (PID ${state.pid})`,
+          });
+          return;
+        } catch {
+          // Process dead, stale file — continue
+        }
+      }
+    } catch {}
+  }
+
+  const { slug_prefix, window: windowDuration } = req.body;
+  if (!slug_prefix) {
+    res.status(400).json({ error: "Missing slug_prefix" });
+    return;
+  }
+
+  const args = ["run", "python", "-m", "app", "start", slug_prefix];
+  if (windowDuration) {
+    args.push("--window", String(windowDuration));
+  }
+
+  try {
+    const child = spawn("uv", args, {
+      cwd: PROJECT_ROOT,
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+
+    // Wait briefly for app.json to appear
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    res.json({ ok: true, pid: child.pid });
+  } catch (err) {
+    res.status(500).json({ error: `Failed to start: ${err}` });
+  }
+});
+
+// --- Bot trade log ---
+
+app.get("/api/bot/trades", (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit as string) || 100, 1),
+      500
+    );
+    // Collect trades from live session files and recent trading sidecars.
+    // Each trade gets a session_start timestamp for global sorting.
+    const allTrades: any[] = [];
+
+    // 1. Live session files (current/in-progress sessions)
+    if (fs.existsSync(LIVE_DIR)) {
+      for (const file of fs.readdirSync(LIVE_DIR).filter((f) => f.endsWith(".json"))) {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(LIVE_DIR, file), "utf-8"));
+          const sessionStart = data.metadata?.window_start_utc || data.collection_started_utc || "";
+          const trading = data.trading;
+          if (trading?.strategies) {
+            for (const strat of trading.strategies) {
+              if (strat.trades?.length) {
+                for (const t of strat.trades) {
+                  allTrades.push({ ...t, session_start: sessionStart, strategy: strat.name });
+                }
+              }
+            }
+          } else if (trading?.trades?.length) {
+            for (const t of trading.trades) {
+              allTrades.push({ ...t, session_start: sessionStart });
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // 2. Recent trading sidecar files (historical sessions)
+    if (fs.existsSync(SESSIONS_DIR)) {
+      const prefixes = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+      for (const prefix of prefixes) {
+        const dir = path.join(SESSIONS_DIR, prefix);
+        const sidecars = fs.readdirSync(dir)
+          .filter((f) => f.endsWith(".trading.json"))
+          .sort()
+          .reverse()
+          .slice(0, 20); // last 20 sessions
+        for (const sidecar of sidecars) {
+          try {
+            const data = JSON.parse(fs.readFileSync(path.join(dir, sidecar), "utf-8"));
+            // Session timestamp from filename (e.g. "1234567890.json.trading.json")
+            const sessionStart = sidecar.replace(".json.trading.json", "");
+            if (data.strategies) {
+              for (const strat of data.strategies) {
+                if (strat.trades?.length) {
+                  for (const t of strat.trades) {
+                    allTrades.push({ ...t, session_start: sessionStart, strategy: strat.strategy || strat.name });
+                  }
+                }
+              }
+            } else if (data.trades?.length) {
+              for (const t of data.trades) {
+                allTrades.push({ ...t, session_start: sessionStart });
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+
+    // Sort newest-first: by timestamp if available, else by session_start
+    allTrades.sort((a, b) => {
+      const ta = a.timestamp || a.session_start || "";
+      const tb = b.timestamp || b.session_start || "";
+      return tb.localeCompare(ta);
+    });
+
+    res.json({ trades: allTrades.slice(0, limit) });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // --- SSE ---
@@ -281,7 +432,8 @@ function broadcast(event: string, data: object) {
 
 if (fs.existsSync(CLIENT_DIR)) {
   app.use(express.static(CLIENT_DIR));
-  app.get("*", (_req: Request, res: Response) => {
+  app.get("*", (req: Request, res: Response) => {
+    if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Not found" });
     res.sendFile(path.join(CLIENT_DIR, "index.html"));
   });
 }

@@ -144,7 +144,24 @@ def log_backtest_run(args, sessions, all_results, optimize):
         "win_rate": lambda r: r.win_rate,
     }.get(optimize, lambda r: r.sharpe)
 
-    ranked = sorted(all_results, key=sort_key, reverse=True)
+    # Only log the best params per strategy (not every variant)
+    by_strategy = {}  # type: dict
+    for r in all_results:
+        by_strategy.setdefault(r.strategy_name, []).append(r)
+
+    best_per_strategy = []
+    for name in sorted(by_strategy.keys()):
+        best = max(by_strategy[name], key=sort_key)
+        best_per_strategy.append({
+            "strategy": best.strategy_name,
+            "params": best.params,
+            "variants_tested": len(by_strategy[name]),
+            "sharpe": round(best.sharpe, 4),
+            "total_pnl": round(best.total_pnl, 4),
+            "mean_pnl": round(best.mean_pnl, 4),
+            "win_rate": round(best.win_rate, 4),
+            "num_sessions": best.num_sessions,
+        })
 
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -156,39 +173,9 @@ def log_backtest_run(args, sessions, all_results, optimize):
             "starting_cash": args.cash,
             "optimize": optimize,
             "num_sessions": len(sessions),
+            "total_variants": len(all_results),
         },
-        "results": [
-            {
-                "rank": i + 1,
-                "strategy": r.strategy_name,
-                "params": r.params,
-                "sharpe": round(r.sharpe, 4),
-                "total_pnl": round(r.total_pnl, 4),
-                "mean_pnl": round(r.mean_pnl, 4),
-                "win_rate": round(r.win_rate, 4),
-                "num_sessions": r.num_sessions,
-                "sessions": [
-                    {
-                        "file": sr.session_file,
-                        "outcome": sr.outcome,
-                        "pnl": round(sr.pnl, 4),
-                        "num_trades": len(sr.trades),
-                        "trades": [
-                            {
-                                "tick": t.tick_index,
-                                "side": t.side,
-                                "price": t.price,
-                                "tokens": t.tokens,
-                                "amount": round(t.amount, 4),
-                            }
-                            for t in sr.trades
-                        ],
-                    }
-                    for sr in r.sessions
-                ],
-            }
-            for i, r in enumerate(ranked)
-        ],
+        "best_per_strategy": best_per_strategy,
     }
 
     os.makedirs(os.path.dirname(BACKTEST_LOG_FILE), exist_ok=True)

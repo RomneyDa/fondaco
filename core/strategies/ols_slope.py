@@ -1,5 +1,7 @@
 """Rolling OLS regression slope on BTC price. Enter on strong trend, exit on reversal."""
 
+from collections import deque
+
 from core.trader import HOLD, TradeAction
 from core.strategies.base import Strategy
 
@@ -19,6 +21,7 @@ class OlsSlope(Strategy):
     """
 
     name = "OlsSlope"
+    description = "Fits a rolling linear regression to recent BTC prices. Enters when the slope (trend strength in bps/tick) exceeds a threshold, exits when slope reverses. Can re-enter on new trends."
 
     def __init__(self, window_size=50, slope_threshold_bps=0.02, exit_slope_bps=0.0,
                  bet_fraction=0.4, max_trades=10):
@@ -34,8 +37,8 @@ class OlsSlope(Strategy):
             "bet_fraction": bet_fraction,
             "max_trades": max_trades,
         }
-        # Per-session state
-        self._prices = []  # type: list
+        # Per-session state (bounded deque — only last window_size prices kept)
+        self._prices = deque(maxlen=window_size)  # type: deque
         self._virtual_side = None  # type: str
         self._virtual_tokens = 0.0
         self._trade_count = 0
@@ -46,7 +49,7 @@ class OlsSlope(Strategy):
         self._denom = n * self._sum_x2 - self._sum_x * self._sum_x
 
     def on_session_start(self, metadata):
-        self._prices = []
+        self._prices = deque(maxlen=self.window_size)
         self._virtual_side = None
         self._virtual_tokens = 0.0
         self._trade_count = 0
@@ -58,13 +61,12 @@ class OlsSlope(Strategy):
         Then convert to bps relative to mean price.
         """
         n = self.window_size
-        prices = self._prices[-n:]
-        if len(prices) < n or self._denom == 0:
+        if len(self._prices) < n or self._denom == 0:
             return None
 
         sum_p = 0.0
         sum_xp = 0.0
-        for i, p in enumerate(prices):
+        for i, p in enumerate(self._prices):
             sum_p += p
             sum_xp += i * p
 

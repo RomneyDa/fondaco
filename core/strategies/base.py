@@ -10,6 +10,7 @@ class Strategy(ABC):
     """Base class for all trading strategies."""
 
     name = ""  # type: str
+    description = ""  # type: str
 
     @abstractmethod
     def on_session_start(self, metadata):
@@ -22,6 +23,17 @@ class Strategy(ABC):
         # type: (TickContext) -> TradeAction
         """Core logic. Called on every price sample."""
         pass
+
+    def log(self, msg):
+        # type: (str) -> None
+        """Append a decision log message for this tick.
+
+        Strategies call this during on_tick() to explain decisions.
+        The Trader drains the buffer after each tick.
+        """
+        if not hasattr(self, "_tick_logs"):
+            self._tick_logs = []  # type: List[str]
+        self._tick_logs.append(msg)
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]

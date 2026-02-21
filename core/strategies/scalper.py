@@ -1,5 +1,7 @@
 """Mean reversion scalper on token midpoints. Buy dips, sell on recovery or stop-loss."""
 
+from collections import deque
+
 from core.trader import HOLD, TradeAction
 from core.strategies.base import Strategy
 
@@ -20,6 +22,7 @@ class Scalper(Strategy):
     """
 
     name = "Scalper"
+    description = "Mean reversion on token midpoints. Buys when a token's midpoint dips below its rolling average, then exits on a profit target or stop-loss. Can make multiple quick round-trips per session."
 
     def __init__(self, lookback=50, entry_deviation=0.02, profit_target=0.02,
                  stop_loss=0.05, bet_fraction=0.3, max_trades=12):
@@ -37,28 +40,27 @@ class Scalper(Strategy):
             "bet_fraction": bet_fraction,
             "max_trades": max_trades,
         }
-        # Per-session state
-        self._up_mids = []  # type: list
-        self._down_mids = []  # type: list
+        # Per-session state (bounded deques — only last lookback values kept)
+        self._up_mids = deque(maxlen=lookback)  # type: deque
+        self._down_mids = deque(maxlen=lookback)  # type: deque
         self._virtual_side = None  # type: str
         self._virtual_tokens = 0.0
         self._entry_midpoint = 0.0
         self._trade_count = 0
 
     def on_session_start(self, metadata):
-        self._up_mids = []
-        self._down_mids = []
+        self._up_mids = deque(maxlen=self.lookback)
+        self._down_mids = deque(maxlen=self.lookback)
         self._virtual_side = None
         self._virtual_tokens = 0.0
         self._entry_midpoint = 0.0
         self._trade_count = 0
 
     def _rolling_mean(self, values):
-        """Compute mean of last `lookback` values."""
-        window = values[-self.lookback:]
-        if not window:
+        """Compute mean of values in the deque (already bounded to lookback)."""
+        if not values:
             return None
-        return sum(window) / len(window)
+        return sum(values) / len(values)
 
     def on_tick(self, ctx):
         if self._trade_count >= self.max_trades:

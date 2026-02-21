@@ -56,8 +56,8 @@ def load_sessions(data_dir):
     for f in sorted(files):
         with open(f, "r") as fh:
             data = json.load(fh)
-        # Skip unresolved sessions
-        if data.get("outcome") is None:
+        # Skip unresolved sessions and non-session files (e.g. .trading.json)
+        if data.get("outcome") is None or "samples" not in data:
             continue
         data["_source_file"] = f
         sessions.append(data)

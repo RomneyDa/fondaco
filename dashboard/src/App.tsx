@@ -31,9 +31,12 @@ export function App() {
     fetchBotStatus().then(setBotStatus);
   }, []);
 
+  const [tradeRefresh, setTradeRefresh] = useState(0);
+
   useSSE({
     onLiveUpdate: (prefix, session) => {
       setLiveData((prev) => ({ ...prev, [prefix]: session }));
+      setTradeRefresh((v) => v + 1);
     },
     onLiveStart: (prefix) => {
       setLivePrefixes((prev) => [...new Set([...prev, prefix])]);
@@ -75,7 +78,7 @@ export function App() {
           <Route
             path="/bot"
             element={
-              <BotPanel botStatus={botStatus} onRefresh={refreshBotStatus} />
+              <BotPanel botStatus={botStatus} onRefresh={refreshBotStatus} tradeRefresh={tradeRefresh} />
             }
           />
         </Routes>

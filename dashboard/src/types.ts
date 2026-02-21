@@ -36,6 +36,23 @@ export interface SessionData {
   trading?: TradingInfo;
 }
 
+export interface TradeLogEntry {
+  tick_index?: number;
+  side: string;
+  price: number;
+  amount: number;
+  tokens: number;
+  order_id?: string | null;
+  token_id?: string;
+  success: boolean | null;
+  error?: string | null;
+  timestamp?: string | null;
+  requested_tokens?: number | null;
+  elapsed_seconds: number;
+  session_start?: string;
+  strategy?: string;
+}
+
 export interface BotTrade {
   elapsed_seconds: number;
   side: string;
@@ -54,6 +71,14 @@ export interface TradingInfo {
   trades: BotTrade[];
 }
 
+export interface StrategySlotStatus {
+  name: string;
+  params?: Record<string, any>;
+  dry_run: boolean;
+  cash: number;
+  starting_cash: number;
+}
+
 export interface BotStatus {
   running: boolean;
   slug_prefix?: string;
@@ -62,6 +87,7 @@ export interface BotStatus {
   strategy?: string;
   dry_run?: boolean;
   cash?: number | null;
+  strategies?: StrategySlotStatus[];
 }
 
 export interface SessionSummary {

@@ -19,8 +19,9 @@ function formatSessionName(file: string): string {
 
 export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
   const isRunning = botStatus?.running ?? false;
-  const isTrading = botStatus?.trading_enabled ?? false;
-  const isDryRun = botStatus?.dry_run ?? false;
+  const strategies = botStatus?.strategies ?? [];
+  const isTrading = strategies.length > 0;
+  const allDryRun = strategies.length > 0 && strategies.every((s) => s.dry_run);
 
   return (
     <nav className="sidebar">
@@ -60,9 +61,11 @@ export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
             <>
               <span
                 className="live-dot"
-                style={isDryRun ? { background: "var(--accent)" } : undefined}
+                style={allDryRun ? { background: "var(--accent)" } : undefined}
               />
-              {botStatus?.strategy || "Trading"}
+              {strategies.length === 1
+                ? strategies[0].name
+                : `${strategies.length} strategies`}
             </>
           ) : isRunning ? (
             <>
@@ -82,6 +85,13 @@ export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
             </>
           )}
         </NavLink>
+        {isTrading && strategies.length > 1 && strategies.map((s) => (
+          <div key={s.name} className="nav-item nav-session" style={{ paddingLeft: 28 }}>
+            <span>{s.name}</span>
+            <span className="count">${s.cash.toFixed(0)}</span>
+            {s.dry_run && <span className="dry-run-tag" style={{ fontSize: 9, marginLeft: 4 }}>DRY</span>}
+          </div>
+        ))}
       </div>
 
       <div className="nav-section">
@@ -97,15 +107,20 @@ export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
               {p.name}
               <span className="count">({p.count})</span>
             </NavLink>
-            {p.recentSessions.map((file) => (
+            {p.recentSessions.map((s) => (
               <NavLink
-                key={file}
-                to={`/sessions/${p.name}/${file}`}
+                key={s.file}
+                to={`/sessions/${p.name}/${s.file}`}
                 className={({ isActive }) =>
                   `nav-item nav-session${isActive ? " active" : ""}`
                 }
               >
-                {formatSessionName(file)}
+                <span>{formatSessionName(s.file)}</span>
+                {s.outcome && (
+                  <span className={`session-outcome ${s.outcome.toLowerCase()}`}>
+                    {s.outcome}
+                  </span>
+                )}
               </NavLink>
             ))}
           </div>

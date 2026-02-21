@@ -16,6 +16,7 @@ class MidpointMomentum(Strategy):
     """
 
     name = "MidpointMomentum"
+    description = "Tracks token midpoint trends over recent ticks. If a token's midpoint is rising with enough momentum above a threshold, buys that side. Trend-following on market sentiment."
 
     def __init__(
         self,

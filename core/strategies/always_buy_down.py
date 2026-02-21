@@ -7,6 +7,7 @@ from core.strategies.base import Strategy
 class AlwaysBuyDown(Strategy):
 
     name = "AlwaysBuyDown"
+    description = "Immediately buys Down tokens at the first tick and holds until resolution. Simple benchmark — profits whenever BTC ends lower."
 
     def __init__(self, bet_fraction=1.0):
         self.bet_fraction = bet_fraction

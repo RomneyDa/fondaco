@@ -43,6 +43,10 @@ def sample():
     return {
         "up_token_midpoint": 0.50,
         "down_token_midpoint": 0.50,
+        "up_token_best_bid": 0.49,
+        "up_token_best_ask": 0.51,
+        "down_token_best_bid": 0.49,
+        "down_token_best_ask": 0.51,
         "elapsed_seconds": 60.0,
     }
 
@@ -79,34 +83,45 @@ def test_unknown_side(mock_client, metadata, sample):
 # ---------------------------------------------------------------------------
 
 
-def test_none_midpoint(mock_client, metadata):
+def test_none_price(mock_client, metadata):
     ex = ClobExecutor(mock_client)
-    sample = {"up_token_midpoint": None, "down_token_midpoint": 0.50}
+    sample = {"up_token_best_ask": None, "up_token_best_bid": 0.49}
     action = TradeAction(side="buy_up", amount=50.0)
     trade = ex.execute_trade(action, 0, metadata, sample, Position(cash=100.0))
     assert trade.success is False
-    assert "Invalid midpoint" in trade.error
+    assert "No valid price" in trade.error
 
 
-def test_midpoint_rounds_to_one(mock_client, metadata):
-    """If midpoint rounds to 1.0, trade is rejected."""
+def test_price_rounds_to_one(mock_client, metadata):
+    """If best_ask rounds to 1.0, trade is rejected (out of range)."""
     ex = ClobExecutor(mock_client)
-    # round(0.999, 2) = 1.0 in Python — triggers "out of range"
-    sample = {"up_token_midpoint": 0.999, "down_token_midpoint": 0.50}
+    sample = {"up_token_best_ask": 0.999, "up_token_best_bid": 0.98}
     action = TradeAction(side="buy_up", amount=50.0)
     trade = ex.execute_trade(action, 0, metadata, sample, Position(cash=100.0))
     assert trade.success is False
     assert "out of range" in trade.error
 
 
-def test_valid_low_midpoint(mock_client, metadata):
-    """Midpoint 0.01 is valid."""
+def test_wide_spread_skips_trade(mock_client, metadata):
+    """Wide spread: best_ask 0.99 / best_bid 0.01 → skip, no real liquidity."""
     ex = ClobExecutor(mock_client)
-    sample = {"up_token_midpoint": 0.01, "down_token_midpoint": 0.99}
+    sample = {"up_token_best_ask": 0.99, "up_token_best_bid": 0.01}
     pos = Position(cash=100.0)
     action = TradeAction(side="buy_up", amount=100.0)
     trade = ex.execute_trade(action, 0, metadata, sample, pos)
-    # At price 0.01, 100/0.01 = 10000 tokens, floor -> 10000, which is >= 5
+    assert trade.success is False
+    assert "Spread too wide" in trade.error
+
+
+def test_valid_low_price(mock_client, metadata):
+    """Best ask 0.02 with tight spread is valid."""
+    ex = ClobExecutor(mock_client)
+    sample = {"up_token_best_ask": 0.02, "up_token_best_bid": 0.01,
+              "down_token_best_ask": 0.99, "down_token_best_bid": 0.98}
+    pos = Position(cash=100.0)
+    action = TradeAction(side="buy_up", amount=100.0)
+    trade = ex.execute_trade(action, 0, metadata, sample, pos)
+    # At price 0.02, 100/0.02 = 5000 tokens, floor -> 5000, which is >= 5
     assert trade.success is True
 
 
@@ -166,8 +181,9 @@ def test_successful_buy_mutates_position(mock_client, metadata, sample):
 def test_buy_floors_tokens_to_integer(mock_client, metadata):
     """CLOB buys floor token count to integer for clean maker amounts."""
     ex = ClobExecutor(mock_client)
-    # 50 / 0.50 = 100.0 tokens, but midpoint 0.33 -> 100/0.33 = 303.0303
-    sample = {"up_token_midpoint": 0.33, "down_token_midpoint": 0.67}
+    # best_ask 0.34 -> 100/0.34 = 294.117...
+    sample = {"up_token_best_ask": 0.34, "up_token_best_bid": 0.32,
+              "down_token_best_ask": 0.68, "down_token_best_bid": 0.66}
     pos = Position(cash=100.0)
     action = TradeAction(side="buy_up", amount=100.0)
     trade = ex.execute_trade(action, 0, metadata, sample, pos)
@@ -176,14 +192,17 @@ def test_buy_floors_tokens_to_integer(mock_client, metadata):
 
 
 def test_below_min_order_size(mock_client, metadata):
-    """Orders with < 5 tokens (after floor) are rejected."""
+    """Orders with < 5 tokens (after floor) don't trade and position is unchanged."""
     ex = ClobExecutor(mock_client)
-    sample = {"up_token_midpoint": 0.50, "down_token_midpoint": 0.50}
-    pos = Position(cash=2.0)  # 2.0 / 0.50 = 4 tokens, floor -> 4
+    sample = {"up_token_best_ask": 0.51, "up_token_best_bid": 0.49,
+              "down_token_best_ask": 0.51, "down_token_best_bid": 0.49}
+    pos = Position(cash=2.0)  # 2.0 / 0.51 = 3.92 tokens, floor -> 3
     action = TradeAction(side="buy_up", amount=2.0)
     trade = ex.execute_trade(action, 0, metadata, sample, pos)
+    # compute_trade_size returns (0,0) since 3.92 < MIN_ORDER, so no trade
+    assert trade is not None
     assert trade.success is False
-    assert "minimum order size" in trade.error
+    assert pos.cash == 2.0  # position unchanged
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +241,8 @@ def test_log_trade_none_file_is_noop(mock_client, metadata, sample):
 
 def test_partial_fill_applies_only_filled_amount(mock_client, metadata, sample):
     """Partial fill: position gets actual tokens, not requested."""
-    # Simulate partial fill: requested 200 tokens, got 120
+    # Price is 0.51 (best_ask from fixture). 100/0.51 = 196 tokens (floored).
+    # Simulate partial fill: requested 196 tokens, got 120
     mock_client.post_order.return_value = {
         "orderID": "order-partial-1",
         "success": True,
@@ -239,10 +259,10 @@ def test_partial_fill_applies_only_filled_amount(mock_client, metadata, sample):
     assert trade.success is True
     assert trade.tokens == 120.0
     assert trade.amount == 60.0
-    assert trade.requested_tokens == 200.0  # logged for audit
+    assert trade.requested_tokens == 196  # logged for audit
     assert pos.up_tokens == 120.0
-    # Cash deducted by actual_tokens * price (120 * 0.50 = 60)
-    assert pos.cash == pytest.approx(40.0)
+    # Cash deducted by actual_tokens * price (120 * 0.51 = 61.2)
+    assert pos.cash == pytest.approx(38.8)
 
 
 def test_success_false_preserves_position(mock_client, metadata, sample):
@@ -296,7 +316,7 @@ def test_missing_fill_amounts_falls_back_to_requested(mock_client, metadata, sam
     trade = ex.execute_trade(action, 0, metadata, sample, pos)
 
     assert trade.success is True
-    # Falls back to requested: floor(100/0.50) = 200 tokens
-    assert trade.tokens == 200.0
+    # Falls back to requested: floor(100/0.51) = 196 tokens
+    assert trade.tokens == 196
     assert trade.requested_tokens is None  # no partial fill, so not set
-    assert pos.up_tokens == 200.0
+    assert pos.up_tokens == 196

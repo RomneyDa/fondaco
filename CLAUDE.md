@@ -94,6 +94,10 @@ Sessions sample at ~18 ticks/sec. A 5-minute (300s) session has ~5,400 ticks; a 
 
 Buy token sizes are floored to integer in `ClobExecutor` for clean maker amounts. Sell token sizes use `math.floor` to 4 decimals — never round up sells.
 
+## API Latency
+
+CLOB order round-trip (TTFB) is ~300ms. Gamma ~270ms, Data API ~375ms, Builder Relayer ~675ms. Network RTT to servers (Cloudflare, US East) is ~45ms; rest is TLS + server processing. Negligible for 5-minute windows.
+
 ## Guardrails (shared, constants in core/defaults.py)
 
 | Guardrail | Constant | Default |
@@ -103,6 +107,21 @@ Buy token sizes are floored to integer in `ClobExecutor` for clean maker amounts
 | Max loss per session/day | MAX_LOSS_FRACTION / MAX_LOSS_DOLLARS | 30% of balance or $1,000 |
 
 Enforced in `Trader.process_tick()` (shared tick loop). App caches balance to `.cache/balance.json`; use `--cash cached` in backtest/app to start from real balance.
+
+## Strategy Param Optimization Workflow
+
+When tuning a strategy's parameters, use iterative grid refinement — not a single massive grid.
+
+1. **Coarse sweep** — Design an initial `param_grid()` with wide spacing that produces **< 1000 total combinations**. Multiply out the grid dimensions to verify before running. Example: 5 values × 5 values × 4 values = 100 combos. Run the backtest:
+   ```bash
+   uv run python -m simulator.backtest data/sessions/btc-updown-5m --strategy MyStrategy --top 10
+   ```
+
+2. **Refine around the optimum** — Read the best params from the leaderboard output. Build a tighter grid centered on those values with finer step sizes, again keeping total combos under ~1000. Override `param_grid()` (or use `--params` for a single run) and re-run.
+
+3. **Final polish (optional)** — Repeat once more with even finer steps around the new best. Diminishing returns after 2–3 rounds — stop when the top results are clustered tightly.
+
+This is a numerical-methods-style approach: coarse grid → zoom in → zoom in. It avoids combinatorial explosion (a 6-param grid with 10 values each = 1M combos) while still finding near-optimal params efficiently.
 
 ## CRITICAL RULES — REAL MONEY
 

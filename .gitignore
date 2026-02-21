@@ -24,6 +24,7 @@ data/bot.log
 data/bot_trades.jsonl
 data/bot_log.jsonl
 data/bot_position.json
+data/bot_positions/
 
 # Backtest results
 data/backtest_log.jsonl
@@ -57,3 +58,4 @@ dashboard/dist/
 Thumbs.db
 
 tmp/
+backup/

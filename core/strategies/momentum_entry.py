@@ -12,8 +12,9 @@ class MomentumEntry(Strategy):
     """
 
     name = "MomentumEntry"
+    description = "Watches BTC price early in the window. If BTC moves more than a threshold (in basis points), buys in that direction. Only enters during the first portion of the window to catch early trends."
 
-    def __init__(self, entry_window=0.3, price_threshold_bps=5.0, bet_fraction=0.5):
+    def __init__(self, entry_window=0.2, price_threshold_bps=25.0, bet_fraction=0.5):
         self.entry_window = entry_window
         self.price_threshold_bps = price_threshold_bps
         self.bet_fraction = bet_fraction
@@ -49,8 +50,9 @@ class MomentumEntry(Strategy):
         return HOLD
 
     def param_grid(self):
+        # 8 × 8 × 4 = 256 combos
         return {
-            "entry_window": [0.2, 0.3, 0.5],
-            "price_threshold_bps": [2.0, 5.0, 10.0, 20.0],
-            "bet_fraction": [0.25, 0.5, 1.0],
+            "entry_window": [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6],
+            "price_threshold_bps": [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0],
+            "bet_fraction": [0.3, 0.5, 0.75, 1.0],
         }

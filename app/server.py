@@ -101,8 +101,13 @@ class _Handler(BaseHTTPRequestHandler):
         if runner is None:
             self._send_json({"error": "No runner"}, 500)
             return
-        runner.disable_trading()
-        self._send_json({"ok": True, "trading": False})
+        try:
+            body = self._read_json_body()
+            strategy_name = body.get("strategy")
+            runner.disable_trading(strategy_name=strategy_name)
+            self._send_json({"ok": True, "trading": False, "strategy": strategy_name})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
 
     def _handle_set_cash(self):
         runner = self.runner
@@ -115,7 +120,8 @@ class _Handler(BaseHTTPRequestHandler):
             if cash is None:
                 self._send_json({"error": "Missing 'cash' field"}, 400)
                 return
-            runner.set_cash(float(cash))
+            strategy_name = body.get("strategy")
+            runner.set_cash(float(cash), strategy_name=strategy_name)
             self._send_json({"ok": True, "cash": round(float(cash), 4)})
         except Exception as e:
             self._send_json({"error": str(e)}, 400)

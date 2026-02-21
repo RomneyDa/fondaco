@@ -12,6 +12,7 @@ class FadeTheMarket(Strategy):
     """
 
     name = "FadeTheMarket"
+    description = "Mean reversion contrarian play. If a token midpoint spikes to an extreme early in the window, bets against it — expecting the market overreacted and the price will revert."
 
     def __init__(
         self,
@@ -43,14 +44,22 @@ class FadeTheMarket(Strategy):
         if up_mid is None or down_mid is None:
             return HOLD
 
+        # Check actual execution prices — don't buy if ask is unreasonable
+        up_ask = ctx.sample.get("up_token_best_ask")
+        down_ask = ctx.sample.get("down_token_best_ask")
+
         # If Up is overreacting high, fade it by buying Down
         if up_mid >= self.overreaction_threshold:
-            self._entered = True
-            return TradeAction(side="buy_down", amount=ctx.position.cash * self.bet_fraction)
+            if down_ask is not None and down_ask <= (1.0 - self.overreaction_threshold):
+                self._entered = True
+                self.log("fading up mid={:.2f}, buying down ask={:.2f}".format(up_mid, down_ask))
+                return TradeAction(side="buy_down", amount=ctx.position.cash * self.bet_fraction)
         # If Down is overreacting high, fade it by buying Up
         elif down_mid >= self.overreaction_threshold:
-            self._entered = True
-            return TradeAction(side="buy_up", amount=ctx.position.cash * self.bet_fraction)
+            if up_ask is not None and up_ask <= (1.0 - self.overreaction_threshold):
+                self._entered = True
+                self.log("fading down mid={:.2f}, buying up ask={:.2f}".format(down_mid, up_ask))
+                return TradeAction(side="buy_up", amount=ctx.position.cash * self.bet_fraction)
 
         return HOLD
 

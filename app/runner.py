@@ -3,16 +3,20 @@
 Merges the Collector and TradingBot into a single process. Data collection
 happens unconditionally; trading is toggled on/off via enable_trading() /
 disable_trading(), taking effect at the next session boundary.
+
+Supports multiple concurrent strategies, each with its own Position and
+Trader. All strategies share the same price data and ClobExecutor.
 """
 
 import json
 import logging
 import os
+import queue
 import signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -20,7 +24,6 @@ from core.api_logger import LoggingSession
 from core.defaults import (
     BALANCE_CACHE_FILE,
     BASE_DIR,
-    CLOB_API_BASE,
     POLL_INTERVAL_SECONDS,
     RESOLUTION_POLL_INTERVAL,
     RESOLUTION_TIMEOUT_SECONDS,
@@ -32,7 +35,7 @@ from core.price_fetcher import PriceFetcher
 from core.rtds_client import RTDSClient
 from core.session_recorder import SessionRecorder
 from core.strategies import ALL_STRATEGIES
-from core.trader import ClobExecutor, Position, Trade, Trader
+from core.trader import ClobExecutor, Position, SimExecutor, Trade, Trader
 from core.window_ops import (
     wait_for_next_window,
     fetch_metadata_with_retry,
@@ -44,7 +47,25 @@ logger = logging.getLogger(__name__)
 # Paths
 BOT_TRADES_FILE = os.path.join(BASE_DIR, "data", "bot_trades.jsonl")
 BOT_SESSION_LOG = os.path.join(BASE_DIR, "data", "bot_log.jsonl")
-POSITION_FILE = os.path.join(BASE_DIR, "data", "bot_position.json")
+POSITION_DIR = os.path.join(BASE_DIR, "data", "bot_positions")
+
+
+# ---------------------------------------------------------------------------
+# Strategy slot
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StrategySlot:
+    """One independently-trading strategy with its own Position."""
+    name: str                           # strategy class name (unique key)
+    strategy: Any                       # Strategy instance
+    params: Dict[str, Any]              # parsed params dict
+    position: Position
+    starting_cash: float
+    dry_run: bool
+    executor: Any                       # Executor (ClobExecutor or SimExecutor)
+    cash_explicit: bool = False         # True when cash was explicitly set
 
 
 # ---------------------------------------------------------------------------
@@ -56,12 +77,16 @@ def _trade_to_dashboard_dict(trade):
     # type: (Trade) -> Dict[str, Any]
     """Serialize a Trade to a compact dict for the dashboard."""
     return {
+        "tick_index": trade.tick_index,
         "elapsed_seconds": trade.elapsed_seconds,
         "side": trade.side,
         "price": trade.price,
         "amount": round(trade.amount, 4),
         "tokens": round(trade.tokens, 4),
         "success": trade.success,
+        "order_id": trade.order_id,
+        "error": trade.error,
+        "timestamp": trade.timestamp,
     }
 
 
@@ -94,27 +119,19 @@ def _load_balance_cache():
 
 
 # ---------------------------------------------------------------------------
-# Position persistence
+# Position persistence (per-strategy)
 # ---------------------------------------------------------------------------
 
 
-def _save_position(position):
-    # type: (Position) -> None
-    """Atomically write position to disk (write tmp, then os.replace)."""
-    tmp = POSITION_FILE + ".tmp"
+def _save_slot_position(slot_name, position):
+    # type: (str, Position) -> None
+    """Atomically write position to disk for a named strategy slot."""
+    os.makedirs(POSITION_DIR, exist_ok=True)
+    filepath = os.path.join(POSITION_DIR, "{}.json".format(slot_name))
+    tmp = filepath + ".tmp"
     with open(tmp, "w") as f:
         json.dump(position.to_dict(), f)
-    os.replace(tmp, POSITION_FILE)
-
-
-def _load_position(starting_cash):
-    # type: (float) -> Position
-    """Load position from disk if available, else return fresh Position."""
-    try:
-        with open(POSITION_FILE, "r") as f:
-            return Position.from_dict(json.load(f))
-    except (OSError, json.JSONDecodeError, KeyError):
-        return Position(cash=starting_cash)
+    os.replace(tmp, filepath)
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +147,7 @@ class Runner:
 
     Always collects data. Trading is toggled via enable_trading() /
     disable_trading(), taking effect at the next session boundary.
+    Supports multiple concurrent strategies via StrategySlot list.
     """
 
     def __init__(
@@ -166,16 +184,14 @@ class Runner:
         self.session_count = 0
         self._consecutive_auth_failures = 0
 
+        # Background resolution (so we don't block the next window)
+        self._resolution_thread = None   # type: Optional[threading.Thread]
+        self._credit_queue = queue.Queue()  # type: queue.Queue
+
         # Trading state (protected by lock, snapshotted at session start)
         self._lock = threading.Lock()
-        self._trading_enabled = False
-        self._strategy = None       # type: Optional[Any]
-        self._strategy_name = None  # type: Optional[str]
-        self._executor = None       # type: Optional[Any]
-        self._position = None       # type: Optional[Position]
-        self._starting_cash = starting_cash
-        self._cash_explicit = False  # True when --cash was given explicitly
-        self._dry_run = dry_run
+        self._slots = []  # type: List[StrategySlot]
+        self._clob_executor = None  # type: Optional[ClobExecutor]
         self._private_key = None    # type: Optional[str]
         self._safe_address = None   # type: Optional[str]
 
@@ -205,7 +221,7 @@ class Runner:
 
     def enable_trading(self, strategy_name, params=None, cash=None, dry_run=False):
         # type: (str, Optional[Dict[str, Any]], Optional[float], bool) -> None
-        """Enable trading with the given strategy. Takes effect next session."""
+        """Add or update a strategy slot. Takes effect next session."""
         if strategy_name not in ALL_STRATEGIES:
             raise ValueError("Unknown strategy '{}'. Available: {}".format(
                 strategy_name, list(ALL_STRATEGIES.keys()),
@@ -228,22 +244,17 @@ class Runner:
         strategy = ALL_STRATEGIES[strategy_name](**parsed_params)
 
         with self._lock:
-            self._strategy = strategy
-            self._strategy_name = strategy_name
-            self._dry_run = dry_run
-
-            if cash is not None:
-                self._starting_cash = float(cash)
-                self._cash_explicit = True
-
-            # Init executor (lazy — deferred until we know dry_run)
+            # Determine executor for this slot
             if dry_run:
-                from core.trader import SimExecutor
-                self._executor = SimExecutor(execution_mode="midpoint_slippage", slippage=0.02)
-                logger.info("DRY RUN mode — no real orders will be placed.")
+                executor = SimExecutor(execution_mode="midpoint_slippage", slippage=0.02)
+                logger.info("[%s] DRY RUN mode — no real orders will be placed.", strategy_name)
             else:
-                self._init_clob_executor()
-                # Fetch real balance — use it directly, or cap explicit --cash
+                # Ensure shared ClobExecutor exists
+                if self._clob_executor is None:
+                    self._init_clob_executor()
+                executor = self._clob_executor
+
+                # Fetch real balance for cash validation
                 try:
                     real_balance = self._fetch_clob_balance()
                 except Exception as e:
@@ -255,27 +266,38 @@ class Runner:
                         )
                     real_balance = None
 
+                # Auto-assign cash from balance when not explicitly given
                 if cash is None:
-                    self._starting_cash = real_balance
-                elif real_balance is not None and real_balance < self._starting_cash:
-                    logger.info(
-                        "Capping cash to on-chain balance: requested=$%.2f, available=$%.4f",
-                        self._starting_cash, real_balance,
-                    )
-                    self._starting_cash = real_balance
+                    if real_balance is not None:
+                        cash = real_balance
+                    else:
+                        raise RuntimeError("Cannot determine cash — balance unavailable")
 
-            # Init position: fresh with explicit cash or loaded from disk
-            self._position = Position(cash=self._starting_cash)
+            starting_cash = float(cash) if cash is not None else 100.0
+            cash_explicit = cash is not None
 
-            self._trading_enabled = True
+            # Remove existing slot with same name (upsert)
+            self._slots = [s for s in self._slots if s.name != strategy_name]
+
+            slot = StrategySlot(
+                name=strategy_name,
+                strategy=strategy,
+                params=parsed_params,
+                position=Position(cash=starting_cash),
+                starting_cash=starting_cash,
+                dry_run=dry_run,
+                executor=executor,
+                cash_explicit=cash_explicit,
+            )
+            self._slots.append(slot)
 
         logger.info(
             "Trading enabled: strategy=%s params=%s cash=$%.2f dry_run=%s",
-            strategy_name, parsed_params, self._starting_cash, dry_run,
+            strategy_name, parsed_params, starting_cash, dry_run,
         )
 
     def _init_clob_executor(self):
-        """Initialize CLOB executor with auth. Caller must hold self._lock."""
+        """Initialize shared CLOB executor with auth. Caller must hold self._lock."""
         from dotenv import load_dotenv
         load_dotenv()
 
@@ -289,13 +311,13 @@ class Runner:
 
         self._private_key = private_key
         self._safe_address = auth["safe_address"]
-        self._executor = ClobExecutor(client, trade_log_file=BOT_TRADES_FILE)
+        self._clob_executor = ClobExecutor(client, trade_log_file=BOT_TRADES_FILE)
 
     def _fetch_clob_balance(self):
         # type: () -> float
         """Fetch actual USDC balance from Polymarket CLOB API."""
         from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-        resp = self._executor.client.get_balance_allowance(
+        resp = self._clob_executor.client.get_balance_allowance(
             BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
         )
         # Balance is returned in micro-USDC (6 decimals)
@@ -303,48 +325,130 @@ class Runner:
         logger.info("Fetched CLOB balance: $%.4f", balance)
         return balance
 
-    def set_cash(self, cash):
-        # type: (float) -> None
-        """Update position cash (takes effect immediately)."""
+    def set_cash(self, cash, strategy_name=None):
+        # type: (float, Optional[str]) -> None
+        """Update position cash for a strategy slot (takes effect immediately)."""
         with self._lock:
-            if self._position is None:
+            if not self._slots:
                 raise RuntimeError("Trading not enabled — no position to update")
-            old = self._position.cash
-            self._position.cash = cash
-            self._starting_cash = cash
-            self._cash_explicit = True
-        logger.info("Cash updated: $%.4f -> $%.4f", old, cash)
+            if strategy_name is not None:
+                slot = self._find_slot(strategy_name)
+                if slot is None:
+                    raise ValueError("No active slot for strategy '{}'".format(strategy_name))
+                slots_to_update = [slot]
+            elif len(self._slots) == 1:
+                slots_to_update = [self._slots[0]]
+            else:
+                raise ValueError(
+                    "Multiple strategies active — specify which one: {}".format(
+                        [s.name for s in self._slots]
+                    )
+                )
+            for slot in slots_to_update:
+                old = slot.position.cash
+                slot.position.cash = cash
+                slot.starting_cash = cash
+                slot.cash_explicit = True
+                logger.info("[%s] Cash updated: $%.4f -> $%.4f", slot.name, old, cash)
 
-    def disable_trading(self):
-        # type: () -> None
-        """Disable trading. Takes effect next session."""
+    def disable_trading(self, strategy_name=None):
+        # type: (Optional[str],) -> None
+        """Disable trading. If strategy_name given, remove only that slot.
+        Otherwise clear all slots. Takes effect next session."""
         with self._lock:
-            self._trading_enabled = False
-        logger.info("Trading disabled (takes effect next session).")
+            if strategy_name is not None:
+                before = len(self._slots)
+                self._slots = [s for s in self._slots if s.name != strategy_name]
+                if len(self._slots) == before:
+                    raise ValueError("No active slot for strategy '{}'".format(strategy_name))
+                logger.info("Trading disabled for %s (takes effect next session).", strategy_name)
+            else:
+                self._slots = []
+                logger.info("Trading disabled for all strategies (takes effect next session).")
 
-    def _snapshot_trading_state(self):
-        # type: () -> tuple
-        """Snapshot trading state under lock. Returns (enabled, strategy, executor, position)."""
+    def _find_slot(self, name):
+        # type: (str) -> Optional[StrategySlot]
+        """Find a slot by strategy name. Caller must hold self._lock."""
+        for s in self._slots:
+            if s.name == name:
+                return s
+        return None
+
+    def _snapshot_slots(self):
+        # type: () -> List[StrategySlot]
+        """Snapshot the current slots list under lock."""
         with self._lock:
-            return (
-                self._trading_enabled,
-                self._strategy,
-                self._executor,
-                self._position,
-            )
+            return list(self._slots)
+
+    def _join_pending_resolution(self, timeout=120):
+        # type: (int) -> None
+        """Wait for any pending background resolution to complete."""
+        if self._resolution_thread is not None and self._resolution_thread.is_alive():
+            logger.info("Waiting for previous resolution to complete...")
+            self._resolution_thread.join(timeout=timeout)
+            if self._resolution_thread.is_alive():
+                logger.warning(
+                    "Previous resolution still running after %ds timeout.", timeout,
+                )
+            else:
+                self._resolution_thread = None
+
+    def _drain_resolution_credits(self):
+        # type: () -> int
+        """Apply any pending resolution credits to slot positions.
+
+        Returns number of credits applied.
+        """
+        applied = 0
+        while True:
+            try:
+                slot_name, credit = self._credit_queue.get_nowait()
+            except queue.Empty:
+                break
+            with self._lock:
+                slot = self._find_slot(slot_name)
+                if slot:
+                    old = slot.position.cash
+                    slot.position.cash += credit
+                    if not slot.dry_run:
+                        _save_slot_position(slot_name, slot.position)
+                    logger.info(
+                        "[%s] Resolution credit applied: $%.4f -> $%.4f (+$%.4f)",
+                        slot_name, old, slot.position.cash, credit,
+                    )
+                    applied += 1
+                else:
+                    logger.warning(
+                        "Resolution credit for removed slot %r: $%.4f (discarded)",
+                        slot_name, credit,
+                    )
+        return applied
 
     def get_status(self):
         # type: () -> Dict[str, Any]
         """Get current runner status (for HTTP API)."""
         with self._lock:
+            strategies = []
+            for slot in self._slots:
+                strategies.append({
+                    "name": slot.name,
+                    "params": slot.params,
+                    "dry_run": slot.dry_run,
+                    "cash": round(slot.position.cash, 4),
+                    "starting_cash": round(slot.starting_cash, 4),
+                })
+
+            # Backward-compat: top-level fields from first slot
+            first = self._slots[0] if self._slots else None
             status = {
                 "running": self.running,
                 "slug_prefix": self.slug_prefix,
                 "session_count": self.session_count,
-                "trading_enabled": self._trading_enabled,
-                "strategy": self._strategy_name,
-                "dry_run": self._dry_run,
-                "cash": round(self._position.cash, 4) if self._position else None,
+                "trading_enabled": len(self._slots) > 0,
+                "strategy": first.name if first else None,
+                "dry_run": first.dry_run if first else False,
+                "cash": round(first.position.cash, 4) if first else None,
+                "strategies": strategies,
             }
         return status
 
@@ -379,10 +483,13 @@ class Runner:
                     logger.error("Session error: %s", e, exc_info=True)
                     self.recorder.append_log("Session error", error=str(e))
                     # Check for auth errors in trading mode
-                    if self._trading_enabled and self._is_auth_error(e):
+                    if self._slots and self._is_auth_error(e):
                         self._handle_auth_failure()
                     time.sleep(10)
         finally:
+            # Wait for pending resolution before shutting down
+            self._join_pending_resolution(timeout=60)
+            self._drain_resolution_credits()
             self._sample_pool.shutdown(wait=False)
             self.rtds.stop()
             self.http_session.close()
@@ -411,7 +518,7 @@ class Runner:
 
     def _refresh_auth(self):
         # type: () -> None
-        """Clear cached auth, re-derive, and rebuild the CLOB executor."""
+        """Clear cached auth, re-derive, and rebuild the shared CLOB executor."""
         from app.auth import _clear_auth_cache, get_auth, build_clob_client
 
         logger.info("Refreshing auth credentials...")
@@ -420,7 +527,12 @@ class Runner:
         client = build_clob_client(self._private_key, auth)
         with self._lock:
             self._safe_address = auth["safe_address"]
-            self._executor = ClobExecutor(client, trade_log_file=BOT_TRADES_FILE)
+            new_executor = ClobExecutor(client, trade_log_file=BOT_TRADES_FILE)
+            self._clob_executor = new_executor
+            # Propagate to all live (non-dry-run) slots
+            for slot in self._slots:
+                if not slot.dry_run:
+                    slot.executor = new_executor
         self._consecutive_auth_failures = 0
         logger.info("Auth refreshed successfully.")
 
@@ -430,22 +542,32 @@ class Runner:
         # type: () -> None
         """Run one session: always collects, optionally trades."""
 
-        # 1. Snapshot trading state (determines this session's mode)
-        trading_enabled, strategy, executor, position = self._snapshot_trading_state()
-        mode = "trading" if trading_enabled and strategy and executor else "collect-only"
+        # 0. Apply any pending resolution credits from previous session
+        self._drain_resolution_credits()
 
-        # Re-sync balance from CLOB at session start (live mode, auto-balance only)
-        if mode == "trading" and not self._dry_run and not self._cash_explicit and position is not None:
-            if position.up_tokens == 0 and position.down_tokens == 0:
+        # 1. Snapshot strategy slots (determines this session's mode)
+        slots = self._snapshot_slots()
+        mode = "trading" if slots else "collect-only"
+
+        # Re-sync balance from CLOB at session start (only when single live slot, auto-balance)
+        # Skip if a background resolution is still pending (CLOB balance won't reflect payout yet)
+        has_pending_resolution = (
+            self._resolution_thread is not None
+            and self._resolution_thread.is_alive()
+        )
+        live_slots = [s for s in slots if not s.dry_run]
+        if len(live_slots) == 1 and not has_pending_resolution:
+            slot = live_slots[0]
+            if not slot.cash_explicit and slot.position.up_tokens == 0 and slot.position.down_tokens == 0:
                 try:
                     real_balance = self._fetch_clob_balance()
-                    if abs(real_balance - position.cash) > 0.01:
+                    if abs(real_balance - slot.position.cash) > 0.01:
                         logger.info(
-                            "Balance re-sync: tracked=$%.4f on-chain=$%.4f",
-                            position.cash, real_balance,
+                            "[%s] Balance re-sync: tracked=$%.4f on-chain=$%.4f",
+                            slot.name, slot.position.cash, real_balance,
                         )
-                        position.cash = real_balance
-                        self._starting_cash = real_balance
+                        slot.position.cash = real_balance
+                        slot.starting_cash = real_balance
                 except Exception as e:
                     logger.warning("Balance re-sync failed (using tracked): %s", e)
 
@@ -457,10 +579,16 @@ class Runner:
             if now - last_status_write[0] >= 5.0:
                 trading_info = None
                 if mode == "trading":
+                    # Show first slot for backward compat
+                    first = slots[0]
                     trading_info = {
                         "enabled": True,
-                        "strategy": self._strategy_name,
-                        "cash": round(position.cash, 4) if position else None,
+                        "strategy": first.name,
+                        "cash": round(first.position.cash, 4),
+                        "strategies": [
+                            {"name": s.name, "cash": round(s.position.cash, 4)}
+                            for s in slots
+                        ],
                     }
                 self.recorder.write_live_status(
                     "waiting",
@@ -500,15 +628,14 @@ class Runner:
         )
 
         # 5. Poll loop — branch on mode
-        trade_dicts = []  # type: List[Dict[str, Any]]
+        # slot_results: list of (slot, trade_count, trade_dicts, decision_log) per slot
+        slot_results = []  # type: List[tuple]
         if mode == "trading":
-            trade_count, trade_dicts = self._poll_with_trading(
-                session, metadata, window_ts, strategy, executor, position,
-                initial_btc_price,
+            slot_results = self._poll_with_trading(
+                session, metadata, window_ts, slots, initial_btc_price,
             )
         else:
             self._poll_collect_only(session, metadata, window_ts)
-            trade_count = 0
 
         # 6. Record final BTC price and determine outcome from price comparison
         session.final_btc_price_usd = self.fetcher.get_btc_price()
@@ -546,12 +673,45 @@ class Runner:
             mode=mode,
         )
 
-        # 8. If trading: resolve, log, claim, write sidecar
-        if mode == "trading" and position is not None:
-            self._resolve_trading_session(
-                session, metadata, window_ts, strategy, executor, position,
-                initial_btc_price, trade_count, trade_dicts, filepath,
+        # 8. If trading: resolve in background (don't block next window)
+        if mode == "trading" and slot_results:
+            # Ensure any previous resolution is done first
+            self._join_pending_resolution(timeout=120)
+            self._drain_resolution_credits()
+
+            # Snapshot resolution data before modifying positions
+            resolution_data = []
+            for slot, trade_count, trade_dicts, decision_log in slot_results:
+                resolution_data.append({
+                    "slot_name": slot.name,
+                    "up_tokens": slot.position.up_tokens,
+                    "down_tokens": slot.position.down_tokens,
+                    "dry_run": slot.dry_run,
+                    "starting_cash": slot.starting_cash,
+                    "session_end_cash": slot.position.cash,
+                    "strategy_params": {
+                        k: v for k, v in slot.strategy.__dict__.items()
+                        if not k.startswith("_")
+                    },
+                    "trade_count": trade_count,
+                    "trade_dicts": trade_dicts,
+                    "decision_log": decision_log,
+                })
+                # Zero out tokens so next session starts clean
+                slot.position.up_tokens = 0.0
+                slot.position.down_tokens = 0.0
+
+            # Launch background resolution
+            self._resolution_thread = threading.Thread(
+                target=self._resolve_in_background,
+                args=(
+                    session, metadata, window_ts, resolution_data,
+                    initial_btc_price, filepath,
+                ),
+                daemon=True,
+                name="resolution-{}".format(window_ts),
             )
+            self._resolution_thread.start()
 
     # ----- Collect-only poll loop -----
 
@@ -617,29 +777,39 @@ class Runner:
 
     # ----- Trading poll loop -----
 
-    def _poll_with_trading(self, session, metadata, window_ts, strategy, executor,
-                           position, initial_btc_price):
-        # type: (SessionData, Any, int, Any, Any, Position, Optional[float]) -> tuple
+    def _poll_with_trading(self, session, metadata, window_ts, slots, initial_btc_price):
+        # type: (SessionData, Any, int, List[StrategySlot], Optional[float]) -> List[tuple]
         """Single-sample sequential poll loop with strategy tick processing.
 
-        Returns (trade_count, trade_dicts) — trade_dicts is a list of dicts
-        for the dashboard sidecar file.
+        Creates one Trader per slot. Each tick is fed to ALL traders.
+        Returns list of (slot, trade_count, trade_dicts) tuples.
         """
         metadata_dict = asdict(metadata)
 
         # Daily loss tracking: reset reference balance each new UTC day
         today = datetime.now(timezone.utc).date()
         if not hasattr(self, '_day_start_cash') or self._current_day != today:
-            self._day_start_cash = position.cash
+            # Use sum of all slot starting cash as the day reference
+            self._day_start_cash = sum(s.starting_cash for s in slots)
             self._current_day = today
 
-        trader = Trader(strategy, executor)
-        trader.start_session(
-            metadata_dict, position, initial_btc_price or 0.0, self.window_duration,
-            reference_balance=self._day_start_cash,
-        )
-        trade_count = 0
-        trade_dicts = []  # type: List[Dict[str, Any]]
+        # Create one Trader per slot
+        traders = []  # type: List[Trader]
+        per_slot_trade_dicts = []  # type: List[List[Dict[str, Any]]]
+        per_slot_trade_counts = []  # type: List[int]
+
+        for slot in slots:
+            trader = Trader(slot.strategy, slot.executor)
+            # Each slot gets its own share of the daily loss reference
+            ref_balance = slot.starting_cash
+            trader.start_session(
+                metadata_dict, slot.position, initial_btc_price or 0.0,
+                self.window_duration, reference_balance=ref_balance,
+                capture_decision_log=True,
+            )
+            traders.append(trader)
+            per_slot_trade_dicts.append([])
+            per_slot_trade_counts.append(0)
 
         window_end_ts = window_ts + self.window_duration
         next_sample_time = time.time()
@@ -668,26 +838,31 @@ class Runner:
                     # Record sample for data collection
                     session.samples.append(sample)
 
-                    # Process tick for trading
-                    trade = trader.process_tick(sample_dict)
+                    # Feed tick to ALL traders
+                    for i, (slot, trader) in enumerate(zip(slots, traders)):
+                        try:
+                            trade = trader.process_tick(sample_dict)
+                        except Exception as te:
+                            logger.warning("[%s] Tick error: %s", slot.name, te)
+                            continue
 
-                    if trade is not None:
-                        trade_dicts.append(_trade_to_dashboard_dict(trade))
-                        if trade.success is not False:
-                            trade_count += 1
-                            if trade.success is True and not self._dry_run:
-                                _save_position(position)
-                            logger.info(
-                                "Trade executed: %s @ %.2f x %.2f | order_id=%s",
-                                trade.side, trade.price, trade.tokens,
-                                trade.order_id,
-                            )
-                        else:
-                            logger.warning("Trade failed: %s", trade.error)
+                        if trade is not None:
+                            per_slot_trade_dicts[i].append(_trade_to_dashboard_dict(trade))
+                            if trade.success is not False:
+                                per_slot_trade_counts[i] += 1
+                                if trade.success is True and not slot.dry_run:
+                                    _save_slot_position(slot.name, slot.position)
+                                logger.info(
+                                    "[%s] Trade executed: %s @ %.2f x %.2f | order_id=%s",
+                                    slot.name, trade.side, trade.price, trade.tokens,
+                                    trade.order_id,
+                                )
+                            else:
+                                logger.warning("[%s] Trade failed: %s", slot.name, trade.error)
 
                     logger.debug(
                         "Tick %d: BTC=$%s Up=%s Down=%s",
-                        trader._tick_index,
+                        traders[0]._tick_index if traders else 0,
                         sample.btc_price_usd,
                         sample.up_token_midpoint,
                         sample.down_token_midpoint,
@@ -714,12 +889,22 @@ class Runner:
             # Write live session periodically (with trading info)
             now = time.time()
             if now - last_live_write >= 2.0 and session.samples:
+                first = slots[0]
+                strategies_info = []
+                for i, slot in enumerate(slots):
+                    strategies_info.append({
+                        "name": slot.name,
+                        "dry_run": slot.dry_run,
+                        "cash": round(slot.position.cash, 4),
+                        "trades": list(per_slot_trade_dicts[i]),
+                    })
                 trading_info = {
                     "enabled": True,
-                    "strategy": self._strategy_name,
-                    "dry_run": self._dry_run,
-                    "cash": round(position.cash, 4),
-                    "trades": list(trade_dicts),
+                    "strategy": first.name,
+                    "dry_run": first.dry_run,
+                    "cash": round(first.position.cash, 4),
+                    "trades": list(per_slot_trade_dicts[0]),
+                    "strategies": strategies_info,
                 }
                 self.recorder.write_live_session(session, trading_info=trading_info)
                 last_live_write = now
@@ -732,113 +917,158 @@ class Runner:
             if sleep_for > 0:
                 time.sleep(sleep_for)
 
-        return trade_count, trade_dicts
+        return [
+            (slot, per_slot_trade_counts[i], per_slot_trade_dicts[i], traders[i].decision_log)
+            for i, slot in enumerate(slots)
+        ]
 
     # ----- Trading session resolution -----
 
-    def _resolve_trading_session(self, session, metadata, window_ts, strategy,
-                                 executor, position, initial_btc_price, trade_count,
-                                 trade_dicts=None, session_filepath=None):
-        # type: (SessionData, Any, int, Any, Any, Position, Optional[float], int, Optional[List[Dict[str, Any]]], Optional[str]) -> None
-        """Wait for on-chain resolution, update position, log, and claim."""
+    def _resolve_in_background(self, session, metadata, window_ts, resolution_data,
+                               initial_btc_price, session_filepath):
+        # type: (SessionData, Any, int, List[Dict[str, Any]], Optional[float], Optional[str]) -> None
+        """Background thread: wait for resolution, queue cash credits, log results.
 
-        logger.info("Waiting for resolution...")
-        self.recorder.write_live_status(
-            "resolving",
-            trading_info={"strategy": self._strategy_name, "trades": trade_count},
-        )
-
-        outcome = wait_for_resolution(
-            self.slug_prefix, window_ts,
-            self.resolution_timeout, self.resolution_poll_interval,
-            lambda: self.running,
-        )
-
-        if outcome is None:
-            # Fallback: BTC price comparison
-            final_btc = session.final_btc_price_usd or 0.0
-            init_btc = initial_btc_price or 0.0
-            if init_btc > 0 and final_btc > 0:
-                outcome = "Up" if final_btc > init_btc else "Down"
-                logger.warning(
-                    "Resolution timeout — using BTC price fallback: %s (%.2f -> %.2f)",
-                    outcome, init_btc, final_btc,
-                )
-            else:
-                logger.error(
-                    "RESOLUTION FAILED: No on-chain resolution and BTC price "
-                    "unavailable. Zeroing out tokens as lost."
-                )
-
-        # Force-resolve phantom tokens if outcome is still None
-        if outcome is None and (position.up_tokens > 0 or position.down_tokens > 0):
-            lost = position.up_tokens + position.down_tokens
-            logger.error("Clearing %.4f phantom tokens (no resolution)", lost)
-            position.up_tokens = 0.0
-            position.down_tokens = 0.0
-
-        # Create a Trader just for resolution (uses same strategy/executor)
-        trader = Trader(strategy, executor)
-        trader._position = position
-        trader.end_session(outcome)
-        if not self._dry_run:
-            _save_position(position)
-
-        # Cache balance for simulator use
+        Runs in a daemon thread so it doesn't block the main loop from starting
+        the next window. Position tokens were already zeroed by the caller;
+        winning tokens are queued back via ``_credit_queue``.
+        """
         try:
-            _save_balance_cache(position.cash, self.slug_prefix, self.session_count + 1)
-        except Exception as e:
-            logger.warning("Failed to save balance cache: %s", e)
+            total_trades = sum(d["trade_count"] for d in resolution_data)
+            strategy_names = [d["slot_name"] for d in resolution_data]
 
-        # Log session summary
-        summary = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "slug_prefix": self.slug_prefix,
-            "window_ts": window_ts,
-            "strategy": self._strategy_name,
-            "outcome": outcome,
-            "trades": trade_count,
-            "cash": round(position.cash, 4),
-            "session_number": self.session_count + 1,
-        }
-        try:
-            with open(BOT_SESSION_LOG, "a") as f:
-                f.write(json.dumps(summary) + "\n")
-        except Exception as e:
-            logger.warning("Failed to log session summary: %s", e)
+            logger.info("Waiting for resolution (background)...")
+            self.recorder.write_live_status(
+                "resolving",
+                trading_info={
+                    "strategy": strategy_names[0],
+                    "trades": total_trades,
+                    "strategies": strategy_names,
+                },
+            )
 
-        logger.info(
-            "Session resolved: %s | Trades: %d | Cash: $%.2f",
-            outcome, trade_count, position.cash,
-        )
+            outcome = wait_for_resolution(
+                self.slug_prefix, window_ts,
+                self.resolution_timeout, self.resolution_poll_interval,
+                lambda: self.running,
+            )
 
-        # Write trading sidecar file alongside the session
-        if session_filepath and trade_dicts is not None:
-            starting_cash = self._starting_cash
-            sidecar = {
-                "strategy": self._strategy_name,
-                "params": {k: v for k, v in (self._strategy.__dict__ if self._strategy else {}).items()
-                           if not k.startswith("_")},
-                "dry_run": self._dry_run,
-                "starting_cash": round(starting_cash, 4),
-                "final_cash": round(position.cash, 4),
-                "pnl": round(position.cash - starting_cash, 4),
-                "outcome": outcome,
-                "trades": trade_dicts,
-            }
-            sidecar_path = session_filepath + ".trading.json"
-            try:
-                with open(sidecar_path, "w") as f:
-                    json.dump(sidecar, f, indent=2)
-                logger.info("Trading sidecar saved: %s", sidecar_path)
-            except Exception as e:
-                logger.warning("Failed to save trading sidecar: %s", e)
+            if outcome is None:
+                # Fallback: BTC price comparison
+                final_btc = session.final_btc_price_usd or 0.0
+                init_btc = initial_btc_price or 0.0
+                if init_btc > 0 and final_btc > 0:
+                    outcome = "Up" if final_btc > init_btc else "Down"
+                    logger.warning(
+                        "Resolution timeout — using BTC price fallback: %s (%.2f -> %.2f)",
+                        outcome, init_btc, final_btc,
+                    )
+                else:
+                    logger.error(
+                        "RESOLUTION FAILED: No on-chain resolution and BTC price "
+                        "unavailable. Tokens lost."
+                    )
 
-        # Auto-claim resolved positions in background
-        if trade_count > 0 and self._private_key and self._safe_address:
-            from app.claim import has_builder_creds, claim_background
-            if has_builder_creds():
+            any_live_trades = False
+            sidecar_strategies = []
+
+            for d in resolution_data:
+                up = d["up_tokens"]
+                down = d["down_tokens"]
+
+                # Compute credit from resolution outcome
+                if outcome == "Up":
+                    credit = up
+                elif outcome == "Down":
+                    credit = down
+                else:
+                    credit = 0.0
+                    if up > 0 or down > 0:
+                        logger.error(
+                            "[%s] Clearing %.4f phantom tokens (no resolution)",
+                            d["slot_name"], up + down,
+                        )
+
+                # Queue credit for main thread to apply
+                if credit > 0:
+                    self._credit_queue.put((d["slot_name"], credit))
+
+                final_cash = d["session_end_cash"] + credit
+                pnl = final_cash - d["starting_cash"]
+
+                # Log per-slot summary
+                summary = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "slug_prefix": self.slug_prefix,
+                    "window_ts": window_ts,
+                    "strategy": d["slot_name"],
+                    "outcome": outcome,
+                    "trades": d["trade_count"],
+                    "cash": round(final_cash, 4),
+                    "session_number": self.session_count,
+                }
                 try:
-                    claim_background(self._private_key, self._safe_address)
+                    with open(BOT_SESSION_LOG, "a") as f:
+                        f.write(json.dumps(summary) + "\n")
                 except Exception as e:
-                    logger.debug("Skipping background claim: %s", e)
+                    logger.warning("Failed to log session summary: %s", e)
+
+                logger.info(
+                    "[%s] Session resolved: %s | Trades: %d | Cash: $%.2f (credit: +$%.4f)",
+                    d["slot_name"], outcome, d["trade_count"], final_cash, credit,
+                )
+
+                if d["trade_count"] > 0 and not d["dry_run"]:
+                    any_live_trades = True
+
+                sidecar_entry = {
+                    "strategy": d["slot_name"],
+                    "params": d["strategy_params"],
+                    "dry_run": d["dry_run"],
+                    "starting_cash": round(d["starting_cash"], 4),
+                    "final_cash": round(final_cash, 4),
+                    "pnl": round(pnl, 4),
+                    "outcome": outcome,
+                    "trades": d["trade_dicts"],
+                }
+                if d.get("decision_log"):
+                    sidecar_entry["decision_log"] = d["decision_log"]
+                sidecar_strategies.append(sidecar_entry)
+
+            # Cache balance for simulator use
+            total_credit = sum(
+                d["up_tokens"] if outcome == "Up"
+                else d["down_tokens"] if outcome == "Down"
+                else 0.0
+                for d in resolution_data
+            )
+            total_cash = sum(d["session_end_cash"] for d in resolution_data) + total_credit
+            try:
+                _save_balance_cache(total_cash, self.slug_prefix, self.session_count)
+            except Exception as e:
+                logger.warning("Failed to save balance cache: %s", e)
+
+            # Write trading sidecar file
+            if session_filepath:
+                first = sidecar_strategies[0] if sidecar_strategies else {}
+                sidecar = dict(first)  # backward-compat top-level fields
+                sidecar["strategies"] = sidecar_strategies
+                sidecar_path = session_filepath + ".trading.json"
+                try:
+                    with open(sidecar_path, "w") as f:
+                        json.dump(sidecar, f, indent=2)
+                    logger.info("Trading sidecar saved: %s", sidecar_path)
+                except Exception as e:
+                    logger.warning("Failed to save trading sidecar: %s", e)
+
+            # Auto-claim resolved positions
+            if any_live_trades and self._private_key and self._safe_address:
+                from app.claim import has_builder_creds, claim_background
+                if has_builder_creds():
+                    try:
+                        claim_background(self._private_key, self._safe_address)
+                    except Exception as e:
+                        logger.debug("Skipping background claim: %s", e)
+
+        except Exception as e:
+            logger.error("Background resolution error: %s", e, exc_info=True)

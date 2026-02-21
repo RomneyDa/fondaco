@@ -19,6 +19,7 @@ class EmaCrossover(Strategy):
     """
 
     name = "EmaCrossover"
+    description = "Classic dual EMA crossover on BTC price. When the fast EMA crosses above the slow, buys Up; when it crosses below, sells and buys Down. Can flip positions multiple times per session."
 
     def __init__(self, fast_span=25, slow_span=150, bet_fraction=0.3, max_trades=10):
         self.fast_span = fast_span

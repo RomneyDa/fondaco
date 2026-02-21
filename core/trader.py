@@ -19,6 +19,7 @@ from core.defaults import (
     MAX_LOSS_FRACTION,
     MAX_POSITION_DOLLARS,
     MAX_POSITION_FRACTION,
+    MAX_SPREAD,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,8 @@ class Position:
             if dollars <= 0:
                 return 0.0, 0.0
             tokens = round(dollars / price, 4)
+            if tokens < CLOB_MIN_ORDER_TOKENS:
+                return 0.0, 0.0
             cost = tokens * price
             return tokens, cost
 
@@ -297,7 +300,7 @@ class ClobExecutor(Executor):
 
         Uses Position.compute_trade_size() for size calculation (shared
         with the backtesting simulator) so rounding behaviour is identical.
-        Price = token midpoint from sample, rounded to 2 decimals.
+        Price = best_ask for buys, best_bid for sells (crosses the spread).
         On success, mutates position via Position.apply_trade().
         """
         # Lazy-import so simulation doesn't require py_clob_client
@@ -308,12 +311,14 @@ class ClobExecutor(Executor):
 
         now = datetime.now(timezone.utc).isoformat()
 
-        # Map action side to token_id and order side
+        # Map action side to token_id, order side, and book price keys.
+        # Buys cross the spread (best_ask), sells cross via best_bid.
+        # Skip if spread > MAX_SPREAD — no real liquidity on the book.
         side_map = {
-            "buy_up": ("up_token_id", "BUY", "up_token_midpoint"),
-            "buy_down": ("down_token_id", "BUY", "down_token_midpoint"),
-            "sell_up": ("up_token_id", "SELL", "up_token_midpoint"),
-            "sell_down": ("down_token_id", "SELL", "down_token_midpoint"),
+            "buy_up": ("up_token_id", "BUY", "up_token_best_ask", "up_token_best_bid"),
+            "buy_down": ("down_token_id", "BUY", "down_token_best_ask", "down_token_best_bid"),
+            "sell_up": ("up_token_id", "SELL", "up_token_best_bid", "up_token_best_ask"),
+            "sell_down": ("down_token_id", "SELL", "down_token_best_bid", "down_token_best_ask"),
         }
 
         if action.side not in side_map:
@@ -325,20 +330,38 @@ class ClobExecutor(Executor):
             self._log_trade(trade)
             return trade
 
-        token_key, order_side, midpoint_key = side_map[action.side]
+        token_key, order_side, price_key, other_side_key = side_map[action.side]
         token_id = metadata[token_key]
-        midpoint = sample.get(midpoint_key)
+        exec_price = sample.get(price_key)
+        other_price = sample.get(other_side_key)
 
-        if midpoint is None or midpoint <= 0 or midpoint >= 1.0:
+        # Both sides of the book must exist
+        if (exec_price is None or exec_price <= 0 or exec_price >= 1.0
+                or other_price is None or other_price <= 0 or other_price >= 1.0):
             trade = Trade(
                 tick_index=tick_index, side=action.side, price=0, amount=0,
                 tokens=0, order_id=None, token_id=token_id, success=False,
-                error="Invalid midpoint: {}".format(midpoint), timestamp=now,
+                error="No valid price for {}".format(action.side), timestamp=now,
             )
             self._log_trade(trade)
             return trade
 
-        price = round(midpoint, 2)
+        # Spread check: skip if book is too thin
+        if action.side.startswith("buy"):
+            spread = exec_price - other_price  # ask - bid
+        else:
+            spread = other_price - exec_price  # ask - bid
+        if spread > MAX_SPREAD:
+            trade = Trade(
+                tick_index=tick_index, side=action.side, price=round(exec_price, 2),
+                amount=0, tokens=0, order_id=None, token_id=token_id, success=False,
+                error="Spread too wide: {:.2f} (max {:.2f})".format(spread, MAX_SPREAD),
+                timestamp=now,
+            )
+            self._log_trade(trade)
+            return trade
+
+        price = round(exec_price, 2)
         if price <= 0 or price >= 1.0:
             trade = Trade(
                 tick_index=tick_index, side=action.side, price=price, amount=0,
@@ -482,10 +505,12 @@ class Trader:
         self._history = []    # type: List[Dict[str, Any]]
         self._trades = []     # type: List[Trade]
         self._tick_index = 0
+        self._capture_decision_log = False
+        self._decision_log = []  # type: List[Dict[str, Any]]
 
     def start_session(self, metadata, position, initial_btc_price, window_duration,
-                      reference_balance=None):
-        # type: (Dict[str, Any], Position, float, float, Optional[float]) -> None
+                      reference_balance=None, capture_decision_log=False):
+        # type: (Dict[str, Any], Position, float, float, Optional[float], bool) -> None
         """Reset state and notify the strategy of a new session."""
         self._metadata = metadata
         self._position = position
@@ -495,6 +520,9 @@ class Trader:
         self._history = []
         self._trades = []
         self._tick_index = 0
+        self._capture_decision_log = capture_decision_log
+        self._decision_log = []
+        self.strategy._tick_logs = []
         self.strategy.on_session_start(metadata)
 
     def _compute_guardrail_limits(self, sample):
@@ -519,8 +547,8 @@ class Trader:
         room = max(0.0, max_exposure - current_exposure)
         return room, False
 
-    def _apply_guardrails(self, action, max_buy_amount, loss_limit_hit):
-        # type: (TradeAction, float, bool) -> TradeAction
+    def _apply_guardrails(self, action, max_buy_amount, loss_limit_hit, sample=None):
+        # type: (TradeAction, float, bool, Optional[Dict[str, Any]]) -> TradeAction
         """Cap buy amounts by position limit and refuse trades if loss limit hit."""
         if action.side == "hold":
             return action
@@ -533,6 +561,21 @@ class Trader:
                 return HOLD
             if action.amount > max_buy_amount:
                 action = TradeAction(side=action.side, amount=max_buy_amount)
+
+            # Block buys when spread is too wide (no real liquidity)
+            if sample is not None:
+                spread_map = {
+                    "buy_up": ("up_token_best_ask", "up_token_best_bid"),
+                    "buy_down": ("down_token_best_ask", "down_token_best_bid"),
+                }
+                keys = spread_map.get(action.side)
+                if keys:
+                    ask = sample.get(keys[0])
+                    bid = sample.get(keys[1])
+                    if ask is not None and bid is not None:
+                        spread = ask - bid
+                        if spread > MAX_SPREAD:
+                            return HOLD
 
         return action
 
@@ -551,11 +594,12 @@ class Trader:
         # Compute guardrail limits once per tick
         max_buy_amount, loss_limit_hit = self._compute_guardrail_limits(sample)
 
-        # Defensive copy of position for strategy visibility
+        # Pass history by reference — strategies must not mutate it.
+        # (A full copy every tick was O(n²) per session.)
         ctx = TickContext(
             tick_index=self._tick_index,
             sample=sample,
-            history=list(self._history),
+            history=self._history,
             position=Position(
                 cash=self._position.cash,
                 up_tokens=self._position.up_tokens,
@@ -569,7 +613,18 @@ class Trader:
         )
 
         action = self.strategy.on_tick(ctx)
-        action = self._apply_guardrails(action, max_buy_amount, loss_limit_hit)
+
+        # Drain strategy decision log buffer
+        tick_logs = getattr(self.strategy, "_tick_logs", None)
+        if tick_logs:
+            if self._capture_decision_log:
+                self._decision_log.append({
+                    "tick": self._tick_index,
+                    "msgs": list(tick_logs),
+                })
+            tick_logs.clear()
+
+        action = self._apply_guardrails(action, max_buy_amount, loss_limit_hit, sample)
 
         trade = self.executor.execute_trade(
             action, self._tick_index, self._metadata, sample, self._position,
@@ -588,3 +643,9 @@ class Trader:
         """Resolve position and return the list of trades."""
         self._position.resolve(outcome)
         return list(self._trades)
+
+    @property
+    def decision_log(self):
+        # type: () -> List[Dict[str, Any]]
+        """Sparse decision log: only ticks where the strategy called log()."""
+        return self._decision_log

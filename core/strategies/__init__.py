@@ -11,6 +11,7 @@ from core.strategies.ema_crossover import EmaCrossover
 from core.strategies.ols_slope import OlsSlope
 from core.strategies.scalper import Scalper
 from core.strategies.trailing_stop_momentum import TrailingStopMomentum
+from core.strategies.bargain_sniper import BargainSniper
 
 ALL_STRATEGIES = {
     "AlwaysBuyUp": AlwaysBuyUp,
@@ -23,4 +24,5 @@ ALL_STRATEGIES = {
     "OlsSlope": OlsSlope,
     "Scalper": Scalper,
     "TrailingStopMomentum": TrailingStopMomentum,
+    "BargainSniper": BargainSniper,
 }

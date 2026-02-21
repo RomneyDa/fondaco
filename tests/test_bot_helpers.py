@@ -9,57 +9,61 @@ from core.trader import Position
 
 
 # ---------------------------------------------------------------------------
-# _save_position / _load_position
+# _save_slot_position (per-strategy position persistence)
 # ---------------------------------------------------------------------------
 
 
 class TestPositionPersistence:
     def test_save_and_load_roundtrip(self, tmp_path):
-        pos_file = str(tmp_path / "bot_position.json")
-        with patch("app.runner.POSITION_FILE", pos_file):
-            from app.runner import _save_position, _load_position
+        pos_dir = str(tmp_path / "bot_positions")
+        with patch("app.runner.POSITION_DIR", pos_dir):
+            from app.runner import _save_slot_position
             pos = Position(cash=42.5, up_tokens=10.0, down_tokens=5.0)
-            _save_position(pos)
+            _save_slot_position("TestStrategy", pos)
 
-            loaded = _load_position(100.0)
+            filepath = os.path.join(pos_dir, "TestStrategy.json")
+            assert os.path.exists(filepath)
+            with open(filepath) as f:
+                data = json.load(f)
+            loaded = Position.from_dict(data)
             assert loaded.cash == 42.5
             assert loaded.up_tokens == 10.0
             assert loaded.down_tokens == 5.0
 
-    def test_load_missing_file_returns_fresh(self, tmp_path):
-        pos_file = str(tmp_path / "nonexistent.json")
-        with patch("app.runner.POSITION_FILE", pos_file):
-            from app.runner import _load_position
-            loaded = _load_position(100.0)
-            assert loaded.cash == 100.0
-            assert loaded.up_tokens == 0.0
-
-    def test_load_corrupted_file_returns_fresh(self, tmp_path):
-        pos_file = str(tmp_path / "corrupt.json")
-        with open(pos_file, "w") as f:
-            f.write("not json!!!")
-        with patch("app.runner.POSITION_FILE", pos_file):
-            from app.runner import _load_position
-            loaded = _load_position(50.0)
-            assert loaded.cash == 50.0
-
     def test_save_is_atomic(self, tmp_path):
         """Verify atomic write: .tmp file should not persist after save."""
-        pos_file = str(tmp_path / "bot_position.json")
-        with patch("app.runner.POSITION_FILE", pos_file):
-            from app.runner import _save_position
-            _save_position(Position(cash=99.0))
-            assert os.path.exists(pos_file)
-            assert not os.path.exists(pos_file + ".tmp")
+        pos_dir = str(tmp_path / "bot_positions")
+        with patch("app.runner.POSITION_DIR", pos_dir):
+            from app.runner import _save_slot_position
+            _save_slot_position("TestStrategy", Position(cash=99.0))
+            filepath = os.path.join(pos_dir, "TestStrategy.json")
+            assert os.path.exists(filepath)
+            assert not os.path.exists(filepath + ".tmp")
 
     def test_save_overwrites(self, tmp_path):
-        pos_file = str(tmp_path / "bot_position.json")
-        with patch("app.runner.POSITION_FILE", pos_file):
-            from app.runner import _save_position, _load_position
-            _save_position(Position(cash=10.0))
-            _save_position(Position(cash=20.0))
-            loaded = _load_position(100.0)
-            assert loaded.cash == 20.0
+        pos_dir = str(tmp_path / "bot_positions")
+        with patch("app.runner.POSITION_DIR", pos_dir):
+            from app.runner import _save_slot_position
+            _save_slot_position("TestStrategy", Position(cash=10.0))
+            _save_slot_position("TestStrategy", Position(cash=20.0))
+            filepath = os.path.join(pos_dir, "TestStrategy.json")
+            with open(filepath) as f:
+                data = json.load(f)
+            assert data["cash"] == 20.0
+
+    def test_multiple_strategies(self, tmp_path):
+        """Different strategy names write to different files."""
+        pos_dir = str(tmp_path / "bot_positions")
+        with patch("app.runner.POSITION_DIR", pos_dir):
+            from app.runner import _save_slot_position
+            _save_slot_position("StratA", Position(cash=100.0))
+            _save_slot_position("StratB", Position(cash=200.0))
+            assert os.path.exists(os.path.join(pos_dir, "StratA.json"))
+            assert os.path.exists(os.path.join(pos_dir, "StratB.json"))
+            with open(os.path.join(pos_dir, "StratA.json")) as f:
+                assert json.load(f)["cash"] == 100.0
+            with open(os.path.join(pos_dir, "StratB.json")) as f:
+                assert json.load(f)["cash"] == 200.0
 
 
 # ---------------------------------------------------------------------------

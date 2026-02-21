@@ -112,7 +112,19 @@ body {
   font-size: 12px;
   font-family: monospace;
   color: var(--text-dim);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
+
+.session-outcome {
+  font-size: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-left: 6px;
+}
+.session-outcome.up { color: var(--green); }
+.session-outcome.down { color: var(--red); }
 
 .nav-item.nav-session:hover { color: var(--text); }
 .nav-item.nav-session.active { color: var(--accent); }
@@ -539,4 +551,143 @@ h2 {
 
 .trading-summary {
   margin-bottom: 8px;
+}
+
+/* ---- Strategy description ---- */
+
+.strategy-description {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ---- Trade Log ---- */
+
+.trade-log {
+  margin-top: 32px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.trade-log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.trade-log-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.trade-log-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.trade-log-controls select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.trade-log-controls select:focus {
+  border-color: var(--accent);
+}
+
+.trade-log-table-wrap {
+  overflow-x: auto;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.trade-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.trade-log-table th {
+  position: sticky;
+  top: 0;
+  background: var(--sidebar-bg);
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+}
+
+.trade-log-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.trade-log-table tbody tr:hover {
+  background: rgba(88, 166, 255, 0.04);
+}
+
+.trade-row-fail {
+  background: rgba(248, 81, 73, 0.04);
+}
+
+.trade-time {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.trade-date {
+  color: var(--text-dim);
+  margin-right: 6px;
+  font-size: 11px;
+}
+
+.trade-side {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.side-up { color: var(--green); }
+.side-down { color: var(--red); }
+
+.trade-status-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.status-ok {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+}
+
+.status-fail {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--red);
+}
+
+.trade-error-cell {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: default;
 }

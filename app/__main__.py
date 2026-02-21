@@ -256,7 +256,10 @@ def cmd_trade_on(args):
 
 def cmd_set_cash(args):
     """Update cash on the running process."""
-    body = {"cash": float(args.amount)}
+    body = {"cash": float(args.amount)}  # type: Dict[str, Any]
+    strategy = getattr(args, "strategy", None)
+    if strategy:
+        body["strategy"] = strategy
     resp = _http_request("POST", "/api/control/set-cash", body)
     if resp.get("ok"):
         print("Cash updated: ${}".format(resp.get("cash")))
@@ -267,9 +270,14 @@ def cmd_set_cash(args):
 
 def cmd_trade_off(args):
     """Disable trading on the running process."""
-    resp = _http_request("POST", "/api/control/trade-off")
+    strategy = getattr(args, "strategy", None)
+    body = {"strategy": strategy} if strategy else None
+    resp = _http_request("POST", "/api/control/trade-off", body)
     if resp.get("ok"):
-        print("Trading disabled (takes effect next session).")
+        if strategy:
+            print("Trading disabled for {} (takes effect next session).".format(strategy))
+        else:
+            print("Trading disabled for all strategies (takes effect next session).")
     else:
         print("Error: {}".format(resp.get("error", "unknown")))
         sys.exit(1)
@@ -286,11 +294,18 @@ def cmd_status(args):
     print("App running (PID {})".format(state["pid"]))
     print("  Slug: {}".format(resp.get("slug_prefix", "?")))
     print("  Sessions: {}".format(resp.get("session_count", 0)))
-    print("  Trading: {}".format("ENABLED" if resp.get("trading_enabled") else "disabled"))
-    if resp.get("trading_enabled"):
-        print("  Strategy: {}".format(resp.get("strategy", "?")))
-        print("  Cash: ${}".format(resp.get("cash", "?")))
-        print("  Dry run: {}".format(resp.get("dry_run", False)))
+    strategies = resp.get("strategies", [])
+    if strategies:
+        print("  Trading: ENABLED ({} {})".format(
+            len(strategies), "strategy" if len(strategies) == 1 else "strategies",
+        ))
+        for s in strategies:
+            dry_tag = " [DRY RUN]" if s.get("dry_run") else ""
+            print("    - {} | cash=${:.2f}{} | params={}".format(
+                s["name"], s.get("cash", 0), dry_tag, s.get("params", {}),
+            ))
+    else:
+        print("  Trading: disabled")
 
 
 def cmd_stop(args):
@@ -500,11 +515,21 @@ def main():
     )
 
     # trade-off
-    subparsers.add_parser("trade-off", help="Disable trading on running app")
+    trade_off_parser = subparsers.add_parser("trade-off", help="Disable trading on running app")
+    trade_off_parser.add_argument(
+        "--strategy",
+        default=None,
+        help="Remove only this strategy (omit to disable all)",
+    )
 
     # set-cash
     set_cash_parser = subparsers.add_parser("set-cash", help="Update cash on running app")
     set_cash_parser.add_argument("amount", type=float, help="New cash amount in dollars")
+    set_cash_parser.add_argument(
+        "--strategy",
+        default=None,
+        help="Target strategy (required when multiple strategies are active)",
+    )
 
     # status
     subparsers.add_parser("status", help="Check app status")

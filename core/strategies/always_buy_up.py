@@ -7,6 +7,7 @@ from core.strategies.base import Strategy
 class AlwaysBuyUp(Strategy):
 
     name = "AlwaysBuyUp"
+    description = "Immediately buys Up tokens at the first tick and holds until resolution. Simple benchmark — profits whenever BTC ends higher."
 
     def __init__(self, bet_fraction=1.0):
         self.bet_fraction = bet_fraction
