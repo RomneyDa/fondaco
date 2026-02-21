@@ -24,7 +24,7 @@ class MidpointMomentum(Strategy):
         midpoint_threshold=0.55,
         momentum_threshold=0.03,
         entry_deadline=0.6,
-        bet_fraction=0.5,
+        bet_fraction=1.0,
     ):
         self.lookback_ticks = lookback_ticks
         self.midpoint_threshold = midpoint_threshold

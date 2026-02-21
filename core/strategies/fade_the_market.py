@@ -22,7 +22,7 @@ class FadeTheMarket(Strategy):
         persist_ticks=5,
         max_elapsed=0.3,
         stop_loss_mid=0.85,
-        bet_fraction=0.5,
+        bet_fraction=1.0,
     ):
         self.overreaction_threshold = overreaction_threshold
         self.persist_ticks = persist_ticks

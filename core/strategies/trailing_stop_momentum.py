@@ -25,7 +25,7 @@ class TrailingStopMomentum(Strategy):
     description = "Enters on BTC momentum, then manages the position with a trailing stop. Uses a fixed stop initially, switches to trailing after minimum profit is reached. Can re-enter after a cooldown period."
 
     def __init__(self, momentum_bps=5, trail_pct=0.03, min_profit=0.02,
-                 fixed_stop=0.04, cooldown_ticks=200, bet_fraction=0.4, max_trades=8):
+                 fixed_stop=0.04, cooldown_ticks=200, bet_fraction=1.0, max_trades=8):
         self.momentum_bps = momentum_bps
         self.trail_pct = trail_pct
         self.min_profit = min_profit

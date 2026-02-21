@@ -22,7 +22,7 @@ class LateSniper(Strategy):
         confidence_threshold=0.70,
         max_price=0.85,
         stop_loss_pct=0.15,
-        bet_fraction=0.5,
+        bet_fraction=1.0,
     ):
         self.min_elapsed = min_elapsed
         self.confidence_threshold = confidence_threshold

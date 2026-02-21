@@ -24,7 +24,7 @@ class OlsSlope(Strategy):
     description = "Fits a rolling linear regression to recent BTC prices. Enters when the slope (trend strength in bps/tick) exceeds a threshold, exits when slope reverses. Can re-enter on new trends."
 
     def __init__(self, window_size=50, slope_threshold_bps=0.02, exit_slope_bps=0.0,
-                 bet_fraction=0.4, max_trades=10):
+                 bet_fraction=1.0, max_trades=10):
         self.window_size = window_size
         self.slope_threshold_bps = slope_threshold_bps
         self.exit_slope_bps = exit_slope_bps

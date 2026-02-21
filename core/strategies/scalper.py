@@ -25,7 +25,7 @@ class Scalper(Strategy):
     description = "Mean reversion on token midpoints. Buys when a token's midpoint dips below its rolling average, then exits on a profit target or stop-loss. Can make multiple quick round-trips per session."
 
     def __init__(self, lookback=50, entry_deviation=0.02, profit_target=0.02,
-                 stop_loss=0.05, bet_fraction=0.3, max_trades=12):
+                 stop_loss=0.05, bet_fraction=1.0, max_trades=12):
         self.lookback = lookback
         self.entry_deviation = entry_deviation
         self.profit_target = profit_target
