@@ -617,10 +617,10 @@ class Runner:
         logger.info("%s: %s", mode.upper(), metadata.event_title)
 
         # 4. Create SessionData (always)
-        initial_btc_price = self.fetcher.get_btc_price()
+        # initial_btc_price is set from the first tick (no separate API call)
         session = SessionData(
             metadata=metadata,
-            initial_btc_price_usd=initial_btc_price,
+            initial_btc_price_usd=None,
             final_btc_price_usd=None,
             outcome=None,
             outcome_prices=None,
@@ -632,13 +632,14 @@ class Runner:
         slot_results = []  # type: List[tuple]
         if mode == "trading":
             slot_results = self._poll_with_trading(
-                session, metadata, window_ts, slots, initial_btc_price,
+                session, metadata, window_ts, slots,
             )
         else:
             self._poll_collect_only(session, metadata, window_ts)
 
-        # 6. Record final BTC price and determine outcome from price comparison
-        session.final_btc_price_usd = self.fetcher.get_btc_price()
+        # 6. Record final BTC price from last sample
+        if session.samples:
+            session.final_btc_price_usd = session.samples[-1].btc_price_usd
         session.collection_ended_utc = datetime.now(timezone.utc).isoformat()
 
         if session.initial_btc_price_usd and session.final_btc_price_usd:
@@ -706,7 +707,7 @@ class Runner:
                 target=self._resolve_in_background,
                 args=(
                     session, metadata, window_ts, resolution_data,
-                    initial_btc_price, filepath,
+                    session.initial_btc_price_usd, filepath,
                 ),
                 daemon=True,
                 name="resolution-{}".format(window_ts),
@@ -744,6 +745,8 @@ class Runner:
                 if f.done():
                     try:
                         sample = f.result()
+                        if session.initial_btc_price_usd is None:
+                            session.initial_btc_price_usd = sample.btc_price_usd
                         session.samples.append(sample)
                         logger.debug(
                             "Sample %d: BTC=$%s Up=%s Down=%s",
@@ -777,8 +780,8 @@ class Runner:
 
     # ----- Trading poll loop -----
 
-    def _poll_with_trading(self, session, metadata, window_ts, slots, initial_btc_price):
-        # type: (SessionData, Any, int, List[StrategySlot], Optional[float]) -> List[tuple]
+    def _poll_with_trading(self, session, metadata, window_ts, slots):
+        # type: (SessionData, Any, int, List[StrategySlot]) -> List[tuple]
         """Single-sample sequential poll loop with strategy tick processing.
 
         Creates one Trader per slot. Each tick is fed to ALL traders.
@@ -793,23 +796,11 @@ class Runner:
             self._day_start_cash = sum(s.starting_cash for s in slots)
             self._current_day = today
 
-        # Create one Trader per slot
+        # Traders are initialized on first tick (need initial BTC price from stream)
         traders = []  # type: List[Trader]
         per_slot_trade_dicts = []  # type: List[List[Dict[str, Any]]]
         per_slot_trade_counts = []  # type: List[int]
-
-        for slot in slots:
-            trader = Trader(slot.strategy, slot.executor)
-            # Each slot gets its own share of the daily loss reference
-            ref_balance = slot.starting_cash
-            trader.start_session(
-                metadata_dict, slot.position, initial_btc_price or 0.0,
-                self.window_duration, reference_balance=ref_balance,
-                capture_decision_log=True,
-            )
-            traders.append(trader)
-            per_slot_trade_dicts.append([])
-            per_slot_trade_counts.append(0)
+        traders_initialized = False
 
         window_end_ts = window_ts + self.window_duration
         next_sample_time = time.time()
@@ -837,6 +828,23 @@ class Runner:
 
                     # Record sample for data collection
                     session.samples.append(sample)
+
+                    # Initialize traders on first tick (gets BTC price from stream)
+                    if not traders_initialized:
+                        initial_btc_price = sample.btc_price_usd or 0.0
+                        session.initial_btc_price_usd = initial_btc_price
+                        for slot in slots:
+                            trader = Trader(slot.strategy, slot.executor)
+                            ref_balance = slot.starting_cash
+                            trader.start_session(
+                                metadata_dict, slot.position, initial_btc_price,
+                                self.window_duration, reference_balance=ref_balance,
+                                capture_decision_log=True,
+                            )
+                            traders.append(trader)
+                            per_slot_trade_dicts.append([])
+                            per_slot_trade_counts.append(0)
+                        traders_initialized = True
 
                     # Feed tick to ALL traders
                     for i, (slot, trader) in enumerate(zip(slots, traders)):
