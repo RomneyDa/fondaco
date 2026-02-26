@@ -161,6 +161,26 @@ class BuyTrend(Strategy):
                 len(recent), self.min_sessions))
             return
 
+        # Require contiguous sessions — no gaps allowed.
+        # Sessions run every 5 minutes; allow up to 7 min between consecutive
+        # sessions to tolerate minor timing drift.
+        max_gap = timedelta(minutes=7)
+        for i in range(1, len(recent)):
+            gap = recent[i]["window_start"] - recent[i - 1]["window_start"]
+            if gap > max_gap:
+                self.log("Gap in session data: {} -> {} ({:.0f}min gap), holding off".format(
+                    recent[i - 1]["window_start"].strftime("%H:%M"),
+                    recent[i]["window_start"].strftime("%H:%M"),
+                    gap.total_seconds() / 60))
+                return
+
+        # Also require the most recent session is close to current (no gap right before)
+        last_to_current = current_start - recent[-1]["window_start"]
+        if last_to_current > max_gap:
+            self.log("Most recent session {}min before current, holding off".format(
+                int(last_to_current.total_seconds() / 60)))
+            return
+
         # Overall BTC price change: earliest initial -> latest final
         first_price = recent[0]["initial_btc"]
         last_price = recent[-1]["final_btc"]

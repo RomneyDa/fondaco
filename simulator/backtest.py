@@ -13,12 +13,36 @@ import itertools
 import json
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timezone
 
 from simulator.engine import Simulator, BacktestResult, load_sessions
 from core.defaults import BALANCE_CACHE_FILE, BACKTEST_LOG_FILE
 from core.strategies import ALL_STRATEGIES
+
+
+# -- Process pool worker globals & functions --
+_worker_sim = None   # type: Optional[Simulator]
+_worker_sessions = None  # type: Optional[list]
+
+
+def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions):
+    # type: (float, str, float, list, list) -> None
+    """Initializer for each worker process — sets up Simulator and sessions once."""
+    global _worker_sim, _worker_sessions
+    _worker_sim = Simulator(
+        starting_cash=starting_cash,
+        execution_mode=execution_mode,
+        slippage=slippage,
+        all_sessions=all_sessions,
+    )
+    _worker_sessions = sessions
+
+
+def _run_one(strategy):
+    """Run a single strategy variant in a worker process."""
+    return _worker_sim.run_backtest(strategy, _worker_sessions)
 
 
 def build_variants(strategy_cls):
@@ -293,17 +317,29 @@ def main():
         all_sessions=all_sessions,
     )
 
-    # Run grid search
-    all_results = []  # type: list
-    total_variants = 0
-
+    # Build all strategy variants upfront
+    all_variants = []  # type: list
     for name in strategy_names:
         cls = ALL_STRATEGIES[name]
-        variants = build_variants(cls)
-        total_variants += len(variants)
-        for strat in variants:
-            result = sim.run_backtest(strat, sessions)
-            all_results.append(result)
+        all_variants.extend(build_variants(cls))
+
+    total_variants = len(all_variants)
+
+    # Run grid search — parallelize when there are multiple variants
+    if total_variants <= 1:
+        all_results = [sim.run_backtest(v, sessions) for v in all_variants]
+    else:
+        num_workers = min(total_variants, os.cpu_count() or 1)
+        print("Running {} variants across {} workers...".format(
+            total_variants, num_workers,
+        ))
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            initializer=_init_worker,
+            initargs=(starting_cash, args.execution, args.slippage,
+                      all_sessions, sessions),
+        ) as pool:
+            all_results = list(pool.map(_run_one, all_variants))
 
     print("Tested {} strategy variants across {} strategies".format(
         total_variants, len(strategy_names),
