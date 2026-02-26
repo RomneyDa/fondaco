@@ -464,6 +464,7 @@ class SimExecutor(Executor):
 
 
 FILL_CHECK_INTERVAL = 2.5  # seconds between polling order status
+SETTLEMENT_COOLDOWN_S = 10.0  # seconds to wait after buy fill before selling
 
 
 class ClobExecutor(Executor):
@@ -895,6 +896,7 @@ class Trader:
         self._decision_log = []  # type: List[Dict[str, Any]]
         self._open_orders = []  # type: List[OpenOrder]
         self._last_tick_fills = []  # type: List[Trade]
+        self._settlement_cooldowns = {}  # type: Dict[str, float]  # token -> time.time() of last buy fill
 
     def start_session(self, metadata, position, initial_btc_price, window_duration,
                       reference_balance=None, capture_decision_log=False):
@@ -912,6 +914,7 @@ class Trader:
         self._decision_log = []
         self._open_orders = []
         self._last_tick_fills = []
+        self._settlement_cooldowns = {}
         self.strategy._tick_logs = []
         self.strategy.on_session_start(metadata)
 
@@ -946,6 +949,20 @@ class Trader:
         if loss_limit_hit:
             return HOLD
 
+        if action.side.startswith("sell"):
+            token = "up" if action.side == "sell_up" else "down"
+            fill_time = self._settlement_cooldowns.get(token)
+            if fill_time is not None:
+                elapsed = time.time() - fill_time
+                if elapsed < SETTLEMENT_COOLDOWN_S:
+                    logger.info(
+                        "Settlement cooldown: suppressing %s (%.1fs since fill, need %.1fs)",
+                        action.side, elapsed, SETTLEMENT_COOLDOWN_S,
+                    )
+                    return HOLD
+                else:
+                    del self._settlement_cooldowns[token]
+
         if action.side.startswith("buy"):
             if max_buy_amount <= 0:
                 return HOLD
@@ -972,6 +989,10 @@ class Trader:
                     fill.tick_index = self._tick_index
                     self._trades.append(fill)
                 self._last_tick_fills = fills
+                for fill in fills:
+                    if fill.side in ("buy_up", "buy_down"):
+                        token = "up" if fill.side == "buy_up" else "down"
+                        self._settlement_cooldowns[token] = time.time()
             except NotImplementedError:
                 pass
 

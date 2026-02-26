@@ -215,6 +215,10 @@ def cmd_start(args):
         session_cap=session_cap,
     )
 
+    # Restore strategies from last run if requested (only when no --strategy given)
+    if getattr(args, "restore", False) and strategy_name is None:
+        runner.restore_strategies()
+
     # Start control server
     server = ControlServer(runner, port)
     server.start()
@@ -292,6 +296,16 @@ def cmd_trade_off(args):
         sys.exit(1)
 
 
+def cmd_kill(args):
+    """Signal the app to stop after the current session finishes."""
+    resp = _http_request("POST", "/api/control/kill")
+    if resp.get("ok"):
+        print("Kill signal sent — app will stop after the current session.")
+    else:
+        print("Error: {}".format(resp.get("error", "unknown")))
+        sys.exit(1)
+
+
 def cmd_status(args):
     """Check app status."""
     state = _read_state()
@@ -303,6 +317,8 @@ def cmd_status(args):
     print("App running (PID {})".format(state["pid"]))
     print("  Slug: {}".format(resp.get("slug_prefix", "?")))
     print("  Sessions: {}".format(resp.get("session_count", 0)))
+    if resp.get("stop_after_session"):
+        print("  ** Stopping after current session (kill pending) **")
     strategies = resp.get("strategies", [])
     if strategies:
         print("  Trading: ENABLED ({} {})".format(
@@ -509,6 +525,11 @@ def main():
         default=None,
         help="Max dollars deployed per session (rest held in reserve)",
     )
+    start_parser.add_argument(
+        "--restore",
+        action="store_true",
+        help="Restore strategy configs from last run (data/strategies.json)",
+    )
 
     # trade-on
     trade_on_parser = subparsers.add_parser("trade-on", help="Enable trading on running app")
@@ -562,6 +583,9 @@ def main():
         help="Target strategy (required when multiple strategies are active)",
     )
 
+    # kill
+    subparsers.add_parser("kill", help="Stop the app after the current session finishes")
+
     # status
     subparsers.add_parser("status", help="Check app status")
 
@@ -583,6 +607,7 @@ def main():
         "trade-on": cmd_trade_on,
         "trade-off": cmd_trade_off,
         "set-cash": cmd_set_cash,
+        "kill": cmd_kill,
         "status": cmd_status,
         "stop": cmd_stop,
         "claim": cmd_claim,

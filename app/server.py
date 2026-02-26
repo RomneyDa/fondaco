@@ -65,6 +65,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_trade_off()
         elif self.path == "/api/control/set-cash":
             self._handle_set_cash()
+        elif self.path == "/api/control/kill":
+            self._handle_kill()
         elif self.path == "/api/control/stop":
             self._handle_stop()
         else:
@@ -130,6 +132,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "cash": round(float(cash), 4)})
         except Exception as e:
             self._send_json({"error": str(e)}, 400)
+
+    def _handle_kill(self):
+        runner = self.runner
+        if runner is None:
+            self._send_json({"error": "No runner"}, 500)
+            return
+        runner.request_stop_after_session()
+        self._send_json({"ok": True, "stop_after_session": True})
 
     def _handle_stop(self):
         runner = self.runner

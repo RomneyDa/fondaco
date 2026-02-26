@@ -45,6 +45,8 @@ class RTDSClient:
         self._thread = None  # type: Optional[threading.Thread]
         self._ws = None  # type: Optional[websocket.WebSocketApp]
         self._tick_count = 0
+        self._wake_event = threading.Event()  # watchdog wakes reconnect sleep
+        self._connect_ts = 0.0  # monotonic time when _connect() started; 0 = sleeping
 
     def start(self):
         # type: () -> None
@@ -62,6 +64,7 @@ class RTDSClient:
         # type: () -> None
         """Stop the background WebSocket thread."""
         self._running = False
+        self._wake_event.set()  # wake reconnect sleep
         if self._ws is not None:
             try:
                 self._ws.close()
@@ -91,30 +94,55 @@ class RTDSClient:
 
     def _watchdog_loop(self):
         # type: () -> None
-        """Kill the WebSocket if no ticks arrive within WATCHDOG_TIMEOUT_S."""
+        """Kill the WebSocket if no ticks arrive within WATCHDOG_TIMEOUT_S.
+
+        Only closes the socket if the current connection has been running long
+        enough (grace period = WATCHDOG_TIMEOUT_S) to avoid killing fresh
+        connections during handshake — which previously caused 429 rate-limit
+        storms.  When the reconnect loop is sleeping, signals it to wake up
+        instead of touching the socket.
+        """
         while self._running:
             time.sleep(5)
             with self._lock:
                 age = time.monotonic() - self._latest_ts if self._latest_ts > 0 else 0
-            if age > WATCHDOG_TIMEOUT_S and self._ws is not None:
+            if age <= WATCHDOG_TIMEOUT_S:
+                continue
+
+            connect_ts = self._connect_ts
+            if connect_ts > 0:
+                # Inside _connect() / run_forever()
+                connect_age = time.monotonic() - connect_ts
+                if connect_age < WATCHDOG_TIMEOUT_S:
+                    # Connection too fresh — give it time to receive ticks
+                    continue
                 logger.warning(
                     "RTDS watchdog: no ticks for %.0fs, forcing reconnect", age,
                 )
-                try:
-                    self._ws.close()
-                except Exception:
-                    pass
+                ws = self._ws
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+            else:
+                # Reconnect loop is sleeping — wake it up
+                self._wake_event.set()
 
     def _run_loop(self):
         # type: () -> None
         """Reconnection loop — runs in the background thread."""
         delay = RECONNECT_DELAY_S
         while self._running:
+            self._wake_event.clear()
             ticks_before = self._tick_count
+            self._connect_ts = time.monotonic()
             try:
                 self._connect()
             except Exception as e:
                 logger.warning("RTDS connection error: %s", e)
+            finally:
+                self._connect_ts = 0.0
 
             if not self._running:
                 break
@@ -126,7 +154,7 @@ class RTDSClient:
                 delay = min(delay * 1.5, MAX_RECONNECT_DELAY_S)
 
             logger.info("RTDS reconnecting in %.1fs...", delay)
-            time.sleep(delay)
+            self._wake_event.wait(timeout=delay)
 
     def _connect(self):
         # type: () -> None

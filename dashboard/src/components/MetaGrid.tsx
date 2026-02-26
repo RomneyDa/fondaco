@@ -23,9 +23,22 @@ export function MetaGrid({ session }: Props) {
 
   let btcChange: number | null = null;
   let btcClass = "";
-  if (session.initial_btc_price_usd != null && session.final_btc_price_usd != null) {
-    btcChange = session.final_btc_price_usd - session.initial_btc_price_usd;
-    btcClass = btcChange > 0 ? "up" : btcChange < 0 ? "down" : "";
+  let btcIsLive = false;
+  if (session.initial_btc_price_usd != null) {
+    let currentBtc = session.final_btc_price_usd;
+    if (currentBtc == null && session.samples?.length) {
+      for (let i = session.samples.length - 1; i >= 0; i--) {
+        if (session.samples[i].btc_price_usd != null) {
+          currentBtc = session.samples[i].btc_price_usd;
+          btcIsLive = true;
+          break;
+        }
+      }
+    }
+    if (currentBtc != null) {
+      btcChange = currentBtc - session.initial_btc_price_usd;
+      btcClass = btcChange > 0 ? "up" : btcChange < 0 ? "down" : "";
+    }
   }
 
   return (
@@ -47,10 +60,10 @@ export function MetaGrid({ session }: Props) {
         <div className="meta-value">{fmtPrice(session.initial_btc_price_usd)}</div>
       </div>
       <div className="meta-card">
-        <div className="meta-label">BTC Change</div>
+        <div className="meta-label">{btcIsLive ? "BTC Now" : "BTC Change"}</div>
         <div className={`meta-value ${btcClass}`}>
           {btcChange !== null
-            ? (btcChange >= 0 ? "+" : "") + btcChange.toFixed(2)
+            ? (btcChange > 0 ? "UP +" : btcChange < 0 ? "DOWN " : "") + btcChange.toFixed(2)
             : "\u2014"}
         </div>
       </div>

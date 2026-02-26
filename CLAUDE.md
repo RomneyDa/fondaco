@@ -36,9 +36,19 @@ uv run python -m app trade-on --strategy LateSniper --params min_elapsed=0.7 --c
 uv run python -m app trade-on --strategy DigitalOption --cash 10 --session-cap 5  # $10 bankroll, $5/session
 uv run python -m app trade-off
 
+# Multi-strategy startup: start app, then add each strategy via trade-on
+uv run python -m app start btc-updown-5m-
+uv run python -m app trade-on --strategy LateSniper --cash 20 --session-cap 10
+uv run python -m app trade-on --strategy BuyTrend --cash 20 --session-cap 10
+uv run python -m app trade-on --strategy DigitalOption --cash 10 --session-cap 5
+
+# Restart with same strategies as last run (reads data/strategies.json)
+uv run python -m app start btc-updown-5m- --restore
+
 # Control
 uv run python -m app status
-uv run python -m app stop
+uv run python -m app kill    # graceful: stop after current session finishes
+uv run python -m app stop    # immediate: interrupt current session
 
 # Standalone claim (no running app needed)
 uv run python -m app claim [--no-wait]

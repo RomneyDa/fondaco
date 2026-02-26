@@ -89,8 +89,8 @@ export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
           <div key={s.name} className="nav-item nav-session" style={{ paddingLeft: 28 }}>
             <span>{s.name}</span>
             <span className="count">
-              ${s.cash.toFixed(0)}
-              {s.session_cap != null && <span style={{ opacity: 0.6 }}> ({s.session_cap}/s)</span>}
+              ${(s.starting_cash ?? s.cash).toFixed(0)}
+              {s.session_cap != null && <span style={{ opacity: 0.6 }}> (${s.session_cap}/s)</span>}
             </span>
             {s.dry_run && <span className="dry-run-tag" style={{ fontSize: 9, marginLeft: 4 }}>DRY</span>}
           </div>

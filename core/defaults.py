@@ -44,4 +44,5 @@ BALANCE_CACHE_FILE = os.path.join(BASE_DIR, ".cache", "balance.json")
 # App (unified process)
 APP_STATE_FILE = os.path.join(BASE_DIR, "data", "app.json")
 APP_LOG_FILE = os.path.join(BASE_DIR, "data", "app.log")
+STRATEGIES_CONFIG_FILE = os.path.join(BASE_DIR, "data", "strategies.json")
 DEFAULT_CONTROL_PORT = 8420

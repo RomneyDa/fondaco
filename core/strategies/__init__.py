@@ -8,9 +8,9 @@ from core.strategies.midpoint_momentum import MidpointMomentum
 from core.strategies.late_sniper import LateSniper
 from core.strategies.late_sniper_tp import LateSniperTP
 from core.strategies.fade_the_market import FadeTheMarket
-from core.strategies.bargain_sniper import BargainSniper
 from core.strategies.buy_trend import BuyTrend
 from core.strategies.digital_option import DigitalOption
+from core.strategies.cheap_shot import CheapShot
 
 ALL_STRATEGIES = {
     "AlwaysBuyUp": AlwaysBuyUp,
@@ -20,7 +20,7 @@ ALL_STRATEGIES = {
     "LateSniper": LateSniper,
     "LateSniperTP": LateSniperTP,
     "FadeTheMarket": FadeTheMarket,
-    "BargainSniper": BargainSniper,
     "BuyTrend": BuyTrend,
     "DigitalOption": DigitalOption,
+    "CheapShot": CheapShot,
 }

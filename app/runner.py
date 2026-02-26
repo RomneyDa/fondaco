@@ -27,6 +27,7 @@ from core.defaults import (
     POLL_INTERVAL_SECONDS,
     RESOLUTION_POLL_INTERVAL,
     RESOLUTION_TIMEOUT_SECONDS,
+    STRATEGIES_CONFIG_FILE,
     WINDOW_DURATION_SECONDS,
 )
 from core import market_discovery
@@ -186,6 +187,7 @@ class Runner:
 
         # State
         self.running = True
+        self._stop_after_session = False
         self.session_count = 0
         self._consecutive_auth_failures = 0
 
@@ -223,6 +225,12 @@ class Runner:
         """Request graceful shutdown (from HTTP server)."""
         logger.info("Stop requested via control server.")
         self.running = False
+
+    def request_stop_after_session(self):
+        # type: () -> None
+        """Request shutdown after the current session finishes."""
+        logger.info("Kill requested — will stop after current session.")
+        self._stop_after_session = True
 
     # ----- Trading toggle -----
 
@@ -311,6 +319,7 @@ class Runner:
             "Trading enabled: strategy=%s params=%s cash=$%.2f dry_run=%s per_session=%s session_cap=%s",
             strategy_name, parsed_params, starting_cash, dry_run, per_session, session_cap,
         )
+        self._save_strategies_config()
 
     def _init_clob_executor(self):
         """Initialize shared CLOB executor with auth. Caller must hold self._lock."""
@@ -381,6 +390,61 @@ class Runner:
             else:
                 self._slots = []
                 logger.info("Trading disabled for all strategies (takes effect next session).")
+            self._save_strategies_config()
+
+    def _save_strategies_config(self):
+        # type: () -> None
+        """Persist current strategy slot configs to disk for --restore."""
+        configs = []
+        for slot in self._slots:
+            configs.append({
+                "name": slot.name,
+                "params": slot.params,
+                "cash": slot.starting_cash,
+                "dry_run": slot.dry_run,
+                "per_session": slot.per_session_cash is not None,
+                "session_cap": slot.session_cap,
+            })
+        try:
+            os.makedirs(os.path.dirname(STRATEGIES_CONFIG_FILE), exist_ok=True)
+            tmp = STRATEGIES_CONFIG_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(configs, f, indent=2)
+            os.replace(tmp, STRATEGIES_CONFIG_FILE)
+        except Exception:
+            logger.exception("Failed to save strategies config")
+
+    def restore_strategies(self):
+        # type: () -> None
+        """Restore strategy configs from data/strategies.json."""
+        if not os.path.exists(STRATEGIES_CONFIG_FILE):
+            logger.info("No strategies config file found at %s — nothing to restore.", STRATEGIES_CONFIG_FILE)
+            return
+        try:
+            with open(STRATEGIES_CONFIG_FILE, "r") as f:
+                configs = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.error("Failed to read strategies config: %s", e)
+            return
+        if not configs:
+            logger.info("Strategies config is empty — nothing to restore.")
+            return
+        for entry in configs:
+            name = entry.get("name")
+            if not name:
+                continue
+            try:
+                self.enable_trading(
+                    strategy_name=name,
+                    params=entry.get("params", {}),
+                    cash=entry.get("cash"),
+                    dry_run=entry.get("dry_run", False),
+                    per_session=entry.get("per_session", False),
+                    session_cap=entry.get("session_cap"),
+                )
+                logger.info("Restored strategy: %s", name)
+            except Exception:
+                logger.exception("Failed to restore strategy '%s'", name)
 
     def _find_slot(self, name):
         # type: (str) -> Optional[StrategySlot]
@@ -463,6 +527,7 @@ class Runner:
             first = self._slots[0] if self._slots else None
             status = {
                 "running": self.running,
+                "stop_after_session": self._stop_after_session,
                 "slug_prefix": self.slug_prefix,
                 "session_count": self.session_count,
                 "trading_enabled": len(self._slots) > 0,
@@ -495,6 +560,9 @@ class Runner:
                     self._run_one_session()
                     self.session_count += 1
                     logger.info("Sessions completed: %d", self.session_count)
+                    if self._stop_after_session:
+                        logger.info("Kill signal received — stopping after session %d.", self.session_count)
+                        break
                     if self.max_sessions > 0 and self.session_count >= self.max_sessions:
                         logger.info("Reached max sessions (%d). Stopping.", self.max_sessions)
                         break
