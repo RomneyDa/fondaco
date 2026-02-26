@@ -51,6 +51,14 @@ export interface TradeLogEntry {
   elapsed_seconds: number;
   session_start?: string;
   strategy?: string;
+  // Resolution record fields
+  _type?: "resolution";
+  outcome?: string;
+  pnl?: number;
+  starting_cash?: number;
+  final_cash?: number;
+  credit?: number;
+  trades?: number;
 }
 
 export interface BotTrade {
@@ -77,6 +85,8 @@ export interface StrategySlotStatus {
   dry_run: boolean;
   cash: number;
   starting_cash: number;
+  per_session_cash?: number;
+  session_cap?: number;
 }
 
 export interface BotStatus {

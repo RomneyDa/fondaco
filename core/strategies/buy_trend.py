@@ -127,8 +127,6 @@ class BuyTrend(Strategy):
         self._should_buy = None
         self._bought = False
 
-        data_dir = self._resolve_data_dir(metadata)
-
         # Parse current session's window start
         window_start_str = metadata.get("window_start_utc", "")
         try:
@@ -139,12 +137,18 @@ class BuyTrend(Strategy):
 
         cutoff = current_start - timedelta(minutes=self.lookback_minutes)
 
-        # Load cached session summaries
-        all_summaries = _load_session_summaries(data_dir)
+        # Use injected summaries from backtest engine if available,
+        # otherwise fall back to reading session files from disk (live trading).
+        prior_summaries = metadata.get("_prior_session_summaries")
+        if prior_summaries is not None:
+            all_summaries_list = prior_summaries
+        else:
+            data_dir = self._resolve_data_dir(metadata)
+            all_summaries_list = list(_load_session_summaries(data_dir).values())
 
         # Filter to sessions in the lookback window, strictly before current
         recent = []
-        for summary in all_summaries.values():
+        for summary in all_summaries_list:
             ts = summary["window_start"]
             if cutoff <= ts < current_start:
                 if summary["initial_btc"] and summary["final_btc"]:

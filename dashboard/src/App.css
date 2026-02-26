@@ -691,3 +691,49 @@ h2 {
   font-size: 12px;
   cursor: default;
 }
+
+/* Resolution rows */
+.trade-row-resolution {
+  background: rgba(136, 132, 216, 0.06);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.resolution-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.status-win {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+}
+
+.status-loss {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--red);
+}
+
+.status-neutral {
+  background: rgba(136, 132, 216, 0.15);
+  color: var(--text-dim);
+}
+
+.resolution-strategy {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.resolution-detail {
+  color: var(--text-dim);
+}
+
+.resolution-pnl {
+  font-weight: 600;
+  font-family: monospace;
+}
+
+.pnl-positive { color: var(--green); }
+.pnl-negative { color: var(--red); }

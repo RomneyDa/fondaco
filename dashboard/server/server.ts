@@ -12,6 +12,7 @@ const DATA_DIR = path.resolve(__dirname, "../../data");
 const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
 const LIVE_DIR = path.join(DATA_DIR, "live");
 const APP_JSON = path.join(DATA_DIR, "app.json");
+const BOT_TRADES_FILE = path.join(DATA_DIR, "bot_trades.jsonl");
 const CLIENT_DIR = path.resolve(__dirname, "../dist/client");
 const PORT = parseInt(process.env.PORT || "3456", 10);
 
@@ -393,6 +394,28 @@ app.get("/api/bot/trades", (req: Request, res: Response) => {
           } catch {}
         }
       }
+    }
+
+    // 3. bot_trades.jsonl (includes trade attempts + resolution records)
+    if (fs.existsSync(BOT_TRADES_FILE)) {
+      try {
+        const lines = fs.readFileSync(BOT_TRADES_FILE, "utf-8").trim().split("\n");
+        // Read last N lines to avoid loading entire history
+        const recentLines = lines.slice(-limit * 2);
+        for (const line of recentLines) {
+          if (!line) continue;
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type === "resolution") {
+              allTrades.push({
+                ...entry,
+                _type: "resolution",
+                session_start: entry.timestamp,
+              });
+            }
+          } catch {}
+        }
+      } catch {}
     }
 
     // Sort newest-first: by timestamp if available, else by session_start

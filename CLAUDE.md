@@ -33,6 +33,7 @@ uv run python -m app start btc-updown-5m- --strategy LateSniper --params min_ela
 
 # Toggle trading on a running app (HTTP calls to control server)
 uv run python -m app trade-on --strategy LateSniper --params min_elapsed=0.7 --cash 100
+uv run python -m app trade-on --strategy DigitalOption --cash 10 --session-cap 5  # $10 bankroll, $5/session
 uv run python -m app trade-off
 
 # Control
@@ -47,6 +48,17 @@ uv run python -m simulator.backtest data/sessions/btc-updown-5m --strategy all -
 ```
 
 Slug prefix is always required (positional arg). Known prefixes in `slugs.json` (git-ignored). Use `--window` matching the slug (300 for 5m, 900 for 15m).
+
+### Per-Session Cash Limits
+
+Two flags control how cash is allocated across sessions:
+
+| Flag | Effect |
+|---|---|
+| `--per-session` | Reset `position.cash` to the `--cash` amount at the start of every session. Wins/losses don't carry over. |
+| `--session-cap <N>` | Deploy at most $N per session; hold excess in reserve. Reserve is restored after resolution, so the bankroll grows/shrinks but per-session risk is capped. |
+
+**`--session-cap` is the typical choice for bankroll management.** Example: `--cash 10 --session-cap 5` starts with a $10 bankroll and risks $5 per session. If the first session wins $2, the bankroll becomes $12 and the next session still deploys $5 (with $7 in reserve). Use `--per-session` only when you want a hard fixed budget with no accumulation.
 
 ## File Structure
 

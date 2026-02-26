@@ -92,8 +92,11 @@ class _Handler(BaseHTTPRequestHandler):
             cash = body.get("cash")
             dry_run = body.get("dry_run", False)
             per_session = body.get("per_session", False)
+            session_cap = body.get("session_cap")
+            if session_cap is not None:
+                session_cap = float(session_cap)
             runner.enable_trading(strategy_name, params, cash=cash, dry_run=dry_run,
-                                  per_session=per_session)
+                                  per_session=per_session, session_cap=session_cap)
             self._send_json({"ok": True, "trading": True, "strategy": strategy_name})
         except Exception as e:
             self._send_json({"error": str(e)}, 400)

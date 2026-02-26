@@ -3,6 +3,7 @@
 import glob
 import json
 import os
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +17,41 @@ from core.trader import (
     SimExecutor,
     Trader,
 )
+
+
+def _parse_utc(s):
+    # type: (str) -> datetime
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _build_session_summaries(sessions):
+    # type: (List[Dict[str, Any]]) -> List[Dict[str, Any]]
+    """Build sorted list of session summaries from loaded session dicts."""
+    summaries = []
+    for s in sessions:
+        meta = s.get("metadata", {})
+        ws = meta.get("window_start_utc", "")
+        try:
+            window_start = _parse_utc(ws)
+        except (ValueError, TypeError):
+            continue
+        initial_btc = s.get("initial_btc_price_usd")
+        final_btc = s.get("final_btc_price_usd")
+        outcome = s.get("outcome")
+        if initial_btc and final_btc and outcome:
+            summaries.append({
+                "window_start": window_start,
+                "initial_btc": initial_btc,
+                "final_btc": final_btc,
+                "outcome": outcome,
+            })
+    summaries.sort(key=lambda x: x["window_start"])
+    return summaries
 
 
 @dataclass
@@ -70,10 +106,15 @@ class Simulator:
         starting_cash=100.0,
         execution_mode="book",
         slippage=0.02,
+        all_sessions=None,
     ):
         self.starting_cash = starting_cash
         self.execution_mode = execution_mode
         self.slippage = slippage
+        # Pre-build sorted session summaries for strategies that need lookback
+        self._session_summaries = (
+            _build_session_summaries(all_sessions) if all_sessions else None
+        )
 
     def run_session(self, strategy, session_dict):
         # type: (Any, Dict[str, Any]) -> SessionResult
@@ -83,6 +124,18 @@ class Simulator:
         outcome = session_dict["outcome"]
         initial_btc = session_dict.get("initial_btc_price_usd") or 0.0
         source_file = session_dict.get("_source_file", "")
+
+        # Inject prior session summaries for strategies that need lookback
+        if self._session_summaries is not None:
+            ws = metadata.get("window_start_utc", "")
+            try:
+                current_start = _parse_utc(ws)
+                prior = [s for s in self._session_summaries
+                         if s["window_start"] < current_start]
+                metadata = dict(metadata)
+                metadata["_prior_session_summaries"] = prior
+            except (ValueError, TypeError):
+                pass
 
         # Compute window duration from samples
         if len(samples) >= 2:

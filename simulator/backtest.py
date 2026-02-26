@@ -260,13 +260,15 @@ def main():
     args.cash = starting_cash
 
     # Load sessions
-    sessions = load_sessions(args.data_dir)
-    if not sessions:
+    all_sessions = load_sessions(args.data_dir)
+    if not all_sessions:
         print("No resolved sessions found in: {}".format(args.data_dir))
         sys.exit(1)
 
     if args.recent is not None:
-        sessions = sessions[-args.recent:]
+        sessions = all_sessions[-args.recent:]
+    else:
+        sessions = all_sessions
 
     print("Loaded {} resolved sessions from {}".format(len(sessions), args.data_dir))
     print("Execution: {} (slippage={})  Starting cash: ${}".format(
@@ -288,6 +290,7 @@ def main():
         starting_cash=starting_cash,
         execution_mode=args.execution,
         slippage=args.slippage,
+        all_sessions=all_sessions,
     )
 
     # Run grid search

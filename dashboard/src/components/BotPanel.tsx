@@ -10,7 +10,10 @@ const STRATEGIES: Record<string, string> = {
   MomentumEntry: "Watches BTC price early in the window. If BTC moves more than a threshold (in basis points), buys in that direction. Only enters during the first portion of the window to catch early trends.",
   MidpointMomentum: "Tracks token midpoint trends over recent ticks. If a token\u2019s midpoint is rising with enough momentum above a threshold, buys that side. Trend-following on market sentiment.",
   LateSniper: "Waits until late in the window when the outcome is more predictable, then buys the likely winner. Only enters when the token midpoint shows high confidence and the price isn\u2019t too expensive. Trades accuracy for lower profit per bet.",
+  LateSniperTP: "LateSniper variant with take-profit. Same late entry, but sells early if the midpoint rises above a take-profit threshold (default 15%) rather than holding to resolution. Locks in gains on winners.",
   FadeTheMarket: "Mean reversion contrarian play. If a token midpoint spikes to an extreme early in the window, bets against it \u2014 expecting the market overreacted and the price will revert.",
+  BargainSniper: "Buys cheap tokens early in the session when they\u2019re in a target price range, then manages with stop-loss and take-profit. Overrides take-profit when the market gap is wide enough to let winners ride.",
+  BuyTrend: "Checks recent session history for a BTC price trend. If enough sessions confirm a directional move exceeding a threshold, buys in that direction at the start of the session.",
   EmaCrossover: "Classic dual EMA crossover on BTC price. When the fast EMA crosses above the slow, buys Up; when it crosses below, sells and buys Down. Can flip positions multiple times per session.",
   OlsSlope: "Fits a rolling linear regression to recent BTC prices. Enters when the slope (trend strength in bps/tick) exceeds a threshold, exits when slope reverses. Can re-enter on new trends.",
   Scalper: "Mean reversion on token midpoints. Buys when a token\u2019s midpoint dips below its rolling average, then exits on a profit target or stop-loss. Can make multiple quick round-trips per session.",
@@ -22,8 +25,11 @@ const STRATEGY_DEFAULTS: Record<string, string> = {
   AlwaysBuyDown: "bet_fraction=1.0",
   MomentumEntry: "entry_window=0.2,price_threshold_bps=25.0,bet_fraction=0.5",
   MidpointMomentum: "lookback_ticks=5,midpoint_threshold=0.55,momentum_threshold=0.03,entry_deadline=0.6,bet_fraction=0.5",
-  LateSniper: "min_elapsed=0.7,confidence_threshold=0.60,max_price=0.85,bet_fraction=0.5",
+  LateSniper: "min_elapsed=0.7,confidence_threshold=0.70,max_price=0.85,bet_fraction=1.0",
+  LateSniperTP: "min_elapsed=0.7,confidence_threshold=0.68,max_price=0.9,stop_loss_pct=0.1,take_profit_pct=0.15",
   FadeTheMarket: "overreaction_threshold=0.70,max_elapsed=0.3,bet_fraction=0.5",
+  BargainSniper: "min_price=0.28,max_price=0.36,entry_window=0.20,stop_loss_pct=0.20,take_profit_pct=0.30",
+  BuyTrend: "min_sessions=5,lookback_minutes=60,min_change_bps=5.0,min_direction_pct=0.75",
   EmaCrossover: "fast_span=25,slow_span=150,bet_fraction=0.3,max_trades=10",
   OlsSlope: "window_size=50,slope_threshold_bps=0.02,exit_slope_bps=0.0,bet_fraction=0.4,max_trades=10",
   Scalper: "lookback=50,entry_deviation=0.02,profit_target=0.02,stop_loss=0.05,bet_fraction=0.3,max_trades=12",
@@ -231,7 +237,21 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
                   </div>
                 ) : (
                   <div className="meta-value">
-                    {isTrading ? `$${totalCash.toFixed(2)}` : "\u2014"}
+                    {isTrading ? (
+                      <>
+                        ${totalCash.toFixed(2)}
+                        {strategies.length === 1 && strategies[0].session_cap != null && (
+                          <span className="subtitle" style={{ marginLeft: 4, fontSize: 11 }}>
+                            (${strategies[0].session_cap!.toFixed(0)}/session)
+                          </span>
+                        )}
+                        {strategies.length === 1 && strategies[0].per_session_cash != null && !strategies[0].session_cap && (
+                          <span className="subtitle" style={{ marginLeft: 4, fontSize: 11 }}>
+                            (reset ${strategies[0].per_session_cash!.toFixed(0)}/session)
+                          </span>
+                        )}
+                      </>
+                    ) : "\u2014"}
                   </div>
                 )}
               </div>
@@ -262,7 +282,19 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
                 </div>
                 <div className="meta-card">
                   <div className="meta-label">Cash</div>
-                  <div className="meta-value">${s.cash.toFixed(2)}</div>
+                  <div className="meta-value">
+                    ${s.cash.toFixed(2)}
+                    {s.session_cap != null && (
+                      <span className="subtitle" style={{ marginLeft: 4, fontSize: 11 }}>
+                        (${s.session_cap.toFixed(0)}/session)
+                      </span>
+                    )}
+                    {s.per_session_cash != null && !s.session_cap && (
+                      <span className="subtitle" style={{ marginLeft: 4, fontSize: 11 }}>
+                        (reset ${s.per_session_cash.toFixed(0)}/session)
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="meta-card" style={{ flex: 0 }}>
                   <button

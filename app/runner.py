@@ -67,6 +67,8 @@ class StrategySlot:
     executor: Any                       # Executor (ClobExecutor or SimExecutor)
     cash_explicit: bool = False         # True when cash was explicitly set
     per_session_cash: Optional[float] = None  # if set, reset cash to this at each session start
+    session_cap: Optional[float] = None       # if set, max dollars deployed per session (rest held in reserve)
+    _session_reserve: float = 0.0             # cash held back from session (internal)
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +166,7 @@ class Runner:
         dry_run=False,                                  # type: bool
         max_sessions=0,                                 # type: int
         per_session=False,                              # type: bool
+        session_cap=None,                               # type: Optional[float]
     ):
         self.slug_prefix = slug_prefix
         self.window_duration = window_duration
@@ -205,6 +208,7 @@ class Runner:
                 cash=starting_cash,
                 dry_run=dry_run,
                 per_session=per_session,
+                session_cap=session_cap,
             )
 
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -223,12 +227,14 @@ class Runner:
     # ----- Trading toggle -----
 
     def enable_trading(self, strategy_name, params=None, cash=None, dry_run=False,
-                       per_session=False):
-        # type: (str, Optional[Dict[str, Any]], Optional[float], bool, bool) -> None
+                       per_session=False, session_cap=None):
+        # type: (str, Optional[Dict[str, Any]], Optional[float], bool, bool, Optional[float]) -> None
         """Add or update a strategy slot. Takes effect next session.
 
         If per_session=True, cash is reset to the starting amount at the
         beginning of each session (independent budget per session).
+        If session_cap is set, each session deploys at most that many dollars
+        while the rest stays in reserve (bankroll grows with wins).
         """
         if strategy_name not in ALL_STRATEGIES:
             raise ValueError("Unknown strategy '{}'. Available: {}".format(
@@ -297,12 +303,13 @@ class Runner:
                 executor=executor,
                 cash_explicit=cash_explicit,
                 per_session_cash=starting_cash if per_session else None,
+                session_cap=session_cap,
             )
             self._slots.append(slot)
 
         logger.info(
-            "Trading enabled: strategy=%s params=%s cash=$%.2f dry_run=%s per_session=%s",
-            strategy_name, parsed_params, starting_cash, dry_run, per_session,
+            "Trading enabled: strategy=%s params=%s cash=$%.2f dry_run=%s per_session=%s session_cap=%s",
+            strategy_name, parsed_params, starting_cash, dry_run, per_session, session_cap,
         )
 
     def _init_clob_executor(self):
@@ -448,6 +455,8 @@ class Runner:
                 }
                 if slot.per_session_cash is not None:
                     info["per_session_cash"] = round(slot.per_session_cash, 4)
+                if slot.session_cap is not None:
+                    info["session_cap"] = round(slot.session_cap, 4)
                 strategies.append(info)
 
             # Backward-compat: top-level fields from first slot
@@ -714,6 +723,15 @@ class Runner:
                 slot.position.up_tokens = 0.0
                 slot.position.down_tokens = 0.0
 
+                # Restore session reserve (cash held back by session_cap)
+                if slot._session_reserve > 0:
+                    slot.position.cash += slot._session_reserve
+                    logger.info(
+                        "[%s] Restored reserve $%.2f -> total cash $%.2f",
+                        slot.name, slot._session_reserve, slot.position.cash,
+                    )
+                    slot._session_reserve = 0.0
+
             # Launch background resolution
             self._resolution_thread = threading.Thread(
                 target=self._resolve_in_background,
@@ -856,6 +874,18 @@ class Runner:
                                         "[%s] Per-session cash reset: $%.2f -> $%.2f",
                                         slot.name, old, slot.per_session_cash,
                                     )
+
+                            # Session cap: hold back excess cash as reserve
+                            slot._session_reserve = 0.0
+                            if slot.session_cap is not None and slot.position.cash > slot.session_cap:
+                                slot._session_reserve = slot.position.cash - slot.session_cap
+                                slot.position.cash = slot.session_cap
+                                logger.info(
+                                    "[%s] Session cap $%.2f: deploying $%.2f, reserve $%.2f",
+                                    slot.name, slot.session_cap,
+                                    slot.position.cash, slot._session_reserve,
+                                )
+
                             trader = Trader(slot.strategy, slot.executor)
                             ref_balance = slot.starting_cash
                             trader.start_session(

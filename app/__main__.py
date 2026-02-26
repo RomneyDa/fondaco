@@ -197,6 +197,7 @@ def cmd_start(args):
         starting_cash = None
     max_sessions = getattr(args, "sessions", 0)
     per_session = getattr(args, "per_session", False)
+    session_cap = getattr(args, "session_cap", None)
 
     # Create runner
     runner = Runner(
@@ -211,6 +212,7 @@ def cmd_start(args):
         dry_run=dry_run,
         max_sessions=max_sessions,
         per_session=per_session,
+        session_cap=session_cap,
     )
 
     # Start control server
@@ -249,6 +251,9 @@ def cmd_trade_on(args):
         body["dry_run"] = True
     if getattr(args, "per_session", False):
         body["per_session"] = True
+    session_cap = getattr(args, "session_cap", None)
+    if session_cap is not None:
+        body["session_cap"] = session_cap
 
     resp = _http_request("POST", "/api/control/trade-on", body)
     if resp.get("ok"):
@@ -498,6 +503,12 @@ def main():
         action="store_true",
         help="Reset cash to --cash amount at the start of each session",
     )
+    start_parser.add_argument(
+        "--session-cap",
+        type=float,
+        default=None,
+        help="Max dollars deployed per session (rest held in reserve)",
+    )
 
     # trade-on
     trade_on_parser = subparsers.add_parser("trade-on", help="Enable trading on running app")
@@ -526,6 +537,12 @@ def main():
         "--per-session",
         action="store_true",
         help="Reset cash to --cash amount at the start of each session",
+    )
+    trade_on_parser.add_argument(
+        "--session-cap",
+        type=float,
+        default=None,
+        help="Max dollars deployed per session (rest held in reserve)",
     )
 
     # trade-off
