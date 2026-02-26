@@ -68,7 +68,7 @@ class Simulator:
     def __init__(
         self,
         starting_cash=100.0,
-        execution_mode="midpoint_slippage",
+        execution_mode="book",
         slippage=0.02,
     ):
         self.starting_cash = starting_cash

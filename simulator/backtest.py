@@ -207,7 +207,7 @@ def main():
     )
     parser.add_argument(
         "--execution",
-        default="midpoint_slippage",
+        default="book",
         choices=["midpoint_slippage", "midpoint", "book"],
         help="Execution mode (default: midpoint_slippage)",
     )
@@ -228,6 +228,12 @@ def main():
         type=int,
         default=10,
         help="Show top N parameter combos (default: 10)",
+    )
+    parser.add_argument(
+        "--recent",
+        type=int,
+        default=None,
+        help="Only use the N most recent sessions",
     )
     parser.add_argument(
         "--verbose",
@@ -258,6 +264,9 @@ def main():
     if not sessions:
         print("No resolved sessions found in: {}".format(args.data_dir))
         sys.exit(1)
+
+    if args.recent is not None:
+        sessions = sessions[-args.recent:]
 
     print("Loaded {} resolved sessions from {}".format(len(sessions), args.data_dir))
     print("Execution: {} (slippage={})  Starting cash: ${}".format(

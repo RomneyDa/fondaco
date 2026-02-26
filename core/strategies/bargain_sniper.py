@@ -50,15 +50,19 @@ class BargainSniper(Strategy):
             "bet_fraction": bet_fraction,
         }
         self._entered = False
-        self._virtual_side = None  # type: str
-        self._virtual_tokens = 0.0
         self._entry_midpoint = 0.0
 
     def on_session_start(self, metadata):
         self._entered = False
-        self._virtual_side = None
-        self._virtual_tokens = 0.0
         self._entry_midpoint = 0.0
+
+    def _held_side(self, ctx):
+        """Return which side we hold, or None."""
+        if ctx.position.up_tokens > 0:
+            return "up"
+        if ctx.position.down_tokens > 0:
+            return "down"
+        return None
 
     def on_tick(self, ctx):
         up_mid = ctx.sample.get("up_token_midpoint")
@@ -67,17 +71,19 @@ class BargainSniper(Strategy):
             return HOLD
 
         # Already in a position — check exits
-        if self._entered and self._virtual_side is not None:
-            current_mid = up_mid if self._virtual_side == "up" else down_mid
-            entry_value = self._entry_midpoint * self._virtual_tokens
-            current_value = current_mid * self._virtual_tokens
+        held = self._held_side(ctx)
+        if held is not None:
+            held_tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
+            current_mid = up_mid if held == "up" else down_mid
+            entry_value = self._entry_midpoint * held_tokens
+            current_value = current_mid * held_tokens
 
             # Stop-loss
             if current_value <= entry_value * (1.0 - self.stop_loss_pct):
                 self.log("stop-loss: value ${:.2f} down {:.1f}% from entry ${:.2f}".format(
                     current_value, (1.0 - current_value / entry_value) * 100, entry_value,
                 ))
-                return self._exit()
+                return self._exit(ctx)
 
             # Take-profit with gap override
             if current_value >= entry_value * (1.0 + self.take_profit_pct):
@@ -90,19 +96,14 @@ class BargainSniper(Strategy):
                 self.log("take-profit: value ${:.2f} up {:.1f}% from entry ${:.2f}".format(
                     current_value, (current_value / entry_value - 1.0) * 100, entry_value,
                 ))
-                return self._exit()
+                return self._exit(ctx)
 
             return HOLD
 
         # Not entered yet — look for entry in early window
         if not self._entered and ctx.elapsed_fraction < self.entry_window:
-            up_ask = ctx.sample.get("up_token_best_ask")
-            down_ask = ctx.sample.get("down_token_best_ask")
-
-            up_in_range = (self.min_price <= up_mid <= self.max_price
-                           and up_ask is not None and up_ask <= self.max_price)
-            down_in_range = (self.min_price <= down_mid <= self.max_price
-                             and down_ask is not None and down_ask <= self.max_price)
+            up_in_range = self.min_price <= up_mid <= self.max_price
+            down_in_range = self.min_price <= down_mid <= self.max_price
 
             if up_in_range and down_in_range:
                 # Prefer the cheaper one
@@ -124,25 +125,24 @@ class BargainSniper(Strategy):
             return HOLD
 
         self._entered = True
-        self._virtual_side = direction
         self._entry_midpoint = midpoint
-        if midpoint > 0:
-            self._virtual_tokens = dollars / midpoint
 
         self.log("{} token {:.2f} in buy range [{:.2f}, {:.2f}]".format(
             direction, midpoint, self.min_price, self.max_price,
         ))
         side = "buy_up" if direction == "up" else "buy_down"
-        return TradeAction(side=side, amount=dollars)
+        return TradeAction(side=side, amount=dollars, price=midpoint)
 
-    def _exit(self):
+    def _exit(self, ctx):
         """Exit current position."""
-        sell_side = "sell_up" if self._virtual_side == "up" else "sell_down"
-        tokens = self._virtual_tokens
-        self._virtual_side = None
-        self._virtual_tokens = 0.0
+        held = self._held_side(ctx)
+        sell_side = "sell_up" if held == "up" else "sell_down"
+        tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
+        up_mid = ctx.sample.get("up_token_midpoint")
+        down_mid = ctx.sample.get("down_token_midpoint")
+        price = up_mid if held == "up" else down_mid
         self._entry_midpoint = 0.0
-        return TradeAction(side=sell_side, amount=tokens)
+        return TradeAction(side=sell_side, amount=tokens, price=price)
 
     def param_grid(self):
         # 3 * 4 * 3 * 3 * 3 * 3 = 972 combos (bet_fraction fixed at 1.0)

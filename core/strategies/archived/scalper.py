@@ -43,18 +43,22 @@ class Scalper(Strategy):
         # Per-session state (bounded deques — only last lookback values kept)
         self._up_mids = deque(maxlen=lookback)  # type: deque
         self._down_mids = deque(maxlen=lookback)  # type: deque
-        self._virtual_side = None  # type: str
-        self._virtual_tokens = 0.0
         self._entry_midpoint = 0.0
         self._trade_count = 0
 
     def on_session_start(self, metadata):
         self._up_mids = deque(maxlen=self.lookback)
         self._down_mids = deque(maxlen=self.lookback)
-        self._virtual_side = None
-        self._virtual_tokens = 0.0
         self._entry_midpoint = 0.0
         self._trade_count = 0
+
+    def _held_side(self, ctx):
+        """Return which side we hold, or None."""
+        if ctx.position.up_tokens > 0:
+            return "up"
+        if ctx.position.down_tokens > 0:
+            return "down"
+        return None
 
     def _rolling_mean(self, values):
         """Compute mean of values in the deque (already bounded to lookback)."""
@@ -79,17 +83,18 @@ class Scalper(Strategy):
             return HOLD
 
         # Check exits first
-        if self._virtual_side is not None:
-            current_mid = up_mid if self._virtual_side == "up" else down_mid
+        held = self._held_side(ctx)
+        if held is not None:
+            current_mid = up_mid if held == "up" else down_mid
             pnl = current_mid - self._entry_midpoint
 
             # Take profit
             if pnl >= self.profit_target:
-                return self._exit()
+                return self._exit(ctx)
 
             # Stop loss
             if pnl <= -self.stop_loss:
-                return self._exit()
+                return self._exit(ctx)
 
             return HOLD
 
@@ -119,19 +124,15 @@ class Scalper(Strategy):
             return HOLD
 
         side = "buy_up" if direction == "up" else "buy_down"
-        if midpoint > 0:
-            self._virtual_tokens = dollars / midpoint
-        self._virtual_side = direction
         self._entry_midpoint = midpoint
         self._trade_count += 1
         return TradeAction(side=side, amount=dollars)
 
-    def _exit(self):
+    def _exit(self, ctx):
         """Exit current position."""
-        sell_side = "sell_up" if self._virtual_side == "up" else "sell_down"
-        tokens = self._virtual_tokens
-        self._virtual_side = None
-        self._virtual_tokens = 0.0
+        held = self._held_side(ctx)
+        sell_side = "sell_up" if held == "up" else "sell_down"
+        tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
         self._entry_midpoint = 0.0
         self._trade_count += 1
         return TradeAction(side=sell_side, amount=tokens)

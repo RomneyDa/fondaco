@@ -39,8 +39,6 @@ class OlsSlope(Strategy):
         }
         # Per-session state (bounded deque — only last window_size prices kept)
         self._prices = deque(maxlen=window_size)  # type: deque
-        self._virtual_side = None  # type: str
-        self._virtual_tokens = 0.0
         self._trade_count = 0
         # Precompute OLS denominators for the fixed window
         n = window_size
@@ -50,9 +48,15 @@ class OlsSlope(Strategy):
 
     def on_session_start(self, metadata):
         self._prices = deque(maxlen=self.window_size)
-        self._virtual_side = None
-        self._virtual_tokens = 0.0
         self._trade_count = 0
+
+    def _held_side(self, ctx):
+        """Return which side we hold, or None."""
+        if ctx.position.up_tokens > 0:
+            return "up"
+        if ctx.position.down_tokens > 0:
+            return "down"
+        return None
 
     def _compute_slope_bps(self):
         """Compute OLS slope of recent prices in bps per tick.
@@ -97,18 +101,17 @@ class OlsSlope(Strategy):
             return HOLD
 
         # Check for exit first
-        if self._virtual_side is not None:
+        held = self._held_side(ctx)
+        if held is not None:
             should_exit = False
-            if self._virtual_side == "up" and slope_bps < -self.exit_slope_bps:
+            if held == "up" and slope_bps < -self.exit_slope_bps:
                 should_exit = True
-            elif self._virtual_side == "down" and slope_bps > self.exit_slope_bps:
+            elif held == "down" and slope_bps > self.exit_slope_bps:
                 should_exit = True
 
             if should_exit:
-                sell_side = "sell_up" if self._virtual_side == "up" else "sell_down"
-                tokens = self._virtual_tokens
-                self._virtual_side = None
-                self._virtual_tokens = 0.0
+                sell_side = "sell_up" if held == "up" else "sell_down"
+                tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
                 self._trade_count += 1
                 return TradeAction(side=sell_side, amount=tokens)
 
@@ -132,11 +135,6 @@ class OlsSlope(Strategy):
             return HOLD
 
         side = "buy_up" if direction == "up" else "buy_down"
-        midpoint_key = "up_token_midpoint" if direction == "up" else "down_token_midpoint"
-        midpoint = ctx.sample.get(midpoint_key)
-        if midpoint is not None and midpoint > 0:
-            self._virtual_tokens = dollars / midpoint
-        self._virtual_side = direction
         self._trade_count += 1
         return TradeAction(side=side, amount=dollars)
 

@@ -8,8 +8,9 @@ class that drives the tick loop identically for both replay and live trading.
 import json
 import logging
 import math
+import time
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,7 +20,6 @@ from core.defaults import (
     MAX_LOSS_FRACTION,
     MAX_POSITION_DOLLARS,
     MAX_POSITION_FRACTION,
-    MAX_SPREAD,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,9 +35,24 @@ class TradeAction:
     """Output from a strategy's on_tick method."""
     side: str  # buy_up, buy_down, sell_up, sell_down, hold
     amount: float = 0.0  # dollars for buys, token count for sells
+    price: Optional[float] = None  # if set → GTC limit order; if None → FAK (current behavior)
 
 
 HOLD = TradeAction(side="hold", amount=0.0)
+
+
+@dataclass
+class OpenOrder:
+    """Tracks a pending GTC limit order."""
+    order_id: str
+    side: str               # buy_up, buy_down, sell_up, sell_down
+    token: str              # "up" or "down"
+    price: float
+    tokens: float
+    dollars_reserved: float  # cash held aside (buys only)
+    tokens_reserved: float   # tokens held aside (sells only)
+    tick_placed: int
+    token_id: Optional[str] = None
 
 
 @dataclass
@@ -134,6 +149,38 @@ class Position:
             self.up_tokens = 0.0
             self.down_tokens = 0.0
 
+    def reserve_for_order(self, side, price, tokens):
+        # type: (str, float, float) -> Tuple[float, float]
+        """Reserve funds for a pending limit order.
+
+        Deducts cash (for buys) or tokens (for sells) immediately so the
+        strategy can't double-spend while the order is pending.
+
+        Returns (dollars_reserved, tokens_reserved).
+        """
+        if side in ("buy_up", "buy_down"):
+            cost = tokens * price
+            self.cash -= cost
+            return cost, 0.0
+        elif side in ("sell_up", "sell_down"):
+            if side == "sell_up":
+                self.up_tokens -= tokens
+            else:
+                self.down_tokens -= tokens
+            return 0.0, tokens
+        return 0.0, 0.0
+
+    def unreserve_for_order(self, side, dollars_reserved, tokens_reserved):
+        # type: (str, float, float) -> None
+        """Return reserved funds when a limit order is cancelled."""
+        if side in ("buy_up", "buy_down"):
+            self.cash += dollars_reserved
+        elif side in ("sell_up", "sell_down"):
+            if side == "sell_up":
+                self.up_tokens += tokens_reserved
+            else:
+                self.down_tokens += tokens_reserved
+
     def to_dict(self):
         # type: () -> Dict[str, float]
         return {"cash": self.cash, "up_tokens": self.up_tokens, "down_tokens": self.down_tokens}
@@ -156,6 +203,7 @@ class TickContext:
     elapsed_fraction: float  # 0.0 to 1.0
     max_buy_amount: float = 0.0    # Max dollars a buy can spend (guardrail-aware)
     loss_limit_hit: bool = False    # True if loss limit reached (all buys blocked)
+    open_orders: List[OpenOrder] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +227,7 @@ class Trade:
     timestamp: Optional[str] = None
     requested_tokens: Optional[float] = None  # original requested amount (for partial fill audit)
     elapsed_seconds: Optional[float] = None   # seconds into the window when trade occurred
+    order_type: Optional[str] = None  # "FAK", "GTC", or None (backward compat)
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +247,37 @@ class Executor(ABC):
         there is nothing to do (hold, zero size).
         """
 
+    def place_limit_order(self, action, tick_index, metadata, sample, position):
+        # type: (TradeAction, int, Dict[str, Any], Dict[str, Any], Position) -> Optional[OpenOrder]
+        """Post a GTC limit order and reserve funds in position.
+
+        Returns an OpenOrder on success, or None if the order can't be placed.
+        """
+        raise NotImplementedError("Limit orders not supported by this executor")
+
+    def check_fills(self, open_orders, sample, position):
+        # type: (List[OpenOrder], Dict[str, Any], Position) -> List[Trade]
+        """Check pending orders for fills. Removes filled orders from the list.
+
+        Returns a list of Trade records for any fills that occurred.
+        """
+        raise NotImplementedError("Limit orders not supported by this executor")
+
+    def cancel_order(self, order, position):
+        # type: (OpenOrder, Position) -> bool
+        """Cancel a pending order and unreserve funds. Returns True on success."""
+        raise NotImplementedError("Limit orders not supported by this executor")
+
+    def cancel_all_orders(self, open_orders, position):
+        # type: (List[OpenOrder], Position) -> int
+        """Cancel all pending orders. Returns count of successfully cancelled orders."""
+        cancelled = 0
+        for order in list(open_orders):
+            if self.cancel_order(order, position):
+                cancelled += 1
+        open_orders.clear()
+        return cancelled
+
 
 # ---------------------------------------------------------------------------
 # SimExecutor — backtesting execution
@@ -207,10 +287,11 @@ class Executor(ABC):
 class SimExecutor(Executor):
     """Executes trades against historical sample data for backtesting."""
 
-    def __init__(self, execution_mode="midpoint_slippage", slippage=0.02):
+    def __init__(self, execution_mode="book", slippage=0.02):
         # type: (str, float) -> None
         self.execution_mode = execution_mode
         self.slippage = slippage
+        self._sim_order_counter = 0
 
     def execute_trade(self, action, tick_index, metadata, sample, position):
         # type: (TradeAction, int, Dict[str, Any], Dict[str, Any], Position) -> Optional[Trade]
@@ -274,10 +355,115 @@ class SimExecutor(Executor):
 
         return None
 
+    def place_limit_order(self, action, tick_index, metadata, sample, position):
+        # type: (TradeAction, int, Dict[str, Any], Dict[str, Any], Position) -> Optional[OpenOrder]
+        """Simulate posting a GTC limit order."""
+        if action.side == "hold" or action.amount <= 0 or action.price is None:
+            return None
+
+        price = round(action.price, 2)
+        if price <= 0 or price >= 1.0:
+            return None
+
+        tokens, dollars = position.compute_trade_size(action.side, price, action.amount)
+        if tokens <= 0 or tokens < CLOB_MIN_ORDER_TOKENS:
+            return None
+
+        # For buys, floor to integer (same as ClobExecutor)
+        if action.side in ("buy_up", "buy_down"):
+            tokens = math.floor(tokens)
+            dollars = tokens * price
+            if tokens < CLOB_MIN_ORDER_TOKENS:
+                return None
+
+        token = "up" if action.side in ("buy_up", "sell_up") else "down"
+
+        # Reserve funds
+        dollars_reserved, tokens_reserved = position.reserve_for_order(
+            action.side, price, tokens,
+        )
+
+        self._sim_order_counter += 1
+        return OpenOrder(
+            order_id="sim-{}".format(self._sim_order_counter),
+            side=action.side,
+            token=token,
+            price=price,
+            tokens=tokens,
+            dollars_reserved=dollars_reserved,
+            tokens_reserved=tokens_reserved,
+            tick_placed=tick_index,
+        )
+
+    def check_fills(self, open_orders, sample, position):
+        # type: (List[OpenOrder], Dict[str, Any], Position) -> List[Trade]
+        """Sim fill model: buy at P fills when midpoint <= P, sell at P fills when midpoint >= P.
+
+        When we post a buy limit at price P, we're offering to buy at P. Market
+        makers will sell to us when fair value (midpoint) is at or below P.
+        Conversely, sell limits at P fill when midpoint >= P.
+        """
+        fills = []
+        remaining = []
+
+        for order in open_orders:
+            mid_key = "up_token_midpoint" if order.token == "up" else "down_token_midpoint"
+            midpoint = sample.get(mid_key)
+            if midpoint is None:
+                remaining.append(order)
+                continue
+
+            filled = False
+            if order.side in ("buy_up", "buy_down"):
+                # Buy limit fills when midpoint <= our price (we're overpaying vs fair value)
+                filled = midpoint <= order.price
+            elif order.side in ("sell_up", "sell_down"):
+                # Sell limit fills when midpoint >= our price (we're underselling vs fair value)
+                filled = midpoint >= order.price
+
+            if filled:
+                # Apply the trade to position (funds were already reserved)
+                # For buys: cash was deducted, now add tokens
+                # For sells: tokens were deducted, now add cash
+                if order.side in ("buy_up", "buy_down"):
+                    if order.side == "buy_up":
+                        position.up_tokens += order.tokens
+                    else:
+                        position.down_tokens += order.tokens
+                else:
+                    position.cash += order.tokens * order.price
+
+                fills.append(Trade(
+                    tick_index=0,  # will be set by caller
+                    side=order.side,
+                    price=order.price,
+                    amount=order.tokens * order.price,
+                    tokens=order.tokens,
+                    order_id=order.order_id,
+                    order_type="GTC",
+                    elapsed_seconds=sample.get("elapsed_seconds"),
+                ))
+            else:
+                remaining.append(order)
+
+        open_orders[:] = remaining
+        return fills
+
+    def cancel_order(self, order, position):
+        # type: (OpenOrder, Position) -> bool
+        """Cancel a simulated order, returning reserved funds."""
+        position.unreserve_for_order(
+            order.side, order.dollars_reserved, order.tokens_reserved,
+        )
+        return True
+
 
 # ---------------------------------------------------------------------------
 # ClobExecutor — live CLOB order execution
 # ---------------------------------------------------------------------------
+
+
+FILL_CHECK_INTERVAL = 2.5  # seconds between polling order status
 
 
 class ClobExecutor(Executor):
@@ -287,6 +473,7 @@ class ClobExecutor(Executor):
         # type: (Any, Optional[str]) -> None
         self.client = clob_client
         self.trade_log_file = trade_log_file
+        self._last_fill_check = 0.0  # timestamp of last check_fills poll
 
     def execute_trade(self, action, tick_index, metadata, sample, position):
         # type: (TradeAction, int, Dict[str, Any], Dict[str, Any], Position) -> Optional[Trade]
@@ -313,7 +500,6 @@ class ClobExecutor(Executor):
 
         # Map action side to token_id, order side, and book price keys.
         # Buys cross the spread (best_ask), sells cross via best_bid.
-        # Skip if spread > MAX_SPREAD — no real liquidity on the book.
         side_map = {
             "buy_up": ("up_token_id", "BUY", "up_token_best_ask", "up_token_best_bid"),
             "buy_down": ("down_token_id", "BUY", "down_token_best_ask", "down_token_best_bid"),
@@ -342,21 +528,6 @@ class ClobExecutor(Executor):
                 tick_index=tick_index, side=action.side, price=0, amount=0,
                 tokens=0, order_id=None, token_id=token_id, success=False,
                 error="No valid price for {}".format(action.side), timestamp=now,
-            )
-            self._log_trade(trade)
-            return trade
-
-        # Spread check: skip if book is too thin
-        if action.side.startswith("buy"):
-            spread = exec_price - other_price  # ask - bid
-        else:
-            spread = other_price - exec_price  # ask - bid
-        if spread > MAX_SPREAD:
-            trade = Trade(
-                tick_index=tick_index, side=action.side, price=round(exec_price, 2),
-                amount=0, tokens=0, order_id=None, token_id=token_id, success=False,
-                error="Spread too wide: {:.2f} (max {:.2f})".format(spread, MAX_SPREAD),
-                timestamp=now,
             )
             self._log_trade(trade)
             return trade
@@ -481,6 +652,221 @@ class ClobExecutor(Executor):
         except Exception as e:
             logger.error("CRITICAL: Failed to log trade to %s: %s", self.trade_log_file, e)
 
+    def place_limit_order(self, action, tick_index, metadata, sample, position):
+        # type: (TradeAction, int, Dict[str, Any], Dict[str, Any], Position) -> Optional[OpenOrder]
+        """Post a GTC limit order via the CLOB API."""
+        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+
+        if action.side == "hold" or action.amount <= 0 or action.price is None:
+            return None
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        side_map = {
+            "buy_up": ("up_token_id", "BUY"),
+            "buy_down": ("down_token_id", "BUY"),
+            "sell_up": ("up_token_id", "SELL"),
+            "sell_down": ("down_token_id", "SELL"),
+        }
+        if action.side not in side_map:
+            return None
+
+        token_key, order_side = side_map[action.side]
+        token_id = metadata[token_key]
+
+        price = round(action.price, 2)
+        if price <= 0 or price >= 1.0:
+            return None
+
+        tokens, dollars = position.compute_trade_size(action.side, price, action.amount)
+
+        # Floor buys to integer (same as FAK path)
+        if action.side in ("buy_up", "buy_down"):
+            tokens = math.floor(tokens)
+            dollars = tokens * price
+
+        if tokens <= 0 or tokens < CLOB_MIN_ORDER_TOKENS:
+            return None
+
+        token = "up" if action.side in ("buy_up", "sell_up") else "down"
+
+        try:
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=price,
+                size=tokens,
+                side=order_side,
+            )
+            options = PartialCreateOrderOptions(
+                tick_size="0.01",
+                neg_risk=False,
+            )
+            signed_order = self.client.create_order(order_args, options)
+            resp = self.client.post_order(signed_order, orderType=OrderType.GTC)
+
+            order_id = None
+            if isinstance(resp, dict):
+                if resp.get("success") is False:
+                    raise RuntimeError(
+                        "CLOB rejected GTC order: {}".format(resp.get("errorMsg", "unknown"))
+                    )
+                order_id = resp.get("orderID") or resp.get("id")
+
+            if order_id is None:
+                raise RuntimeError("No order ID in GTC response")
+
+            # Reserve funds in position
+            dollars_reserved, tokens_reserved = position.reserve_for_order(
+                action.side, price, tokens,
+            )
+
+            logger.info(
+                "GTC limit order placed: %s %s %.0f tokens @ %.2f (order_id=%s)",
+                order_side, token, tokens, price, order_id,
+            )
+
+            # Log the placement
+            trade_record = Trade(
+                tick_index=tick_index, side=action.side, price=price,
+                amount=dollars, tokens=tokens, order_id=order_id,
+                token_id=token_id, success=True, error=None,
+                timestamp=now, order_type="GTC",
+                elapsed_seconds=sample.get("elapsed_seconds"),
+            )
+            self._log_trade(trade_record)
+
+            return OpenOrder(
+                order_id=order_id,
+                side=action.side,
+                token=token,
+                price=price,
+                tokens=tokens,
+                dollars_reserved=dollars_reserved,
+                tokens_reserved=tokens_reserved,
+                tick_placed=tick_index,
+                token_id=token_id,
+            )
+
+        except Exception as e:
+            logger.error("GTC order placement failed: %s", e)
+            trade_record = Trade(
+                tick_index=tick_index, side=action.side, price=price,
+                amount=dollars, tokens=tokens, order_id=None,
+                token_id=token_id, success=False, error=str(e),
+                timestamp=now, order_type="GTC",
+                elapsed_seconds=sample.get("elapsed_seconds"),
+            )
+            self._log_trade(trade_record)
+            return None
+
+    def check_fills(self, open_orders, sample, position):
+        # type: (List[OpenOrder], Dict[str, Any], Position) -> List[Trade]
+        """Poll CLOB for order status. Throttled to every FILL_CHECK_INTERVAL seconds."""
+        now = time.time()
+        if now - self._last_fill_check < FILL_CHECK_INTERVAL:
+            return []
+        self._last_fill_check = now
+
+        fills = []
+        remaining = []
+
+        for order in open_orders:
+            try:
+                resp = self.client.get_order(order.order_id)
+                status = resp.get("status", "").upper() if isinstance(resp, dict) else ""
+
+                if status == "MATCHED":
+                    # Order filled — apply to position
+                    if order.side in ("buy_up", "buy_down"):
+                        if order.side == "buy_up":
+                            position.up_tokens += order.tokens
+                        else:
+                            position.down_tokens += order.tokens
+                    else:
+                        position.cash += order.tokens * order.price
+
+                    fills.append(Trade(
+                        tick_index=0,
+                        side=order.side,
+                        price=order.price,
+                        amount=order.tokens * order.price,
+                        tokens=order.tokens,
+                        order_id=order.order_id,
+                        token_id=order.token_id,
+                        success=True,
+                        order_type="GTC",
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        elapsed_seconds=sample.get("elapsed_seconds"),
+                    ))
+                    logger.info(
+                        "GTC order filled: %s %.0f tokens @ %.2f (order_id=%s)",
+                        order.side, order.tokens, order.price, order.order_id,
+                    )
+
+                elif status in ("CANCELLED", "EXPIRED"):
+                    # Order gone — unreserve funds
+                    position.unreserve_for_order(
+                        order.side, order.dollars_reserved, order.tokens_reserved,
+                    )
+                    logger.info(
+                        "GTC order %s: %s (order_id=%s)",
+                        status.lower(), order.side, order.order_id,
+                    )
+
+                else:
+                    # LIVE or other — keep tracking
+                    remaining.append(order)
+
+            except Exception as e:
+                logger.warning(
+                    "Failed to check order %s: %s (will retry)",
+                    order.order_id, e,
+                )
+                remaining.append(order)
+
+        open_orders[:] = remaining
+        return fills
+
+    def cancel_order(self, order, position):
+        # type: (OpenOrder, Position) -> bool
+        """Cancel a pending GTC order via CLOB API."""
+        try:
+            self.client.cancel(order.order_id)
+            position.unreserve_for_order(
+                order.side, order.dollars_reserved, order.tokens_reserved,
+            )
+            logger.info(
+                "GTC order cancelled: %s (order_id=%s)", order.side, order.order_id,
+            )
+            return True
+        except Exception as e:
+            logger.error("Failed to cancel order %s: %s", order.order_id, e)
+            return False
+
+    def cancel_all_orders(self, open_orders, position):
+        # type: (List[OpenOrder], Position) -> int
+        """Cancel all pending orders via CLOB bulk cancel."""
+        if not open_orders:
+            return 0
+        try:
+            self.client.cancel_all()
+            for order in open_orders:
+                position.unreserve_for_order(
+                    order.side, order.dollars_reserved, order.tokens_reserved,
+                )
+            cancelled = len(open_orders)
+            open_orders.clear()
+            logger.info("Cancelled all %d pending GTC orders", cancelled)
+            return cancelled
+        except Exception as e:
+            logger.error("Bulk cancel failed: %s. Falling back to individual cancels.", e)
+            cancelled = 0
+            for order in list(open_orders):
+                if self.cancel_order(order, position):
+                    cancelled += 1
+            open_orders.clear()
+            return cancelled
+
 
 # ---------------------------------------------------------------------------
 # Trader — shared session runner
@@ -507,6 +893,8 @@ class Trader:
         self._tick_index = 0
         self._capture_decision_log = False
         self._decision_log = []  # type: List[Dict[str, Any]]
+        self._open_orders = []  # type: List[OpenOrder]
+        self._last_tick_fills = []  # type: List[Trade]
 
     def start_session(self, metadata, position, initial_btc_price, window_duration,
                       reference_balance=None, capture_decision_log=False):
@@ -522,6 +910,8 @@ class Trader:
         self._tick_index = 0
         self._capture_decision_log = capture_decision_log
         self._decision_log = []
+        self._open_orders = []
+        self._last_tick_fills = []
         self.strategy._tick_logs = []
         self.strategy.on_session_start(metadata)
 
@@ -560,22 +950,7 @@ class Trader:
             if max_buy_amount <= 0:
                 return HOLD
             if action.amount > max_buy_amount:
-                action = TradeAction(side=action.side, amount=max_buy_amount)
-
-            # Block buys when spread is too wide (no real liquidity)
-            if sample is not None:
-                spread_map = {
-                    "buy_up": ("up_token_best_ask", "up_token_best_bid"),
-                    "buy_down": ("down_token_best_ask", "down_token_best_bid"),
-                }
-                keys = spread_map.get(action.side)
-                if keys:
-                    ask = sample.get(keys[0])
-                    bid = sample.get(keys[1])
-                    if ask is not None and bid is not None:
-                        spread = ask - bid
-                        if spread > MAX_SPREAD:
-                            return HOLD
+                action = TradeAction(side=action.side, amount=max_buy_amount, price=action.price)
 
         return action
 
@@ -584,18 +959,32 @@ class Trader:
         """Build TickContext, call strategy, execute trade, update history.
 
         Returns the Trade (or None) so the caller can inspect/log it.
+        For limit order fills, use ``last_tick_fills`` to get all fills.
         """
+        # 1. Check fills on pending limit orders (before strategy runs)
+        self._last_tick_fills = []
+        if self._open_orders:
+            try:
+                fills = self.executor.check_fills(
+                    self._open_orders, sample, self._position,
+                )
+                for fill in fills:
+                    fill.tick_index = self._tick_index
+                    self._trades.append(fill)
+                self._last_tick_fills = fills
+            except NotImplementedError:
+                pass
+
         elapsed_frac = (
             sample["elapsed_seconds"] / self._window_duration
             if self._window_duration > 0 else 0.0
         )
         elapsed_frac = min(elapsed_frac, 1.0)
 
-        # Compute guardrail limits once per tick
+        # 2. Compute guardrail limits
         max_buy_amount, loss_limit_hit = self._compute_guardrail_limits(sample)
 
-        # Pass history by reference — strategies must not mutate it.
-        # (A full copy every tick was O(n²) per session.)
+        # 3. Build TickContext with open_orders snapshot
         ctx = TickContext(
             tick_index=self._tick_index,
             sample=sample,
@@ -610,8 +999,10 @@ class Trader:
             elapsed_fraction=elapsed_frac,
             max_buy_amount=max_buy_amount,
             loss_limit_hit=loss_limit_hit,
+            open_orders=list(self._open_orders),
         )
 
+        # 4. Call strategy
         action = self.strategy.on_tick(ctx)
 
         # Drain strategy decision log buffer
@@ -624,11 +1015,31 @@ class Trader:
                 })
             tick_logs.clear()
 
+        # 5. Apply guardrails
         action = self._apply_guardrails(action, max_buy_amount, loss_limit_hit, sample)
 
-        trade = self.executor.execute_trade(
-            action, self._tick_index, self._metadata, sample, self._position,
-        )
+        # 6. Route: limit order vs FAK
+        trade = None
+        if action.side != "hold" and action.price is not None:
+            # Limit order path
+            self._replace_order_on_token(action)
+            try:
+                order = self.executor.place_limit_order(
+                    action, self._tick_index, self._metadata, sample, self._position,
+                )
+                if order is not None:
+                    self._open_orders.append(order)
+            except NotImplementedError:
+                logger.warning("Executor does not support limit orders; falling back to FAK")
+                action = TradeAction(side=action.side, amount=action.amount)
+                trade = self.executor.execute_trade(
+                    action, self._tick_index, self._metadata, sample, self._position,
+                )
+        else:
+            # FAK path (existing behavior)
+            trade = self.executor.execute_trade(
+                action, self._tick_index, self._metadata, sample, self._position,
+            )
 
         # Track successful trades (success is None for sim, True for live)
         if trade is not None and trade.success is not False:
@@ -638,11 +1049,40 @@ class Trader:
         self._tick_index += 1
         return trade
 
+    def _replace_order_on_token(self, action):
+        # type: (TradeAction) -> None
+        """Cancel any existing pending order on the same token before placing a new one."""
+        token = "up" if action.side in ("buy_up", "sell_up") else "down"
+        for order in list(self._open_orders):
+            if order.token == token:
+                try:
+                    self.executor.cancel_order(order, self._position)
+                except NotImplementedError:
+                    pass
+                self._open_orders.remove(order)
+
+    def cancel_all_pending(self):
+        # type: () -> int
+        """Cancel all pending limit orders. Returns count cancelled."""
+        if not self._open_orders:
+            return 0
+        try:
+            return self.executor.cancel_all_orders(self._open_orders, self._position)
+        except NotImplementedError:
+            return 0
+
     def end_session(self, outcome):
         # type: (Optional[str]) -> List[Trade]
-        """Resolve position and return the list of trades."""
+        """Cancel pending orders, resolve position, and return the list of trades."""
+        self.cancel_all_pending()
         self._position.resolve(outcome)
         return list(self._trades)
+
+    @property
+    def last_tick_fills(self):
+        # type: () -> List[Trade]
+        """Limit order fills from the most recent process_tick call."""
+        return self._last_tick_fills
 
     @property
     def decision_log(self):

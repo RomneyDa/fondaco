@@ -69,10 +69,10 @@ class MidpointMomentum(Strategy):
 
         if up_now >= self.midpoint_threshold and up_momentum >= self.momentum_threshold:
             self._entered = True
-            return TradeAction(side="buy_up", amount=ctx.position.cash * self.bet_fraction)
+            return TradeAction(side="buy_up", amount=ctx.position.cash * self.bet_fraction, price=up_now)
         elif down_now >= self.midpoint_threshold and down_momentum >= self.momentum_threshold:
             self._entered = True
-            return TradeAction(side="buy_down", amount=ctx.position.cash * self.bet_fraction)
+            return TradeAction(side="buy_down", amount=ctx.position.cash * self.bet_fraction, price=down_now)
 
         return HOLD
 

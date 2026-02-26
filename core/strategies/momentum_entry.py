@@ -24,9 +24,8 @@ class MomentumEntry(Strategy):
         self.stop_loss_pct = stop_loss_pct
         self.bet_fraction = bet_fraction
         self._entered = False
-        self._virtual_side = None   # type: str
-        self._virtual_tokens = 0.0
         self._entry_midpoint = 0.0
+        self._exited = False  # True after stop-loss sell — done for session
         self._params = {
             "entry_window": entry_window,
             "price_threshold_bps": price_threshold_bps,
@@ -37,9 +36,16 @@ class MomentumEntry(Strategy):
 
     def on_session_start(self, metadata):
         self._entered = False
-        self._virtual_side = None
-        self._virtual_tokens = 0.0
         self._entry_midpoint = 0.0
+        self._exited = False
+
+    def _held_side(self, ctx):
+        """Return which side we hold, or None."""
+        if ctx.position.up_tokens > 0:
+            return "up"
+        if ctx.position.down_tokens > 0:
+            return "down"
+        return None
 
     def on_tick(self, ctx):
         up_mid = ctx.sample.get("up_token_midpoint")
@@ -48,22 +54,26 @@ class MomentumEntry(Strategy):
             return HOLD
 
         # Manage existing position — check stop-loss
-        if self._entered and self._virtual_side is not None:
-            current_mid = up_mid if self._virtual_side == "up" else down_mid
-            if current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
+        held = self._held_side(ctx)
+        if held is not None:
+            current_mid = up_mid if held == "up" else down_mid
+            if self._entry_midpoint > 0 and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
                 self.log("stop-loss: mid={:.2f} down {:.1f}% from entry {:.2f}".format(
                     current_mid,
                     (1.0 - current_mid / self._entry_midpoint) * 100,
                     self._entry_midpoint,
                 ))
-                sell_side = "sell_up" if self._virtual_side == "up" else "sell_down"
-                tokens = self._virtual_tokens
-                self._virtual_side = None
-                self._virtual_tokens = 0.0
-                return TradeAction(side=sell_side, amount=tokens)
+                sell_side = "sell_up" if held == "up" else "sell_down"
+                tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
+                self._exited = True
+                return TradeAction(side=sell_side, amount=tokens, price=current_mid)
             return HOLD
 
-        # Already entered (and possibly exited via stop-loss) — no re-entry
+        # Already filled and exited (stop-loss) — done for this session
+        if self._exited:
+            return HOLD
+
+        # Already tried to enter but fill failed — no re-entry
         if self._entered:
             return HOLD
         if ctx.elapsed_fraction > self.entry_window:
@@ -77,26 +87,20 @@ class MomentumEntry(Strategy):
 
         if move_bps > self.price_threshold_bps and up_mid >= self.midpoint_confirm:
             self._entered = True
-            self._virtual_side = "up"
             self._entry_midpoint = up_mid
             dollars = ctx.position.cash * self.bet_fraction
-            if up_mid > 0:
-                self._virtual_tokens = dollars / up_mid
             self.log("BTC +{:.1f}bps, up mid={:.2f} confirms, buying up".format(
                 move_bps, up_mid,
             ))
-            return TradeAction(side="buy_up", amount=dollars)
+            return TradeAction(side="buy_up", amount=dollars, price=up_mid)
         elif move_bps < -self.price_threshold_bps and down_mid >= self.midpoint_confirm:
             self._entered = True
-            self._virtual_side = "down"
             self._entry_midpoint = down_mid
             dollars = ctx.position.cash * self.bet_fraction
-            if down_mid > 0:
-                self._virtual_tokens = dollars / down_mid
             self.log("BTC {:.1f}bps, down mid={:.2f} confirms, buying down".format(
                 move_bps, down_mid,
             ))
-            return TradeAction(side="buy_down", amount=dollars)
+            return TradeAction(side="buy_down", amount=dollars, price=down_mid)
 
         return HOLD
 

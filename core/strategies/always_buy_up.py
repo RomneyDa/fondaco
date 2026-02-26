@@ -20,7 +20,11 @@ class AlwaysBuyUp(Strategy):
     def on_tick(self, ctx):
         if not self._bought:
             self._bought = True
-            return TradeAction(side="buy_up", amount=ctx.position.cash * self.bet_fraction)
+            return TradeAction(
+                side="buy_up",
+                amount=ctx.position.cash * self.bet_fraction,
+                price=ctx.sample.get("up_token_midpoint"),
+            )
         return HOLD
 
     def param_grid(self):

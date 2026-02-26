@@ -74,50 +74,43 @@ class LateSniper(Strategy):
                 sell_side = "sell_up" if held == "up" else "sell_down"
                 tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
                 self._exited = True
-                return TradeAction(side=sell_side, amount=tokens)
+                return TradeAction(side=sell_side, amount=tokens, price=current_mid)
             return HOLD
 
-        # Already filled and exited (stop-loss) — done for this session
-        if self._exited:
+        # Already entered (limit order pending or filled+exited)
+        if self._exited or self._entry_midpoint > 0:
             return HOLD
 
         # Wait for late window
         if ctx.elapsed_fraction < self.min_elapsed:
             return HOLD
 
-        up_ask = ctx.sample.get("up_token_best_ask")
-        down_ask = ctx.sample.get("down_token_best_ask")
-
-        if up_mid >= self.confidence_threshold and up_ask is not None and up_ask <= self.max_price:
+        if up_mid >= self.confidence_threshold and up_mid <= self.max_price:
             self._entry_midpoint = up_mid
-            self.log("BUY UP: mid={:.2f} ask={:.2f} at {:.0f}% elapsed".format(
-                up_mid, up_ask, ctx.elapsed_fraction * 100,
+            self.log("BUY UP: mid={:.2f} at {:.0f}% elapsed".format(
+                up_mid, ctx.elapsed_fraction * 100,
             ))
-            return TradeAction(side="buy_up", amount=ctx.position.cash * self.bet_fraction)
-        elif down_mid >= self.confidence_threshold and down_ask is not None and down_ask <= self.max_price:
+            return TradeAction(side="buy_up", amount=ctx.position.cash * self.bet_fraction, price=up_mid)
+        elif down_mid >= self.confidence_threshold and down_mid <= self.max_price:
             self._entry_midpoint = down_mid
-            self.log("BUY DOWN: mid={:.2f} ask={:.2f} at {:.0f}% elapsed".format(
-                down_mid, down_ask, ctx.elapsed_fraction * 100,
+            self.log("BUY DOWN: mid={:.2f} at {:.0f}% elapsed".format(
+                down_mid, ctx.elapsed_fraction * 100,
             ))
-            return TradeAction(side="buy_down", amount=ctx.position.cash * self.bet_fraction)
+            return TradeAction(side="buy_down", amount=ctx.position.cash * self.bet_fraction, price=down_mid)
 
         # Log why we held
         best_mid = max(up_mid, down_mid)
         best_side = "up" if up_mid >= down_mid else "down"
-        best_ask = up_ask if best_side == "up" else down_ask
         reasons = []
         if best_mid < self.confidence_threshold:
             reasons.append("low confidence {:.2f}<{:.2f}".format(best_mid, self.confidence_threshold))
-        if best_ask is None:
-            reasons.append("no ask")
-        elif best_ask > self.max_price:
-            reasons.append("ask too high {:.2f}>{:.2f}".format(best_ask, self.max_price))
-        self.log("HOLD at {:.0f}%: best={} mid={:.2f} ask={} | {}".format(
+        if best_mid > self.max_price:
+            reasons.append("mid too high {:.2f}>{:.2f}".format(best_mid, self.max_price))
+        self.log("HOLD at {:.0f}%: best={} mid={:.2f} | {}".format(
             ctx.elapsed_fraction * 100,
             best_side,
             best_mid,
-            "{:.2f}".format(best_ask) if best_ask is not None else "None",
-            ", ".join(reasons) if reasons else "confident but no ask",
+            ", ".join(reasons) if reasons else "waiting",
         ))
 
         return HOLD

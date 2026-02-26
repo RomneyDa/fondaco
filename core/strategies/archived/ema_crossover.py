@@ -38,8 +38,6 @@ class EmaCrossover(Strategy):
         self._fast_alpha = 2.0 / (fast_span + 1)
         self._slow_alpha = 2.0 / (slow_span + 1)
         self._prev_signal = None  # type: str  # "up" or "down"
-        self._virtual_side = None  # type: str  # "up" or "down"
-        self._virtual_tokens = 0.0
         self._trade_count = 0
         self._warmup_done = False
 
@@ -47,10 +45,16 @@ class EmaCrossover(Strategy):
         self._fast_ema = None
         self._slow_ema = None
         self._prev_signal = None
-        self._virtual_side = None
-        self._virtual_tokens = 0.0
         self._trade_count = 0
         self._warmup_done = False
+
+    def _held_side(self, ctx):
+        """Return which side we hold, or None."""
+        if ctx.position.up_tokens > 0:
+            return "up"
+        if ctx.position.down_tokens > 0:
+            return "down"
+        return None
 
     def on_tick(self, ctx):
         if self._trade_count >= self.max_trades:
@@ -87,16 +91,16 @@ class EmaCrossover(Strategy):
         else:
             return HOLD
 
+        held = self._held_side(ctx)
+
         # Detect crossover
         if self._prev_signal is not None and current_signal != self._prev_signal:
             self._prev_signal = current_signal
 
             # Sell current position first
-            if self._virtual_side is not None:
-                sell_side = "sell_up" if self._virtual_side == "up" else "sell_down"
-                self._virtual_side = None
-                tokens = self._virtual_tokens
-                self._virtual_tokens = 0.0
+            if held is not None:
+                sell_side = "sell_up" if held == "up" else "sell_down"
+                tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
                 self._trade_count += 1
                 return TradeAction(side=sell_side, amount=tokens)
 
@@ -104,11 +108,11 @@ class EmaCrossover(Strategy):
             return self._enter(current_signal, ctx)
 
         # If we just sold on crossover and have no position, enter on next tick
-        if self._prev_signal is not None and self._virtual_side is None and self._trade_count > 0:
+        if self._prev_signal is not None and held is None and self._trade_count > 0:
             return self._enter(current_signal, ctx)
 
         # First entry (no prior crossover, just initial signal after warmup)
-        if self._virtual_side is None and self._prev_signal is None:
+        if held is None and self._prev_signal is None:
             self._prev_signal = current_signal
             return self._enter(current_signal, ctx)
 
@@ -125,11 +129,6 @@ class EmaCrossover(Strategy):
             return HOLD
 
         side = "buy_up" if direction == "up" else "buy_down"
-        midpoint_key = "up_token_midpoint" if direction == "up" else "down_token_midpoint"
-        midpoint = ctx.sample.get(midpoint_key)
-        if midpoint is not None and midpoint > 0:
-            self._virtual_tokens = dollars / midpoint
-        self._virtual_side = direction
         self._trade_count += 1
         return TradeAction(side=side, amount=dollars)
 

@@ -196,6 +196,7 @@ def cmd_start(args):
         # Live trading: None signals Runner to fetch real CLOB balance
         starting_cash = None
     max_sessions = getattr(args, "sessions", 0)
+    per_session = getattr(args, "per_session", False)
 
     # Create runner
     runner = Runner(
@@ -209,6 +210,7 @@ def cmd_start(args):
         starting_cash=starting_cash,
         dry_run=dry_run,
         max_sessions=max_sessions,
+        per_session=per_session,
     )
 
     # Start control server
@@ -245,6 +247,8 @@ def cmd_trade_on(args):
             body["cash"] = float(cash_str)
     if getattr(args, "dry_run", False):
         body["dry_run"] = True
+    if getattr(args, "per_session", False):
+        body["per_session"] = True
 
     resp = _http_request("POST", "/api/control/trade-on", body)
     if resp.get("ok"):
@@ -489,6 +493,11 @@ def main():
         default=0,
         help="Max sessions to run before exiting (default: 0 = unlimited)",
     )
+    start_parser.add_argument(
+        "--per-session",
+        action="store_true",
+        help="Reset cash to --cash amount at the start of each session",
+    )
 
     # trade-on
     trade_on_parser = subparsers.add_parser("trade-on", help="Enable trading on running app")
@@ -512,6 +521,11 @@ def main():
         "--dry-run",
         action="store_true",
         help="Trade without real orders",
+    )
+    trade_on_parser.add_argument(
+        "--per-session",
+        action="store_true",
+        help="Reset cash to --cash amount at the start of each session",
     )
 
     # trade-off

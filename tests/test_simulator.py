@@ -6,7 +6,27 @@ import os
 import pytest
 from core.strategies.always_buy_up import AlwaysBuyUp
 from core.strategies.always_buy_down import AlwaysBuyDown
+from core.strategies.base import Strategy
+from core.trader import HOLD, TradeAction
 from simulator.engine import Simulator, load_sessions
+
+
+class _FakBuyUp(Strategy):
+    """Buy Up via FAK (no price) — for testing execution modes."""
+    name = "FakBuyUp"
+    description = ""
+
+    def __init__(self):
+        self._bought = False
+
+    def on_session_start(self, metadata):
+        self._bought = False
+
+    def on_tick(self, ctx):
+        if not self._bought:
+            self._bought = True
+            return TradeAction(side="buy_up", amount=ctx.position.cash)
+        return HOLD
 
 
 def _make_session(outcome="Up", num_samples=5, initial_btc=97000.0, final_btc=97100.0):
@@ -93,13 +113,14 @@ class TestRunSession:
         assert result.num_samples == 3
 
     def test_slippage_reduces_profit(self):
-        """Slippage should reduce profit compared to zero-slippage."""
+        """Slippage should reduce profit compared to zero-slippage (FAK path)."""
         session = _make_session(outcome="Up")
         sim_no_slip = Simulator(starting_cash=100.0, execution_mode="midpoint", slippage=0.0)
         sim_with_slip = Simulator(starting_cash=100.0, execution_mode="midpoint_slippage", slippage=0.02)
 
-        strategy1 = AlwaysBuyUp(bet_fraction=1.0)
-        strategy2 = AlwaysBuyUp(bet_fraction=1.0)
+        # Use FAK-only strategy (no price) so execution mode is respected
+        strategy1 = _FakBuyUp()
+        strategy2 = _FakBuyUp()
 
         r1 = sim_no_slip.run_session(strategy1, session)
         r2 = sim_with_slip.run_session(strategy2, session)

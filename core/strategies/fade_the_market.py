@@ -65,20 +65,23 @@ class FadeTheMarket(Strategy):
         if up_mid is None or down_mid is None:
             return HOLD
 
-        # Manage existing position — check stop-loss
-        held = self._held_side(ctx)
-        if held is not None and self._faded_side is not None:
-            faded_mid = up_mid if self._faded_side == "up" else down_mid
-            if faded_mid >= self.stop_loss_mid:
-                self.log("stop-loss: faded {} mid={:.2f} >= {:.2f}".format(
-                    self._faded_side, faded_mid, self.stop_loss_mid,
-                ))
-                sell_side = "sell_up" if held == "up" else "sell_down"
-                tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
-                self._faded_side = None
-                self._exited = True
-                return TradeAction(side=sell_side, amount=tokens)
-            return HOLD
+        # Already entered — manage position or wait for fill
+        if self._faded_side is not None:
+            held = self._held_side(ctx)
+            if held is not None:
+                # Check stop-loss
+                faded_mid = up_mid if self._faded_side == "up" else down_mid
+                if faded_mid >= self.stop_loss_mid:
+                    current_mid = up_mid if held == "up" else down_mid
+                    self.log("stop-loss: faded {} mid={:.2f} >= {:.2f}".format(
+                        self._faded_side, faded_mid, self.stop_loss_mid,
+                    ))
+                    sell_side = "sell_up" if held == "up" else "sell_down"
+                    tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
+                    self._faded_side = None
+                    self._exited = True
+                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
+            return HOLD  # waiting for fill or managing position
 
         # Already filled and exited (stop-loss) — done for this session
         if self._exited:
@@ -115,13 +118,13 @@ class FadeTheMarket(Strategy):
             self.log("fading up mid={:.2f} ({} ticks), buying down mid={:.2f}".format(
                 up_mid, self._streak_count, down_mid,
             ))
-            return TradeAction(side="buy_down", amount=dollars)
+            return TradeAction(side="buy_down", amount=dollars, price=down_mid)
         elif self._streak_side == "down":
             self._faded_side = "down"
             self.log("fading down mid={:.2f} ({} ticks), buying up mid={:.2f}".format(
                 down_mid, self._streak_count, up_mid,
             ))
-            return TradeAction(side="buy_up", amount=dollars)
+            return TradeAction(side="buy_up", amount=dollars, price=up_mid)
 
         return HOLD
 

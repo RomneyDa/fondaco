@@ -1,6 +1,18 @@
 # Polymarket Up/Down Trading System
 
-Collect data, backtest strategies, and trade live on Polymarket crypto up/down prediction markets. Each market is a binary bet on whether an asset goes up or down over a time window (5m, 15m).
+Collect data, backtest strategies, and trade live on Polymarket crypto up/down prediction markets. This system was originally built for the **5-minute BTC up/down market** (`btc-updown-5m-`).
+
+## The 5-Minute BTC Up/Down Market
+
+A new market opens every 5 minutes. Two tokens are minted — **Up** and **Down**. At resolution (5 minutes later), if BTC price (Chainlink oracle) is higher than at market open, the Up token pays $1 and Down pays $0, and vice versa.
+
+**Book structure:** The CLOB order book on these markets is extremely thin. Typically only two price levels exist: **best_bid=0.01** and **best_ask=0.99** on both tokens, giving a 0.98 spread. There are no intermediate resting orders. The **midpoint** (derived from market maker activity, not the visible book) is the real signal — it smoothly evolves from ~0.50 at open to ~0.99 on the winning side by resolution.
+
+**Implications for execution:**
+- The edge comes from **picking the right direction**, not from getting a better fill price
+- Both `SimExecutor` and `ClobExecutor` default to **book execution** (FAK at best_ask for buys, best_bid for sells) — backtests match live behavior
+- The 0.01/0.99 spread is normal and expected; there is no spread guardrail
+- Early in the session (0-2 min), midpoint is noisy (0.40-0.55); by 3-4 min it trends strongly; by 4.5+ min the losing side's book vanishes entirely (ask=None)
 
 ## Architecture: Simulate First, Trade Live
 
@@ -59,10 +71,7 @@ core/
     midpoint_momentum.py    Token midpoint trend following
     late_sniper.py          Late-window confident entry
     fade_the_market.py      Mean reversion against early extremes
-    ema_crossover.py        Dual EMA crossover, multi-trade with position flips
-    ols_slope.py            Rolling OLS regression slope, trend entry/exit
-    scalper.py              Mean reversion scalper, take-profit/stop-loss
-    trailing_stop_momentum.py  Momentum entry with trailing stop management
+    archived/               Strategies that don't work with 0.01/0.99 book (round-trip sellers)
 app/
   __main__.py               CLI: start, trade-on, trade-off, status, stop, claim
   runner.py                 Runner class (unified collect + trade loop)
@@ -90,7 +99,7 @@ Sessions sample at ~18 ticks/sec. A 5-minute (300s) session has ~5,400 ticks; a 
 | Price precision | 2 decimal places |
 | Order type | FAK (Fill-and-Kill) |
 | neg_risk | False |
-| Book spread | Typically 0.01/0.99 (use `midpoint_slippage` execution, not `book`) |
+| Book spread | Typically 0.01/0.99 (default `book` execution = FAK at best_ask/best_bid) |
 
 Buy token sizes are floored to integer in `ClobExecutor` for clean maker amounts. Sell token sizes use `math.floor` to 4 decimals — never round up sells.
 
@@ -114,7 +123,7 @@ When tuning a strategy's parameters, use iterative grid refinement — not a sin
 
 1. **Coarse sweep** — Design an initial `param_grid()` with wide spacing that produces **< 1000 total combinations**. Multiply out the grid dimensions to verify before running. Example: 5 values × 5 values × 4 values = 100 combos. Run the backtest:
    ```bash
-   uv run python -m simulator.backtest data/sessions/btc-updown-5m --strategy MyStrategy --top 10
+   uv run python -m simulator.backtest data/sessions/btc-updown-5m --strategy MyStrategy --top 10 --recent 30
    ```
 
 2. **Refine around the optimum** — Read the best params from the leaderboard output. Build a tighter grid centered on those values with finer step sizes, again keeping total combos under ~1000. Override `param_grid()` (or use `--params` for a single run) and re-run.
@@ -141,6 +150,7 @@ This bot trades real money. No sandbox, no undo.
 
 ## Rules
 
+- **Always pass `--recent 30`** (or less) when running backtests. Never run against the full session history — it's slow and the oldest data is least relevant.
 - **uv** for package management. `uv sync` to install, `uv add <pkg>` to add deps. Run via `uv run python -m <module>`.
 - **Python >=3.10** — use `typing.Optional`/`typing.Union`, not `X | Y` syntax.
 - **All HTTP requests through `LoggingSession`** — no bare `requests.get()`. Logs to `data/api_raw/{host}/{date}.jsonl`.

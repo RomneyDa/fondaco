@@ -172,58 +172,6 @@ export function SessionCharts({ session, trades, isDryRun }: Props) {
 
   return (
     <>
-      {/* BTC Price */}
-      <Plot
-        className="chart"
-        data={[
-          {
-            x: btcDeduped.x,
-            y: btcDeduped.y,
-            type: "scatter",
-            mode: "lines",
-            name: "BTC/USD",
-            line: { color: "#f7931a", width: 2 },
-          },
-        ]}
-        layout={{
-          ...LAYOUT_BASE,
-          title: { text: "BTC Price", font: { size: 14 } },
-          yaxis: { ...LAYOUT_BASE.yaxis, title: "USD", tickformat: ",.0f" },
-        }}
-        config={PLOT_CFG}
-      />
-
-      {/* Token Midpoints + Trade Markers */}
-      <Plot
-        className="chart"
-        data={[
-          {
-            x: elapsed,
-            y: samples.map((s) => s.up_token_midpoint),
-            type: "scatter",
-            mode: "lines",
-            name: "Up",
-            line: { color: "#3fb950", width: 2 },
-          },
-          {
-            x: elapsed,
-            y: samples.map((s) => s.down_token_midpoint),
-            type: "scatter",
-            mode: "lines",
-            name: "Down",
-            line: { color: "#f85149", width: 2 },
-          },
-          ...tradeTraces,
-        ]}
-        layout={{
-          ...LAYOUT_BASE,
-          title: { text: "Token Midpoints", font: { size: 14 } },
-          yaxis: { ...LAYOUT_BASE.yaxis, title: "Price" },
-        }}
-        config={PLOT_CFG}
-      />
-
-      {/* BTC + Midpoints overlay + Trade Markers */}
       <Plot
         className="chart"
         data={[

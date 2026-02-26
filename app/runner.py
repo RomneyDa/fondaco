@@ -66,6 +66,7 @@ class StrategySlot:
     dry_run: bool
     executor: Any                       # Executor (ClobExecutor or SimExecutor)
     cash_explicit: bool = False         # True when cash was explicitly set
+    per_session_cash: Optional[float] = None  # if set, reset cash to this at each session start
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +163,7 @@ class Runner:
         starting_cash=None,                             # type: Optional[float]
         dry_run=False,                                  # type: bool
         max_sessions=0,                                 # type: int
+        per_session=False,                              # type: bool
     ):
         self.slug_prefix = slug_prefix
         self.window_duration = window_duration
@@ -202,6 +204,7 @@ class Runner:
                 strategy_params or {},
                 cash=starting_cash,
                 dry_run=dry_run,
+                per_session=per_session,
             )
 
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -219,9 +222,14 @@ class Runner:
 
     # ----- Trading toggle -----
 
-    def enable_trading(self, strategy_name, params=None, cash=None, dry_run=False):
-        # type: (str, Optional[Dict[str, Any]], Optional[float], bool) -> None
-        """Add or update a strategy slot. Takes effect next session."""
+    def enable_trading(self, strategy_name, params=None, cash=None, dry_run=False,
+                       per_session=False):
+        # type: (str, Optional[Dict[str, Any]], Optional[float], bool, bool) -> None
+        """Add or update a strategy slot. Takes effect next session.
+
+        If per_session=True, cash is reset to the starting amount at the
+        beginning of each session (independent budget per session).
+        """
         if strategy_name not in ALL_STRATEGIES:
             raise ValueError("Unknown strategy '{}'. Available: {}".format(
                 strategy_name, list(ALL_STRATEGIES.keys()),
@@ -246,7 +254,7 @@ class Runner:
         with self._lock:
             # Determine executor for this slot
             if dry_run:
-                executor = SimExecutor(execution_mode="midpoint_slippage", slippage=0.02)
+                executor = SimExecutor(execution_mode="book")
                 logger.info("[%s] DRY RUN mode — no real orders will be placed.", strategy_name)
             else:
                 # Ensure shared ClobExecutor exists
@@ -288,12 +296,13 @@ class Runner:
                 dry_run=dry_run,
                 executor=executor,
                 cash_explicit=cash_explicit,
+                per_session_cash=starting_cash if per_session else None,
             )
             self._slots.append(slot)
 
         logger.info(
-            "Trading enabled: strategy=%s params=%s cash=$%.2f dry_run=%s",
-            strategy_name, parsed_params, starting_cash, dry_run,
+            "Trading enabled: strategy=%s params=%s cash=$%.2f dry_run=%s per_session=%s",
+            strategy_name, parsed_params, starting_cash, dry_run, per_session,
         )
 
     def _init_clob_executor(self):
@@ -430,13 +439,16 @@ class Runner:
         with self._lock:
             strategies = []
             for slot in self._slots:
-                strategies.append({
+                info = {
                     "name": slot.name,
                     "params": slot.params,
                     "dry_run": slot.dry_run,
                     "cash": round(slot.position.cash, 4),
                     "starting_cash": round(slot.starting_cash, 4),
-                })
+                }
+                if slot.per_session_cash is not None:
+                    info["per_session_cash"] = round(slot.per_session_cash, 4)
+                strategies.append(info)
 
             # Backward-compat: top-level fields from first slot
             first = self._slots[0] if self._slots else None
@@ -834,6 +846,16 @@ class Runner:
                         initial_btc_price = sample.btc_price_usd or 0.0
                         session.initial_btc_price_usd = initial_btc_price
                         for slot in slots:
+                            # Per-session cash: reset to fixed budget each session
+                            if slot.per_session_cash is not None:
+                                old = slot.position.cash
+                                slot.position.cash = slot.per_session_cash
+                                slot.starting_cash = slot.per_session_cash
+                                if abs(old - slot.per_session_cash) > 0.01:
+                                    logger.info(
+                                        "[%s] Per-session cash reset: $%.2f -> $%.2f",
+                                        slot.name, old, slot.per_session_cash,
+                                    )
                             trader = Trader(slot.strategy, slot.executor)
                             ref_balance = slot.starting_cash
                             trader.start_session(
@@ -853,6 +875,18 @@ class Runner:
                         except Exception as te:
                             logger.warning("[%s] Tick error: %s", slot.name, te)
                             continue
+
+                        # Log limit order fills from this tick
+                        for fill in trader.last_tick_fills:
+                            per_slot_trade_dicts[i].append(_trade_to_dashboard_dict(fill))
+                            per_slot_trade_counts[i] += 1
+                            if fill.success is True and not slot.dry_run:
+                                _save_slot_position(slot.name, slot.position)
+                            logger.info(
+                                "[%s] Limit fill: %s @ %.2f x %.2f | order_id=%s",
+                                slot.name, fill.side, fill.price, fill.tokens,
+                                fill.order_id,
+                            )
 
                         if trade is not None:
                             per_slot_trade_dicts[i].append(_trade_to_dashboard_dict(trade))
@@ -924,6 +958,17 @@ class Runner:
             sleep_for = min(0.01, next_sample_time - time.time())
             if sleep_for > 0:
                 time.sleep(sleep_for)
+
+        # Cancel all pending limit orders before snapshotting position
+        for i, (slot, trader) in enumerate(zip(slots, traders)):
+            cancelled = trader.cancel_all_pending()
+            if cancelled > 0:
+                logger.info(
+                    "[%s] Cancelled %d pending orders at session end",
+                    slot.name, cancelled,
+                )
+                if not slot.dry_run:
+                    _save_slot_position(slot.name, slot.position)
 
         return [
             (slot, per_slot_trade_counts[i], per_slot_trade_dicts[i], traders[i].decision_log)
@@ -1020,6 +1065,28 @@ class Runner:
                         f.write(json.dumps(summary) + "\n")
                 except Exception as e:
                     logger.warning("Failed to log session summary: %s", e)
+
+                # Append resolution record to trade log so win/loss is visible
+                resolution_record = {
+                    "type": "resolution",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "window_ts": window_ts,
+                    "strategy": d["slot_name"],
+                    "outcome": outcome,
+                    "starting_cash": round(d["starting_cash"], 4),
+                    "final_cash": round(final_cash, 4),
+                    "pnl": round(pnl, 4),
+                    "credit": round(credit, 4),
+                    "trades": d["trade_count"],
+                    "up_tokens": round(d["up_tokens"], 4),
+                    "down_tokens": round(d["down_tokens"], 4),
+                    "dry_run": d["dry_run"],
+                }
+                try:
+                    with open(BOT_TRADES_FILE, "a") as f:
+                        f.write(json.dumps(resolution_record) + "\n")
+                except Exception as e:
+                    logger.warning("Failed to log resolution to trade log: %s", e)
 
                 logger.info(
                     "[%s] Session resolved: %s | Trades: %d | Cash: $%.2f (credit: +$%.4f)",

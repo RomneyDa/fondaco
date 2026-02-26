@@ -43,20 +43,24 @@ class TrailingStopMomentum(Strategy):
             "max_trades": max_trades,
         }
         # Per-session state
-        self._virtual_side = None  # type: str
-        self._virtual_tokens = 0.0
         self._entry_midpoint = 0.0
         self._peak_midpoint = 0.0
         self._trade_count = 0
         self._ticks_since_exit = None  # type: int
 
     def on_session_start(self, metadata):
-        self._virtual_side = None
-        self._virtual_tokens = 0.0
         self._entry_midpoint = 0.0
         self._peak_midpoint = 0.0
         self._trade_count = 0
         self._ticks_since_exit = None
+
+    def _held_side(self, ctx):
+        """Return which side we hold, or None."""
+        if ctx.position.up_tokens > 0:
+            return "up"
+        if ctx.position.down_tokens > 0:
+            return "down"
+        return None
 
     def on_tick(self, ctx):
         if self._trade_count >= self.max_trades:
@@ -73,8 +77,9 @@ class TrailingStopMomentum(Strategy):
             self._ticks_since_exit += 1
 
         # Manage existing position
-        if self._virtual_side is not None:
-            current_mid = up_mid if self._virtual_side == "up" else down_mid
+        held = self._held_side(ctx)
+        if held is not None:
+            current_mid = up_mid if held == "up" else down_mid
             pnl = current_mid - self._entry_midpoint
 
             # Update peak
@@ -90,7 +95,7 @@ class TrailingStopMomentum(Strategy):
                 stop_level = self._entry_midpoint - self.fixed_stop
 
             if current_mid <= stop_level:
-                return self._exit()
+                return self._exit(ctx)
 
             return HOLD
 
@@ -121,21 +126,17 @@ class TrailingStopMomentum(Strategy):
             return HOLD
 
         side = "buy_up" if direction == "up" else "buy_down"
-        if midpoint > 0:
-            self._virtual_tokens = dollars / midpoint
-        self._virtual_side = direction
         self._entry_midpoint = midpoint
         self._peak_midpoint = midpoint
         self._ticks_since_exit = None
         self._trade_count += 1
         return TradeAction(side=side, amount=dollars)
 
-    def _exit(self):
+    def _exit(self, ctx):
         """Exit current position via trailing/fixed stop."""
-        sell_side = "sell_up" if self._virtual_side == "up" else "sell_down"
-        tokens = self._virtual_tokens
-        self._virtual_side = None
-        self._virtual_tokens = 0.0
+        held = self._held_side(ctx)
+        sell_side = "sell_up" if held == "up" else "sell_down"
+        tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
         self._entry_midpoint = 0.0
         self._peak_midpoint = 0.0
         self._ticks_since_exit = 0
