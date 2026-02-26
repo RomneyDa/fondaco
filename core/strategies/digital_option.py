@@ -40,7 +40,7 @@ class DigitalOption(Strategy):
         momentum_weight=0.3,
         base_edge=0.12,
         no_new_after=0.80,
-        stop_loss_pct=0.20,
+        stop_loss_pct=0.10,
         bet_fraction=1.0,
     ):
         self.sigma_span = sigma_span

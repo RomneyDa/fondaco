@@ -85,7 +85,7 @@ export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
             </>
           )}
         </NavLink>
-        {isTrading && strategies.length > 1 && strategies.map((s) => (
+        {isTrading && strategies.map((s) => (
           <div key={s.name} className="nav-item nav-session" style={{ paddingLeft: 28 }}>
             <span>{s.name}</span>
             <span className="count">

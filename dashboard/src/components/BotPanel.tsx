@@ -269,7 +269,7 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
           )}
         </div>
 
-        {isTrading && strategies.length > 1 && (
+        {isTrading && (
           <div className="strategies-list" style={{ marginTop: 12 }}>
             {strategies.map((s) => (
               <div key={s.name} className="meta-grid" style={{ marginBottom: 4 }}>
