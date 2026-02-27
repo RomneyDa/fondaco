@@ -955,7 +955,7 @@ class Runner:
                                 )
 
                             trader = Trader(slot.strategy, slot.executor)
-                            ref_balance = slot.starting_cash
+                            ref_balance = slot.position.cash
                             trader.start_session(
                                 metadata_dict, slot.position, initial_btc_price,
                                 self.window_duration, reference_balance=ref_balance,

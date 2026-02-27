@@ -91,7 +91,9 @@ class LoggingSession(requests.Session):
                     entry["response_body"] = body_text
 
                 entry["error"] = None
-                _write_entry(host, ts, entry)
+                # Skip logging for clob.polymarket.com (7.8 GB+ of logs)
+                if host != "clob.polymarket.com":
+                    _write_entry(host, ts, entry)
 
                 # Handle 429 rate limit
                 if resp.status_code == 429 and attempt <= MAX_RETRIES:
@@ -114,7 +116,8 @@ class LoggingSession(requests.Session):
                 entry["elapsed_ms"] = elapsed_ms
                 entry["response_body"] = None
                 entry["error"] = f"{type(e).__name__}: {e}"
-                _write_entry(host, ts, entry)
+                if host != "clob.polymarket.com":
+                    _write_entry(host, ts, entry)
                 raise
 
         # All retries exhausted on 429 — return the last response as-is

@@ -783,6 +783,23 @@ class ClobExecutor(Executor):
                             position.up_tokens += order.tokens
                         else:
                             position.down_tokens += order.tokens
+                        # Refresh CLOB's cached view of our conditional
+                        # token balance so subsequent sells don't fail
+                        # with "not enough balance / allowance".
+                        try:
+                            from py_clob_client.clob_types import (
+                                BalanceAllowanceParams, AssetType,
+                            )
+                            self.client.update_balance_allowance(
+                                BalanceAllowanceParams(
+                                    asset_type=AssetType.CONDITIONAL,
+                                    token_id=order.token_id,
+                                )
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to refresh conditional allowance: %s", e,
+                            )
                     else:
                         position.cash += order.tokens * order.price
 

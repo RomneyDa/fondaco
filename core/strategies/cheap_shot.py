@@ -14,7 +14,9 @@ class CheapShot(Strategy):
     Entry: Within entry_window, if BTC is within max_deviation_bps of the
     opening price, buy the side favored by recent BTC momentum. Only once.
 
-    Exit: Stop-loss if midpoint drops below entry by stop_loss_pct.
+    Exit: Take-profit if midpoint rises take_profit_pct above entry (any time).
+    Stop-loss if midpoint drops stop_loss_pct below entry (only after
+    stop_loss_after fraction of the window has elapsed, to avoid early noise).
     Otherwise holds to resolution for the $1 payout.
 
     Params:
@@ -24,6 +26,8 @@ class CheapShot(Strategy):
         min_momentum_bps: min momentum magnitude to pick a direction
         max_token_price: don't buy tokens above this price
         stop_loss_pct: sell if midpoint drops this fraction below entry
+        stop_loss_after: min elapsed fraction before stop-loss can trigger
+        take_profit_pct: sell if midpoint rises this fraction above entry
         bet_fraction: fraction of cash to bet
     """
 
@@ -39,8 +43,10 @@ class CheapShot(Strategy):
         entry_window=0.25,
         momentum_lookback=50,
         min_momentum_bps=0.0,
-        max_token_price=0.55,
+        max_token_price=0.60,
         stop_loss_pct=0.15,
+        stop_loss_after=0.5,
+        take_profit_pct=0.20,
         bet_fraction=1.0,
     ):
         self.max_deviation_bps = max_deviation_bps
@@ -49,6 +55,8 @@ class CheapShot(Strategy):
         self.min_momentum_bps = min_momentum_bps
         self.max_token_price = max_token_price
         self.stop_loss_pct = stop_loss_pct
+        self.stop_loss_after = stop_loss_after
+        self.take_profit_pct = take_profit_pct
         self.bet_fraction = bet_fraction
         self._params = {
             "max_deviation_bps": max_deviation_bps,
@@ -57,6 +65,8 @@ class CheapShot(Strategy):
             "min_momentum_bps": min_momentum_bps,
             "max_token_price": max_token_price,
             "stop_loss_pct": stop_loss_pct,
+            "stop_loss_after": stop_loss_after,
+            "take_profit_pct": take_profit_pct,
             "bet_fraction": bet_fraction,
         }
 
@@ -91,20 +101,36 @@ class CheapShot(Strategy):
 
         self._btc_history.append(btc)
 
-        # -- Manage existing position: stop-loss --
+        # -- Manage existing position: take-profit / stop-loss --
         held = self._held_side(ctx)
         if held is not None:
+            if self._exited:
+                return HOLD
             current_mid = up_mid if held == "up" else down_mid
-            if self._entry_midpoint > 0 and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
-                self.log("stop-loss: mid={:.3f} down {:.1f}% from entry {:.3f}".format(
+            sell_side = "sell_up" if held == "up" else "sell_down"
+            tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
+
+            # Take-profit: can trigger at any time
+            if self._entry_midpoint > 0 and current_mid >= self._entry_midpoint * (1.0 + self.take_profit_pct):
+                self.log("take-profit: mid={:.3f} up {:.1f}% from entry {:.3f}".format(
                     current_mid,
-                    (1.0 - current_mid / self._entry_midpoint) * 100,
+                    (current_mid / self._entry_midpoint - 1.0) * 100,
                     self._entry_midpoint,
                 ))
-                sell_side = "sell_up" if held == "up" else "sell_down"
-                tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
                 self._exited = True
                 return TradeAction(side=sell_side, amount=tokens, price=current_mid)
+
+            # Stop-loss: only after stop_loss_after fraction of window has elapsed
+            if ctx.elapsed_fraction >= self.stop_loss_after:
+                if self._entry_midpoint > 0 and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
+                    self.log("stop-loss: mid={:.3f} down {:.1f}% from entry {:.3f}".format(
+                        current_mid,
+                        (1.0 - current_mid / self._entry_midpoint) * 100,
+                        self._entry_midpoint,
+                    ))
+                    self._exited = True
+                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
+
             return HOLD
 
         # Already entered or exited — done for this session
@@ -174,11 +200,12 @@ class CheapShot(Strategy):
         )
 
     def param_grid(self):
-        # 4 * 3 * 3 * 3 * 3 = 324 combos
+        # 4 * 3 * 3 * 3 * 3 * 3 = 972 combos
         return {
             "max_deviation_bps": [3.0, 5.0, 8.0, 12.0],
             "entry_window": [0.15, 0.25, 0.35],
             "momentum_lookback": [30, 50, 100],
             "max_token_price": [0.52, 0.55, 0.60],
             "stop_loss_pct": [0.15, 0.20, 0.30],
+            "take_profit_pct": [0.20, 0.30, 0.50],
         }
