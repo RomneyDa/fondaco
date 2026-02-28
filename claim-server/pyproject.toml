@@ -1,0 +1,11 @@
+[project]
+name = "polymarket-claim-server"
+version = "0.1.0"
+description = "Standalone claim server for Polymarket resolved positions"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28.0",
+    "py-clob-client>=0.1.0",
+    "py-builder-relayer-client>=0.0.1",
+    "python-dotenv>=1.0.0",
+]

@@ -1,0 +1,17 @@
+# fly.toml app configuration file generated for polymarket-claim on 2026-02-28T14:30:11-06:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'polymarket-claim'
+primary_region = 'ewr'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[processes]
+  worker = 'uv run python main.py'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'
