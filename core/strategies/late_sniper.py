@@ -18,10 +18,10 @@ class LateSniper(Strategy):
 
     def __init__(
         self,
-        min_elapsed=0.7,
-        confidence_threshold=0.70,
-        max_price=0.85,
-        stop_loss_pct=0.15,
+        min_elapsed=0.53,
+        confidence_threshold=0.60,
+        max_price=0.92,
+        stop_loss_pct=0.10,
         bet_fraction=1.0,
     ):
         self.min_elapsed = min_elapsed
@@ -117,9 +117,8 @@ class LateSniper(Strategy):
 
     def param_grid(self):
         return {
-            "min_elapsed": [0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85],
-            "confidence_threshold": [0.60, 0.65, 0.68, 0.70, 0.73, 0.75],
-            "max_price": [0.80, 0.83, 0.85, 0.87, 0.90],
-            "stop_loss_pct": [0.10, 0.15, 0.20],
-            "bet_fraction": [0.3, 0.5, 0.7],
+            "min_elapsed": [0.45, 0.50, 0.53, 0.56, 0.60],
+            "confidence_threshold": [0.55, 0.58, 0.60, 0.62, 0.65],
+            "max_price": [0.85, 0.89, 0.92, 0.95],
+            "stop_loss_pct": [0.05, 0.10, 0.15],
         }

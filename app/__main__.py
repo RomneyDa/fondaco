@@ -326,8 +326,15 @@ def cmd_status(args):
         ))
         for s in strategies:
             dry_tag = " [DRY RUN]" if s.get("dry_run") else ""
-            print("    - {} | cash=${:.2f}{} | params={}".format(
-                s["name"], s.get("cash", 0), dry_tag, s.get("params", {}),
+            # Show total bankroll; add deployed/reserve breakdown if session_cap active
+            bankroll = s.get("bankroll", s.get("cash", 0))
+            cap_info = ""
+            if s.get("session_cap"):
+                cap_info = " (deployed=${:.2f}, reserve=${:.2f})".format(
+                    s.get("cash", 0), s.get("reserve", 0),
+                )
+            print("    - {} | bankroll=${:.2f}{}{} | params={}".format(
+                s["name"], bankroll, cap_info, dry_tag, s.get("params", {}),
             ))
     else:
         print("  Trading: disabled")

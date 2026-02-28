@@ -397,10 +397,13 @@ class Runner:
         """Persist current strategy slot configs to disk for --restore."""
         configs = []
         for slot in self._slots:
+            # Save current total bankroll (deployed + reserve), not the
+            # original starting_cash, so wins/losses carry across restarts.
+            bankroll = slot.position.cash + slot._session_reserve
             configs.append({
                 "name": slot.name,
                 "params": slot.params,
-                "cash": slot.starting_cash,
+                "cash": bankroll,
                 "dry_run": slot.dry_run,
                 "per_session": slot.per_session_cash is not None,
                 "session_cap": slot.session_cap,
@@ -502,6 +505,8 @@ class Runner:
                         "Resolution credit for removed slot %r: $%.4f (discarded)",
                         slot_name, credit,
                     )
+        if applied > 0:
+            self._save_strategies_config()
         return applied
 
     def get_status(self):
@@ -510,17 +515,20 @@ class Runner:
         with self._lock:
             strategies = []
             for slot in self._slots:
+                bankroll = round(slot.position.cash + slot._session_reserve, 4)
                 info = {
                     "name": slot.name,
                     "params": slot.params,
                     "dry_run": slot.dry_run,
                     "cash": round(slot.position.cash, 4),
+                    "bankroll": bankroll,
                     "starting_cash": round(slot.starting_cash, 4),
                 }
                 if slot.per_session_cash is not None:
                     info["per_session_cash"] = round(slot.per_session_cash, 4)
                 if slot.session_cap is not None:
                     info["session_cap"] = round(slot.session_cap, 4)
+                    info["reserve"] = round(slot._session_reserve, 4)
                 strategies.append(info)
 
             # Backward-compat: top-level fields from first slot
@@ -777,7 +785,7 @@ class Runner:
                     "up_tokens": slot.position.up_tokens,
                     "down_tokens": slot.position.down_tokens,
                     "dry_run": slot.dry_run,
-                    "starting_cash": slot.starting_cash,
+                    "starting_cash": slot.starting_cash - slot._session_reserve,
                     "session_end_cash": slot.position.cash,
                     "strategy_params": {
                         k: v for k, v in slot.strategy.__dict__.items()
@@ -799,6 +807,9 @@ class Runner:
                         slot.name, slot._session_reserve, slot.position.cash,
                     )
                     slot._session_reserve = 0.0
+
+            # Persist updated bankroll (after reserve restored, before resolution credit)
+            self._save_strategies_config()
 
             # Launch background resolution
             self._resolution_thread = threading.Thread(
