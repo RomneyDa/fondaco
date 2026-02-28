@@ -11,6 +11,7 @@ from core.strategies.fade_the_market import FadeTheMarket
 from core.strategies.buy_trend import BuyTrend
 from core.strategies.digital_option import DigitalOption
 from core.strategies.cheap_shot import CheapShot
+from core.strategies.brenda_flipper import BrendaFlipper
 
 ALL_STRATEGIES = {
     "AlwaysBuyUp": AlwaysBuyUp,
@@ -23,4 +24,5 @@ ALL_STRATEGIES = {
     "BuyTrend": BuyTrend,
     "DigitalOption": DigitalOption,
     "CheapShot": CheapShot,
+    "BrendaFlipper": BrendaFlipper,
 }

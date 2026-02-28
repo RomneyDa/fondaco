@@ -35,12 +35,12 @@ class DigitalOption(Strategy):
 
     def __init__(
         self,
-        sigma_span=200,
-        momentum_span=50,
-        momentum_weight=0.3,
-        base_edge=0.12,
-        no_new_after=0.80,
-        stop_loss_pct=0.10,
+        sigma_span=15,
+        momentum_span=32,
+        momentum_weight=0.05,
+        base_edge=0.25,
+        no_new_after=0.70,
+        stop_loss_pct=0.06,
         bet_fraction=1.0,
     ):
         self.sigma_span = sigma_span
@@ -228,10 +228,10 @@ class DigitalOption(Strategy):
 
     def param_grid(self):
         return {
-            "sigma_span": [50, 100, 200, 400],
-            "momentum_span": [20, 50, 100],
-            "momentum_weight": [0.0, 0.3, 0.7],
-            "base_edge": [0.05, 0.08, 0.12, 0.16],
-            "no_new_after": [0.80, 0.90],
-            "stop_loss_pct": [0.10, 0.15, 0.20],
+            "sigma_span": [8, 12, 15, 20, 30],
+            "momentum_span": [20, 28, 32, 40, 50],
+            "momentum_weight": [0.0, 0.03, 0.05, 0.08, 0.15],
+            "base_edge": [0.18, 0.22, 0.25, 0.30, 0.38],
+            "no_new_after": [0.65, 0.70, 0.80],
+            "stop_loss_pct": [0.04, 0.06, 0.10],
         }

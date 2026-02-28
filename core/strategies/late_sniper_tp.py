@@ -23,11 +23,11 @@ class LateSniperTP(LateSniper):
 
     def __init__(
         self,
-        min_elapsed=0.7,
-        confidence_threshold=0.70,
-        max_price=0.85,
-        stop_loss_pct=0.15,
-        take_profit_pct=0.15,
+        min_elapsed=0.92,
+        confidence_threshold=0.60,
+        max_price=0.90,
+        stop_loss_pct=0.20,
+        take_profit_pct=0.40,
         bet_fraction=1.0,
     ):
         super().__init__(
@@ -80,6 +80,10 @@ class LateSniperTP(LateSniper):
         return super().on_tick(ctx)
 
     def param_grid(self):
-        grid = super().param_grid()
-        grid["take_profit_pct"] = [0.10, 0.15, 0.20, 0.30]
-        return grid
+        return {
+            "min_elapsed": [0.88, 0.90, 0.92, 0.94],
+            "confidence_threshold": [0.55, 0.58, 0.60, 0.62, 0.65],
+            "max_price": [0.85, 0.88, 0.90, 0.93, 0.95],
+            "stop_loss_pct": [0.15, 0.18, 0.20, 0.22],
+            "take_profit_pct": [0.30, 0.35, 0.40, 0.50],
+        }

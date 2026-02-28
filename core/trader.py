@@ -966,7 +966,7 @@ class Trader:
         if loss_limit_hit:
             return HOLD
 
-        if action.side.startswith("sell"):
+        if action.side.startswith("sell") and not isinstance(self.executor, SimExecutor):
             token = "up" if action.side == "sell_up" else "down"
             fill_time = self._settlement_cooldowns.get(token)
             if fill_time is not None:
