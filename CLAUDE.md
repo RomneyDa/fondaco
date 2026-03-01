@@ -134,10 +134,8 @@ CLOB order round-trip (TTFB) is ~300ms. Gamma ~270ms, Data API ~375ms, Builder R
 | Guardrail | Constant | Default |
 |---|---|---|
 | Min order size | CLOB_MIN_ORDER_TOKENS | 5 tokens |
-| Max position exposure | MAX_POSITION_FRACTION / MAX_POSITION_DOLLARS | 50% of balance or $10,000 |
-| Max loss per session/day | MAX_LOSS_FRACTION / MAX_LOSS_DOLLARS | 30% of balance or $1,000 |
 
-Enforced in `Trader.process_tick()` (shared tick loop). App caches balance to `.cache/balance.json`; use `--cash cached` in backtest/app to start from real balance.
+Per-session risk is controlled by `--session-cap`. Settlement cooldown prevents selling tokens before on-chain settlement completes. Enforced in `Trader.process_tick()` (shared tick loop). App caches balance to `.cache/balance.json`; use `--cash cached` in backtest/app to start from real balance.
 
 ## Strategy Param Optimization Workflow
 

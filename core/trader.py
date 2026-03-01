@@ -16,10 +16,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.defaults import (
     CLOB_MIN_ORDER_TOKENS,
-    MAX_LOSS_DOLLARS,
-    MAX_LOSS_FRACTION,
-    MAX_POSITION_DOLLARS,
-    MAX_POSITION_FRACTION,
 )
 
 logger = logging.getLogger(__name__)
@@ -347,9 +343,9 @@ class SimExecutor(Executor):
         elif self.execution_mode == "book":
             table = {
                 "buy_up": sample.get("up_token_best_ask"),
-                "sell_up": sample.get("up_token_best_bid"),
+                "sell_up": sample.get("up_token_midpoint"),
                 "buy_down": sample.get("down_token_best_ask"),
-                "sell_down": sample.get("down_token_best_bid"),
+                "sell_down": sample.get("down_token_midpoint"),
             }
             return table.get(side)
 
@@ -500,12 +496,13 @@ class ClobExecutor(Executor):
         now = datetime.now(timezone.utc).isoformat()
 
         # Map action side to token_id, order side, and book price keys.
-        # Buys cross the spread (best_ask), sells cross via best_bid.
+        # Buys cross the spread (best_ask).  Sells use midpoint so stop-loss
+        # exits get a fair price instead of the 0.01 best_bid on thin books.
         side_map = {
             "buy_up": ("up_token_id", "BUY", "up_token_best_ask", "up_token_best_bid"),
             "buy_down": ("down_token_id", "BUY", "down_token_best_ask", "down_token_best_bid"),
-            "sell_up": ("up_token_id", "SELL", "up_token_best_bid", "up_token_best_ask"),
-            "sell_down": ("down_token_id", "SELL", "down_token_best_bid", "down_token_best_ask"),
+            "sell_up": ("up_token_id", "SELL", "up_token_midpoint", "up_token_best_ask"),
+            "sell_down": ("down_token_id", "SELL", "down_token_midpoint", "down_token_best_ask"),
         }
 
         if action.side not in side_map:
@@ -923,7 +920,6 @@ class Trader:
         self._position = position
         self._initial_btc_price = initial_btc_price
         self._window_duration = window_duration
-        self._reference_balance = reference_balance if reference_balance is not None else position.cash
         self._history = []
         self._trades = []
         self._tick_index = 0
@@ -935,36 +931,11 @@ class Trader:
         self.strategy._tick_logs = []
         self.strategy.on_session_start(metadata)
 
-    def _compute_guardrail_limits(self, sample):
-        # type: (Dict[str, Any]) -> Tuple[float, bool]
-        """Compute max buy amount and whether loss limit is hit.
-
-        Returns (max_buy_amount, loss_limit_hit).
-        """
-        pos = self._position
-        up_mid = sample.get("up_token_midpoint") or 0
-        down_mid = sample.get("down_token_midpoint") or 0
-        current_exposure = pos.up_tokens * up_mid + pos.down_tokens * down_mid
-        total_value = pos.cash + current_exposure
-
-        # Loss limit check
-        max_loss = min(self._reference_balance * MAX_LOSS_FRACTION, MAX_LOSS_DOLLARS)
-        if self._reference_balance - total_value > max_loss:
-            return 0.0, True
-
-        # Position size cap
-        max_exposure = min(total_value * MAX_POSITION_FRACTION, MAX_POSITION_DOLLARS)
-        room = max(0.0, max_exposure - current_exposure)
-        return room, False
-
-    def _apply_guardrails(self, action, max_buy_amount, loss_limit_hit, sample=None):
-        # type: (TradeAction, float, bool, Optional[Dict[str, Any]]) -> TradeAction
-        """Cap buy amounts by position limit and refuse trades if loss limit hit."""
+    def _apply_guardrails(self, action, sample=None):
+        # type: (TradeAction, Optional[Dict[str, Any]]) -> TradeAction
+        """Apply settlement cooldown and cap buys to available cash."""
         if action.side == "hold":
             return action
-
-        if loss_limit_hit:
-            return HOLD
 
         if action.side.startswith("sell") and not isinstance(self.executor, SimExecutor):
             token = "up" if action.side == "sell_up" else "down"
@@ -981,10 +952,11 @@ class Trader:
                     del self._settlement_cooldowns[token]
 
         if action.side.startswith("buy"):
-            if max_buy_amount <= 0:
+            cash = self._position.cash
+            if cash <= 0:
                 return HOLD
-            if action.amount > max_buy_amount:
-                action = TradeAction(side=action.side, amount=max_buy_amount, price=action.price)
+            if action.amount > cash:
+                action = TradeAction(side=action.side, amount=cash, price=action.price)
 
         return action
 
@@ -1019,10 +991,7 @@ class Trader:
         )
         elapsed_frac = min(elapsed_frac, 1.0)
 
-        # 2. Compute guardrail limits
-        max_buy_amount, loss_limit_hit = self._compute_guardrail_limits(sample)
-
-        # 3. Build TickContext with open_orders snapshot
+        # 2. Build TickContext with open_orders snapshot
         ctx = TickContext(
             tick_index=self._tick_index,
             sample=sample,
@@ -1035,12 +1004,12 @@ class Trader:
             metadata=self._metadata,
             initial_btc_price=self._initial_btc_price,
             elapsed_fraction=elapsed_frac,
-            max_buy_amount=max_buy_amount,
-            loss_limit_hit=loss_limit_hit,
+            max_buy_amount=self._position.cash,
+            loss_limit_hit=False,
             open_orders=list(self._open_orders),
         )
 
-        # 4. Call strategy
+        # 3. Call strategy
         action = self.strategy.on_tick(ctx)
 
         # Drain strategy decision log buffer
@@ -1053,8 +1022,8 @@ class Trader:
                 })
             tick_logs.clear()
 
-        # 5. Apply guardrails
-        action = self._apply_guardrails(action, max_buy_amount, loss_limit_hit, sample)
+        # 4. Apply guardrails (settlement cooldown, cap buys to cash)
+        action = self._apply_guardrails(action, sample)
 
         # 6. Route: limit order vs FAK
         trade = None

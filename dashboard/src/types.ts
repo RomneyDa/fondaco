@@ -68,6 +68,7 @@ export interface BotTrade {
   amount: number;
   tokens: number;
   success: boolean | null;
+  _strategy?: string;
 }
 
 export interface TradingInfo {

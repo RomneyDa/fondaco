@@ -33,10 +33,6 @@ BACKTEST_LOG_FILE = os.path.join(BASE_DIR, "data", "backtest_log.jsonl")
 
 # Trading guardrails (shared by simulator and bot)
 CLOB_MIN_ORDER_TOKENS = 5          # Min order size in tokens (CLOB rejects below this)
-MAX_POSITION_FRACTION = 0.50       # Max fraction of total balance in positions
-MAX_POSITION_DOLLARS = 10_000.0    # Hard cap on position value
-MAX_LOSS_FRACTION = 0.30           # Max loss as fraction of reference balance
-MAX_LOSS_DOLLARS = 1_000.0         # Hard cap on loss per session/day
 
 # Balance cache
 BALANCE_CACHE_FILE = os.path.join(BASE_DIR, ".cache", "balance.json")

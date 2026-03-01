@@ -55,7 +55,7 @@ function buildTradeTraces(trades: BotTrade[], isDryRun: boolean) {
           : undefined,
       },
       text: buyUp.map(
-        (t) => `buy_up $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
+        (t) => `${t._strategy ? t._strategy + ": " : ""}buy_up $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
       ),
       hoverinfo: "text+x",
     });
@@ -79,7 +79,7 @@ function buildTradeTraces(trades: BotTrade[], isDryRun: boolean) {
       },
       text: buyDown.map(
         (t) =>
-          `buy_down $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
+          `${t._strategy ? t._strategy + ": " : ""}buy_down $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
       ),
       hoverinfo: "text+x",
     });
@@ -103,7 +103,7 @@ function buildTradeTraces(trades: BotTrade[], isDryRun: boolean) {
       },
       text: sellUp.map(
         (t) =>
-          `sell_up $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
+          `${t._strategy ? t._strategy + ": " : ""}sell_up $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
       ),
       hoverinfo: "text+x",
     });
@@ -127,7 +127,7 @@ function buildTradeTraces(trades: BotTrade[], isDryRun: boolean) {
       },
       text: sellDown.map(
         (t) =>
-          `sell_down $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
+          `${t._strategy ? t._strategy + ": " : ""}sell_down $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
       ),
       hoverinfo: "text+x",
     });

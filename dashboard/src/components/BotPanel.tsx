@@ -97,7 +97,7 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
   function startEditCash() {
     // For single strategy, edit that one; for multiple, don't use inline edit
     if (strategies.length === 1) {
-      setCashInput(strategies[0].cash.toFixed(2));
+      setCashInput(strategies[0].starting_cash.toFixed(2));
       setEditingCash(true);
     }
   }
@@ -167,7 +167,7 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
     setTimeout(onRefresh, 2500);
   }
 
-  const totalCash = strategies.reduce((sum, s) => sum + s.cash, 0);
+  const totalCash = strategies.reduce((sum, s) => sum + s.starting_cash, 0);
 
   return (
     <div>
@@ -283,7 +283,7 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
                 <div className="meta-card">
                   <div className="meta-label">Cash</div>
                   <div className="meta-value">
-                    ${s.cash.toFixed(2)}
+                    ${s.starting_cash.toFixed(2)}
                     {s.session_cap != null && (
                       <span className="subtitle" style={{ marginLeft: 4, fontSize: 11 }}>
                         (${s.session_cap.toFixed(0)}/session)

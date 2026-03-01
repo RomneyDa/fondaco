@@ -46,7 +46,7 @@ class TestGetExecutionPrice:
     def test_book_mode(self, sample):
         ex = SimExecutor(execution_mode="book")
         assert ex._get_execution_price("buy_up", sample) == 0.51  # best ask
-        assert ex._get_execution_price("sell_up", sample) == 0.49  # best bid
+        assert ex._get_execution_price("sell_up", sample) == 0.50  # midpoint
 
     def test_missing_midpoint(self):
         ex = SimExecutor(execution_mode="midpoint_slippage")
