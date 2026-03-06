@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { fetchLiveSession } from "../api";
+import { fetchLiveSession, archiveSession, fetchSessionList } from "../api";
 import type { LivePayload } from "../types";
 import { isLiveStatus, isSessionData } from "../types";
 import { MetaGrid } from "./MetaGrid";
 import { SessionCharts } from "./SessionCharts";
+import { TradeTable } from "./TradeTable";
 import { fmtTimeOnly } from "../utils/formatTime";
 
 interface Props {
@@ -27,6 +28,9 @@ export function LiveView({ liveData }: Props) {
   const [ended, setEnded] = useState(false);
   const [hadSSE, setHadSSE] = useState(false);
   const [, setTick] = useState(0);
+  const stickyTradesRef = useRef<any[]>([]);
+  const [archiving, setArchiving] = useState(false);
+  const [archived, setArchived] = useState(false);
 
   // Initial fetch
   useEffect(() => {
@@ -34,6 +38,8 @@ export function LiveView({ liveData }: Props) {
       let cancelled = false;
       setEnded(false);
       setHadSSE(false);
+      setArchived(false);
+      stickyTradesRef.current = [];
       fetchLiveSession(prefix).then((data) => {
         if (!cancelled && data) setPayload(data);
       });
@@ -85,22 +91,71 @@ export function LiveView({ liveData }: Props) {
   const trading =
     payload && "trading" in payload ? (payload as any).trading : undefined;
 
-  // Collect all trades across strategies, tagged with strategy name
-  const allTrades: any[] = [];
+  // Collect all trades across strategies, tagged with strategy name.
+  // Persist trades — some live updates may omit trading data
+  // (race between session file and sidecar writes), so never shrink the list
+  // within the same session. Reset when a new session starts (status goes
+  // to waiting/resolving, or elapsed_seconds drops).
+  const currentTrades: any[] = [];
   if (trading?.strategies && Array.isArray(trading.strategies)) {
     for (const s of trading.strategies) {
       if (Array.isArray(s.trades)) {
         for (const t of s.trades) {
-          allTrades.push({ ...t, _strategy: s.name });
+          currentTrades.push({ ...t, _strategy: s.name });
         }
       }
     }
   } else if (trading?.trades && Array.isArray(trading.trades)) {
     for (const t of trading.trades) {
-      allTrades.push({ ...t, _strategy: trading.strategy });
+      currentTrades.push({ ...t, _strategy: trading.strategy });
     }
   }
-  allTrades.sort((a: any, b: any) => (a.elapsed_seconds ?? 0) - (b.elapsed_seconds ?? 0));
+
+  // Detect new session: if payload is a status (waiting/resolving) or
+  // the latest elapsed_seconds is less than what we had, clear stale trades
+  const isStatus = payload && isLiveStatus(payload);
+  if (isStatus) {
+    stickyTradesRef.current = [];
+  } else if (currentTrades.length >= stickyTradesRef.current.length) {
+    currentTrades.sort((a: any, b: any) => (a.elapsed_seconds ?? 0) - (b.elapsed_seconds ?? 0));
+    stickyTradesRef.current = currentTrades;
+  } else if (currentTrades.length === 0 && payload && isSessionData(payload)) {
+    // New session with no trades yet — check if elapsed is early
+    const elapsed = payload.samples?.length
+      ? payload.samples[payload.samples.length - 1].elapsed_seconds
+      : 0;
+    const prevMaxElapsed = stickyTradesRef.current.length > 0
+      ? Math.max(...stickyTradesRef.current.map((t: any) => t.elapsed_seconds ?? 0))
+      : 0;
+    if (elapsed < prevMaxElapsed) {
+      stickyTradesRef.current = [];
+    }
+  }
+  const allTrades = stickyTradesRef.current;
+
+  const handleArchive = async () => {
+    if (!prefix || archiving) return;
+    if (!window.confirm("Archive the most recent session?")) return;
+    setArchiving(true);
+    try {
+      const sessions = await fetchSessionList(prefix);
+      if (sessions.length === 0) {
+        alert("No saved sessions found to archive.");
+        setArchiving(false);
+        return;
+      }
+      const latest = sessions[0]; // sorted newest-first by the API
+      const result = await archiveSession(prefix, latest);
+      if (result.ok) {
+        setArchived(true);
+      } else {
+        alert("Failed to archive: " + (result.error || "unknown error"));
+      }
+    } catch (e) {
+      alert("Failed to archive: " + String(e));
+    }
+    setArchiving(false);
+  };
 
   return (
     <div>
@@ -119,14 +174,26 @@ export function LiveView({ liveData }: Props) {
           polymarket
         </a>
       </h2>
-      <div className={`status-badge ${statusClass}`}>
-        {statusLabel}
-        {payload &&
-          isLiveStatus(payload) &&
-          payload.status === "waiting" &&
-          payload.next_window_utc && (
-            <span> ({formatCountdown(payload.next_window_utc)})</span>
-          )}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div className={`status-badge ${statusClass}`}>
+          {statusLabel}
+          {payload &&
+            isLiveStatus(payload) &&
+            payload.status === "waiting" &&
+            payload.next_window_utc && (
+              <span> ({formatCountdown(payload.next_window_utc)})</span>
+            )}
+        </div>
+        {ended && !archived && (
+          <button
+            className="archive-btn"
+            onClick={handleArchive}
+            disabled={archiving}
+          >
+            {archiving ? "Archiving..." : "Archive"}
+          </button>
+        )}
+        {archived && <span className="subtitle">Archived</span>}
       </div>
 
       {trading && (
@@ -168,47 +235,7 @@ export function LiveView({ liveData }: Props) {
             trades={allTrades.length > 0 ? allTrades : undefined}
             isDryRun={trading?.dry_run}
           />
-          {allTrades.length > 0 && (
-            <div className="trade-log" style={{ marginTop: 16 }}>
-              <h3>Session Trades</h3>
-              <div className="trade-log-table-wrap">
-                <table className="trade-log-table">
-                  <thead>
-                    <tr>
-                      <th>Elapsed</th>
-                      <th>Strategy</th>
-                      <th>Side</th>
-                      <th>Price</th>
-                      <th>Tokens</th>
-                      <th>Amount</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {allTrades.map((t: any, i: number) => (
-                      <tr key={i} className={t.success === false ? "trade-row-fail" : ""}>
-                        <td>{t.elapsed_seconds != null ? `${t.elapsed_seconds.toFixed(1)}s` : "\u2014"}</td>
-                        <td>{t._strategy || "\u2014"}</td>
-                        <td>
-                          <span className={`trade-side ${t.side.includes("up") ? "side-up" : "side-down"}`}>
-                            {t.side === "buy_up" ? "Buy Up" : t.side === "buy_down" ? "Buy Down" : t.side === "sell_up" ? "Sell Up" : t.side === "sell_down" ? "Sell Down" : t.side}
-                          </span>
-                        </td>
-                        <td>${t.price.toFixed(2)}</td>
-                        <td>{t.tokens}</td>
-                        <td>${t.amount.toFixed(2)}</td>
-                        <td>
-                          <span className={`trade-status-pill ${t.success === false ? "status-fail" : "status-ok"}`}>
-                            {t.success === false ? "FAIL" : t.success === true ? "OK" : "SIM"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+          <TradeTable trades={allTrades} />
         </>
       ) : payload && isLiveStatus(payload) ? (
         <p className="subtitle">

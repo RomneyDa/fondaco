@@ -302,7 +302,7 @@ def test_zero_fill_preserves_position(mock_client, metadata, sample):
     trade = ex.execute_trade(action, 0, metadata, sample, pos)
 
     assert trade.success is False
-    assert "zero fill" in trade.error
+    assert "negligible fill" in trade.error
     assert pos.cash == 100.0
     assert pos.up_tokens == 0.0
 

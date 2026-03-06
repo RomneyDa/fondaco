@@ -8,6 +8,7 @@ class that drives the tick loop identically for both replay and live trading.
 import json
 import logging
 import math
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
@@ -345,9 +346,9 @@ class SimExecutor(Executor):
         elif self.execution_mode == "book":
             table = {
                 "buy_up": sample.get("up_token_best_ask"),
-                "sell_up": sample.get("up_token_midpoint"),
+                "sell_up": sample.get("up_token_best_bid"),
                 "buy_down": sample.get("down_token_best_ask"),
-                "sell_down": sample.get("down_token_midpoint"),
+                "sell_down": sample.get("down_token_best_bid"),
             }
             return table.get(side)
 
@@ -478,6 +479,7 @@ class SimExecutor(Executor):
 
 FILL_CHECK_INTERVAL = 2.5  # seconds between polling order status
 SETTLEMENT_COOLDOWN_S = 10.0  # seconds to wait after buy fill before selling
+AUTO_EXIT_MIDPOINT_THRESHOLD = 0.99  # sell when midpoint >= this to avoid claiming
 
 
 class ClobExecutor(Executor):
@@ -513,13 +515,12 @@ class ClobExecutor(Executor):
         now = datetime.now(timezone.utc).isoformat()
 
         # Map action side to token_id, order side, and book price keys.
-        # Buys cross the spread (best_ask).  Sells use midpoint so stop-loss
-        # exits get a fair price instead of the 0.01 best_bid on thin books.
+        # Both buys and sells cross the spread: buys at best_ask, sells at best_bid.
         side_map = {
             "buy_up": ("up_token_id", "BUY", "up_token_best_ask", "up_token_best_bid"),
             "buy_down": ("down_token_id", "BUY", "down_token_best_ask", "down_token_best_bid"),
-            "sell_up": ("up_token_id", "SELL", "up_token_midpoint", "up_token_best_ask"),
-            "sell_down": ("down_token_id", "SELL", "down_token_midpoint", "down_token_best_ask"),
+            "sell_up": ("up_token_id", "SELL", "up_token_best_bid", "up_token_best_ask"),
+            "sell_down": ("down_token_id", "SELL", "down_token_best_bid", "down_token_best_ask"),
         }
 
         if action.side not in side_map:
@@ -627,8 +628,11 @@ class ClobExecutor(Executor):
                         actual_tokens = int(float(making)) / 1_000_000
                         actual_dollars = int(float(taking)) / 1_000_000
 
-                    if actual_tokens <= 0:
-                        raise RuntimeError("FAK order got zero fill (no liquidity)")
+                    if actual_tokens < CLOB_MIN_ORDER_TOKENS:
+                        raise RuntimeError(
+                            "FAK order got negligible fill: {:.6f} tokens (min {})".format(
+                                actual_tokens, CLOB_MIN_ORDER_TOKENS)
+                        )
 
                     if actual_tokens < tokens:
                         logger.warning(
@@ -929,10 +933,11 @@ class Trader:
     Trader handles TickContext construction, strategy calls, and execution.
     """
 
-    def __init__(self, strategy, executor):
-        # type: (Any, Executor) -> None
+    def __init__(self, strategy, executor, auto_exit_flag_file=None):
+        # type: (Any, Executor, Optional[str]) -> None
         self.strategy = strategy
         self.executor = executor
+        self._auto_exit_flag_file = auto_exit_flag_file
         self._metadata = {}   # type: Dict[str, Any]
         self._position = None  # type: Optional[Position]
         self._initial_btc_price = 0.0
@@ -998,6 +1003,31 @@ class Trader:
 
         return action
 
+    def _is_auto_exit_enabled(self):
+        # type: () -> bool
+        """Check if auto-exit is enabled via flag file on disk."""
+        if self._auto_exit_flag_file is not None:
+            return os.path.exists(self._auto_exit_flag_file)
+        return False
+
+    def _check_auto_exit(self, sample):
+        # type: (Dict[str, Any]) -> TradeAction
+        """Sell held tokens when best_bid >= threshold to avoid claiming."""
+        threshold = AUTO_EXIT_MIDPOINT_THRESHOLD
+        pos = self._position
+
+        if pos.up_tokens >= CLOB_MIN_ORDER_TOKENS:
+            bid = sample.get("up_token_best_bid")
+            if bid is not None and bid >= threshold:
+                return TradeAction(side="sell_up", amount=pos.up_tokens)
+
+        if pos.down_tokens >= CLOB_MIN_ORDER_TOKENS:
+            bid = sample.get("down_token_best_bid")
+            if bid is not None and bid >= threshold:
+                return TradeAction(side="sell_down", amount=pos.down_tokens)
+
+        return HOLD
+
     def process_tick(self, sample):
         # type: (Dict[str, Any]) -> Optional[Trade]
         """Build TickContext, call strategy, execute trade, update history.
@@ -1062,6 +1092,10 @@ class Trader:
 
         # 4. Apply guardrails (settlement cooldown, cap buys to cash)
         action = self._apply_guardrails(action, sample)
+
+        # 4b. Auto-exit: sell tokens at midpoint instead of waiting for resolution
+        if action.side == "hold" and self._is_auto_exit_enabled():
+            action = self._check_auto_exit(sample)
 
         # 5b. Route cancel actions — cancel pending orders on the target token
         if action.side.startswith("cancel"):

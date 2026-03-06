@@ -81,6 +81,7 @@ class _Handler(BaseHTTPRequestHandler):
             "/api/control/trade-off": self._handle_trade_off,
             "/api/control/set-cash": self._handle_set_cash,
             "/api/control/reload": self._handle_reload,
+            "/api/control/set-auto-exit": self._handle_set_auto_exit,
             "/api/control/kill": self._handle_kill,
             "/api/control/stop": self._handle_stop,
         }
@@ -236,6 +237,30 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "ok": True,
                 "cash": round(float(cash), 4),
+                "slug_prefix": slug_prefix,
+            })
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
+
+    def _handle_set_auto_exit(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        try:
+            body = self._read_json_body()
+            slug_prefix = self._require_slug(body)
+            if slug_prefix is None:
+                return
+            enabled = body.get("enabled")
+            if enabled is None:
+                self._send_json({"error": "Missing 'enabled' field"}, 400)
+                return
+            strategy_name = body.get("strategy")
+            runner = mgr.get_market(slug_prefix)
+            runner.set_auto_exit(bool(enabled), strategy_name=strategy_name)
+            self._send_json({
+                "ok": True,
+                "auto_exit": bool(enabled),
                 "slug_prefix": slug_prefix,
             })
         except Exception as e:

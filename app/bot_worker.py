@@ -244,7 +244,11 @@ class BotWorker:
                 if not trader_initialized:
                     initial_btc_price = sample_dict.get("btc_price_usd") or 0.0
                     self.strategy = ALL_STRATEGIES[self.strategy_name](**self.params)
-                    trader = Trader(self.strategy, self.executor)
+                    auto_exit_flag = os.path.join(self.state_dir, "auto_exit.flag")
+                    trader = Trader(
+                        self.strategy, self.executor,
+                        auto_exit_flag_file=auto_exit_flag,
+                    )
                     ref_balance = self.position.cash
                     trader.start_session(
                         metadata_dict, self.position, initial_btc_price,

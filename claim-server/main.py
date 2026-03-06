@@ -19,10 +19,18 @@ import os
 import sys
 import time
 
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s — %(message)s"
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claim-server.log")
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    format=LOG_FORMAT,
+    datefmt=LOG_DATEFMT,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_FILE),
+    ],
 )
 logger = logging.getLogger("claim-server")
 

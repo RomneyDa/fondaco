@@ -64,7 +64,9 @@ def market_live_dir(slug_key):
 
 def market_socket_path(slug_key):
     # type: (str) -> str
-    return os.path.join(MARKETS_DIR, slug_key, "ticks.sock")
+    # Unix sockets have a 104-char path limit on macOS.
+    # Use /tmp to keep the path short.
+    return "/tmp/eros-pm-{}.sock".format(slug_key)
 
 
 def market_workers_dir(slug_key):

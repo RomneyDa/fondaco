@@ -189,10 +189,12 @@ def claim_redeemable(private_key, safe_address, wait_for_confirm=True):
     """
     try:
         positions = fetch_redeemable_positions(safe_address)
+        # Filter to winning positions only (currentValue > 0)
+        positions = [p for p in positions if p.get("currentValue", 0) > 0]
         if not positions:
             return (0, 0, 0.0)
 
-        total_value = sum(pos.get("size", 0) for pos in positions)
+        total_value = sum(pos.get("currentValue", 0) for pos in positions)
         condition_ids = list({pos["conditionId"] for pos in positions})
 
         logger.info(

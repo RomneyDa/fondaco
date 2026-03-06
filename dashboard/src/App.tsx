@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Routes, Route } from "react-router-dom";
 import { fetchBotStatus, fetchLivePrefixes, fetchPrefixes } from "./api";
 import { useSSE } from "./hooks/useSSE";
@@ -10,17 +10,66 @@ import { SessionDetail } from "./components/SessionDetail";
 import { LiveView } from "./components/LiveView";
 import { BotPanel } from "./components/BotPanel";
 
+export interface PingEntry {
+  time: Date;
+  status: "ok" | "offline" | "error";
+  detail?: string;
+  latencyMs?: number;
+}
+
+const MAX_PINGS = 3;
+
 export function App() {
   const [prefixes, setPrefixes] = useState<PrefixInfo[]>([]);
   const [livePrefixes, setLivePrefixes] = useState<string[]>([]);
   const [liveData, setLiveData] = useState<Record<string, LivePayload>>({});
   const [navVersion, setNavVersion] = useState(0);
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
+  const [pings, setPings] = useState<PingEntry[]>([]);
+
+  const addPing = useCallback((entry: PingEntry) => {
+    setPings((prev) => [entry, ...prev].slice(0, MAX_PINGS));
+  }, []);
 
   const refreshNav = useCallback(() => setNavVersion((v) => v + 1), []);
+
+  const doPing = useCallback(async (): Promise<BotStatus | null> => {
+    const t0 = performance.now();
+    const res = await fetch("/api/bot/status");
+    const latencyMs = Math.round(performance.now() - t0);
+    const time = new Date();
+
+    if (res.status === 502 || res.status === 503) {
+      addPing({ time, status: "offline", detail: `${res.status}`, latencyMs });
+      return null;
+    }
+    if (!res.ok) {
+      addPing({ time, status: "error", detail: `HTTP ${res.status}`, latencyMs });
+      return null;
+    }
+    try {
+      const data = await res.json();
+      if (typeof data.running !== "boolean") {
+        addPing({ time, status: "error", detail: "bad payload", latencyMs });
+        return null;
+      }
+      const markets = data.markets?.length ?? 0;
+      addPing({
+        time,
+        status: "ok",
+        detail: data.running ? `running · ${markets} market${markets !== 1 ? "s" : ""}` : "offline",
+        latencyMs,
+      });
+      return data;
+    } catch (e) {
+      addPing({ time, status: "error", detail: String(e), latencyMs });
+      return null;
+    }
+  }, [addPing]);
+
   const refreshBotStatus = useCallback(() => {
-    fetchBotStatus().then((s) => { if (s) setBotStatus(s); });
-  }, []);
+    doPing().then((s) => { if (s) setBotStatus(s); });
+  }, [doPing]);
 
   useEffect(() => {
     fetchPrefixes().then(setPrefixes);
@@ -28,13 +77,14 @@ export function App() {
 
   useEffect(() => {
     fetchLivePrefixes().then(setLivePrefixes);
-    fetchBotStatus().then((s) => { if (s) setBotStatus(s); });
+    // On initial load, treat null (unreachable) as offline
+    doPing().then((s) => setBotStatus(s ?? { running: false }));
   }, []);
 
   // Poll bot status every 5s to catch external changes
   useEffect(() => {
     const interval = setInterval(() => {
-      fetchBotStatus().then((s) => { if (s) setBotStatus(s); });
+      doPing().then((s) => { if (s) setBotStatus(s); });
     }, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -67,6 +117,7 @@ export function App() {
         prefixes={prefixes}
         livePrefixes={livePrefixes}
         botStatus={botStatus}
+        pings={pings}
       />
       <main className="content">
         <Routes>

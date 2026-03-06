@@ -94,8 +94,8 @@ class PriceFetcher:
             data = resp.json()
             bids = data.get("bids", [])
             asks = data.get("asks", [])
-            best_bid = float(bids[0]["price"]) if bids else None
-            best_ask = float(asks[0]["price"]) if asks else None
+            best_bid = max(float(b["price"]) for b in bids) if bids else None
+            best_ask = min(float(a["price"]) for a in asks) if asks else None
             return best_bid, best_ask
         except Exception:
             return None, None

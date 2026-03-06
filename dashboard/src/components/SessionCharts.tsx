@@ -28,112 +28,48 @@ const LAYOUT_BASE = {
 
 const PLOT_CFG = { responsive: true, displayModeBar: false };
 
+function fmtTradeHover(t: BotTrade, label: string): string {
+  const prefix = t._strategy ? t._strategy + ": " : "";
+  const tkns = t.tokens < 0.01 && t.tokens > 0 ? "<0.01" : t.tokens.toFixed(1);
+  const amt = t.amount < 0.01 && t.amount > 0 ? "<$0.01" : "$" + t.amount.toFixed(2);
+  return `${prefix}${label} ${amt} (${tkns} tokens)`;
+}
+
+interface TraceConfig {
+  trades: BotTrade[];
+  name: string;
+  label: string;
+  symbol: string;
+  color: string;
+}
+
 function buildTradeTraces(trades: BotTrade[], isDryRun: boolean) {
-  const buyUp = trades.filter((t) => t.side === "buy_up");
-  const buyDown = trades.filter((t) => t.side === "buy_down");
-  const sellUp = trades.filter((t) => t.side === "sell_up");
-  const sellDown = trades.filter((t) => t.side === "sell_down");
-
   const opacity = isDryRun ? 0.5 : 1.0;
+  const configs: TraceConfig[] = [
+    { trades: trades.filter((t) => t.side === "buy_up"), name: "Buy Up", label: "buy_up", symbol: "triangle-up", color: "#3fb950" },
+    { trades: trades.filter((t) => t.side === "buy_down"), name: "Buy Down", label: "buy_down", symbol: "triangle-up", color: "#f85149" },
+    { trades: trades.filter((t) => t.side === "sell_up"), name: "Sell Up", label: "sell_up", symbol: "triangle-down", color: "#3fb950" },
+    { trades: trades.filter((t) => t.side === "sell_down"), name: "Sell Down", label: "sell_down", symbol: "triangle-down", color: "#f85149" },
+  ];
 
-  const traces: any[] = [];
-
-  if (buyUp.length > 0) {
-    traces.push({
-      x: buyUp.map((t) => t.elapsed_seconds),
-      y: buyUp.map((t) => t.price),
+  return configs
+    .filter((c) => c.trades.length > 0)
+    .map((c) => ({
+      x: c.trades.map((t) => t.elapsed_seconds),
+      y: c.trades.map((t) => t.price),
       type: "scatter",
       mode: "markers",
-      name: "Buy Up",
+      name: c.name,
       marker: {
-        symbol: "triangle-up",
+        symbol: c.symbol,
         size: 12,
-        color: "#3fb950",
+        color: c.color,
         opacity,
-        line: isDryRun
-          ? { color: "#3fb950", width: 2, dash: "dot" }
-          : undefined,
+        line: isDryRun ? { color: c.color, width: 2, dash: "dot" } : undefined,
       },
-      text: buyUp.map(
-        (t) => `${t._strategy ? t._strategy + ": " : ""}buy_up $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
-      ),
+      text: c.trades.map((t) => fmtTradeHover(t, c.label)),
       hoverinfo: "text+x",
-    });
-  }
-
-  if (buyDown.length > 0) {
-    traces.push({
-      x: buyDown.map((t) => t.elapsed_seconds),
-      y: buyDown.map((t) => t.price),
-      type: "scatter",
-      mode: "markers",
-      name: "Buy Down",
-      marker: {
-        symbol: "triangle-up",
-        size: 12,
-        color: "#f85149",
-        opacity,
-        line: isDryRun
-          ? { color: "#f85149", width: 2, dash: "dot" }
-          : undefined,
-      },
-      text: buyDown.map(
-        (t) =>
-          `${t._strategy ? t._strategy + ": " : ""}buy_down $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
-      ),
-      hoverinfo: "text+x",
-    });
-  }
-
-  if (sellUp.length > 0) {
-    traces.push({
-      x: sellUp.map((t) => t.elapsed_seconds),
-      y: sellUp.map((t) => t.price),
-      type: "scatter",
-      mode: "markers",
-      name: "Sell Up",
-      marker: {
-        symbol: "triangle-down",
-        size: 12,
-        color: "#3fb950",
-        opacity,
-        line: isDryRun
-          ? { color: "#3fb950", width: 2, dash: "dot" }
-          : undefined,
-      },
-      text: sellUp.map(
-        (t) =>
-          `${t._strategy ? t._strategy + ": " : ""}sell_up $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
-      ),
-      hoverinfo: "text+x",
-    });
-  }
-
-  if (sellDown.length > 0) {
-    traces.push({
-      x: sellDown.map((t) => t.elapsed_seconds),
-      y: sellDown.map((t) => t.price),
-      type: "scatter",
-      mode: "markers",
-      name: "Sell Down",
-      marker: {
-        symbol: "triangle-down",
-        size: 12,
-        color: "#f85149",
-        opacity,
-        line: isDryRun
-          ? { color: "#f85149", width: 2, dash: "dot" }
-          : undefined,
-      },
-      text: sellDown.map(
-        (t) =>
-          `${t._strategy ? t._strategy + ": " : ""}sell_down $${t.amount.toFixed(2)} (${t.tokens.toFixed(1)} tokens)`
-      ),
-      hoverinfo: "text+x",
-    });
-  }
-
-  return traces;
+    }));
 }
 
 export function SessionCharts({ session, trades, isDryRun }: Props) {

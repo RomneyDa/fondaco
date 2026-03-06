@@ -136,6 +136,59 @@ body {
 }
 .nav-item.dim:hover { background: transparent; }
 
+/* ---- Ping indicator ---- */
+
+.ping-indicator {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding: 0;
+}
+
+.ping-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.ping-summary:hover { background: rgba(88, 166, 255, 0.05); }
+
+.ping-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ping-log {
+  max-height: 200px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+.ping-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  font-size: 10px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  color: var(--text-dim);
+}
+
+.ping-entry.ping-error { color: var(--red); }
+.ping-entry.ping-offline { color: var(--btc); }
+
+.ping-time { opacity: 0.5; min-width: 56px; }
+.ping-detail { white-space: nowrap; }
+
 /* ---- Content ---- */
 
 .content {
@@ -743,3 +796,26 @@ h2 {
 
 .pnl-positive { color: var(--green); }
 .pnl-negative { color: var(--red); }
+
+/* ---- Archive button ---- */
+
+.archive-btn {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.archive-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.archive-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

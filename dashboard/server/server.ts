@@ -242,6 +242,48 @@ app.get(
   }
 );
 
+app.post("/api/session/:prefix/:file/archive", (req: Request, res: Response) => {
+  try {
+    const sessionsDir = safePath(MARKETS_DIR, req.params.prefix, "sessions");
+    if (!sessionsDir) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+    if (!fs.existsSync(sessionsDir)) {
+      res.status(404).json({ error: "Sessions directory not found" });
+      return;
+    }
+
+    const filepath = path.join(sessionsDir, req.params.file);
+    if (!filepath.startsWith(sessionsDir) || !fs.existsSync(filepath)) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    const archiveDir = path.join(MARKETS_DIR, req.params.prefix, "archive", "sessions");
+    fs.mkdirSync(archiveDir, { recursive: true });
+
+    // Move main session file
+    fs.renameSync(filepath, path.join(archiveDir, req.params.file));
+
+    // Move any trading sidecar files (e.g. foo.json.trading.json, foo.json.trading.Strategy.json)
+    const sidecarPrefix = req.params.file + ".trading.";
+    const sidecars = fs.readdirSync(sessionsDir).filter(
+      (f) => f.startsWith(sidecarPrefix) && f.endsWith(".json")
+    );
+    for (const sidecar of sidecars) {
+      fs.renameSync(
+        path.join(sessionsDir, sidecar),
+        path.join(archiveDir, sidecar)
+      );
+    }
+
+    res.json({ ok: true, archived: req.params.file, sidecars: sidecars.length });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 app.get("/api/live", (_req: Request, res: Response) => {
   try {
     const live: string[] = [];

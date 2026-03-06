@@ -78,14 +78,14 @@ export async function fetchBotStatus(): Promise<BotStatus | null> {
   try {
     const res = await fetch("/api/bot/status");
     if (res.status === 502 || res.status === 503) {
-      // App not running — return definitive offline status
-      return { running: false };
+      // Can't reach control server — return null so callers
+      // don't overwrite existing state (important during startup)
+      return null;
     }
     if (!res.ok) return null;
     const data = await res.json();
-    // Ensure running field exists
     if (typeof data.running !== "boolean") {
-      return { running: false };
+      return null;
     }
     return data;
   } catch {
@@ -244,6 +244,21 @@ export async function startBot(body: {
   }
 }
 
+export async function setAutoExit(slug_prefix: string, enabled: boolean, strategy?: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const body: Record<string, any> = { slug_prefix, enabled };
+    if (strategy) body.strategy = strategy;
+    const res = await fetch("/api/bot/set-auto-exit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 export async function fetchStrategies(): Promise<string[]> {
   try {
     const res = await fetch("/api/strategies");
@@ -263,6 +278,20 @@ export async function fetchTrades(limit: number = 100): Promise<TradeLogEntry[]>
     return trades;
   } catch {
     return [];
+  }
+}
+
+export async function archiveSession(
+  prefix: string,
+  file: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/session/${prefix}/${file}/archive`, {
+      method: "POST",
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
   }
 }
 

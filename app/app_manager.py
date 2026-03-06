@@ -48,6 +48,7 @@ class AppManager:
 
         # Markets (protected by lock)
         self._lock = threading.Lock()
+        self._save_lock = threading.Lock()
         self._markets = {}  # type: Dict[str, MarketRunner]
         self._threads = {}  # type: Dict[str, threading.Thread]
 
@@ -226,14 +227,15 @@ class AppManager:
             "port": self.port,
             "markets": market_configs,
         }
-        try:
-            os.makedirs(os.path.dirname(APP_STATE_FILE), exist_ok=True)
-            tmp = APP_STATE_FILE + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(state, f, indent=2)
-            os.replace(tmp, APP_STATE_FILE)
-        except Exception:
-            logger.exception("Failed to save app state")
+        with self._save_lock:
+            try:
+                os.makedirs(os.path.dirname(APP_STATE_FILE), exist_ok=True)
+                tmp = APP_STATE_FILE + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(state, f, indent=2)
+                os.replace(tmp, APP_STATE_FILE)
+            except Exception:
+                logger.exception("Failed to save app state")
 
     def restore(self):
         # type: () -> None

@@ -409,6 +409,40 @@ class MarketRunner:
             except Exception as e:
                 logger.warning("Failed to update cash for %s: %s", w.strategy_name, e)
 
+    def set_auto_exit(self, enabled, strategy_name=None):
+        # type: (bool, Optional[str]) -> None
+        """Toggle auto-exit for a worker by creating/removing a flag file."""
+        if self.market_type != "updown":
+            raise ValueError("Auto-exit is only supported for updown markets")
+        with self._lock:
+            if not self._workers:
+                raise RuntimeError("No active workers to update")
+            if strategy_name is not None:
+                target = [w for w in self._workers if w.strategy_name == strategy_name]
+                if not target:
+                    raise ValueError("No active worker for strategy '{}'".format(strategy_name))
+            elif len(self._workers) == 1:
+                target = [self._workers[0]]
+            else:
+                raise ValueError(
+                    "Multiple workers active — specify which one: {}".format(
+                        [w.strategy_name for w in self._workers]
+                    )
+                )
+
+        for w in target:
+            flag_file = os.path.join(self._workers_dir, w.strategy_name, "auto_exit.flag")
+            if enabled:
+                with open(flag_file, "w") as f:
+                    f.write("1")
+                logger.info("[%s/%s] Auto-exit enabled", self.slug_key, w.strategy_name)
+            else:
+                try:
+                    os.remove(flag_file)
+                except OSError:
+                    pass
+                logger.info("[%s/%s] Auto-exit disabled", self.slug_key, w.strategy_name)
+
     def _save_strategies_config(self):
         # type: () -> None
         configs = []
@@ -484,6 +518,8 @@ class MarketRunner:
                 }
                 if w.session_cap is not None:
                     info["session_cap"] = round(w.session_cap, 4)
+                flag_file = os.path.join(self._workers_dir, w.strategy_name, "auto_exit.flag")
+                info["auto_exit"] = os.path.exists(flag_file)
                 strategies.append(info)
 
             return {

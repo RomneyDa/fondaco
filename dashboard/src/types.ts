@@ -92,6 +92,7 @@ export interface StrategySlotStatus {
   session_cap?: number;
   pid?: number | null;
   alive?: boolean;
+  auto_exit?: boolean;
 }
 
 export interface MarketStatus {

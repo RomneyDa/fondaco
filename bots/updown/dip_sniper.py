@@ -115,6 +115,13 @@ class DipSniper(Strategy):
     def on_tick(self, ctx):
         # type: (TickContext) -> TradeAction
         if self._exited:
+            # Keep retrying sell if guardrails (settlement cooldown) suppressed it
+            tokens = ctx.position.up_tokens if self._side == "up" else ctx.position.down_tokens
+            if tokens > 0:
+                return TradeAction(
+                    side="sell_up" if self._side == "up" else "sell_down",
+                    amount=tokens,
+                )
             return HOLD
 
         # --- Phase: Position management (if filled) ---

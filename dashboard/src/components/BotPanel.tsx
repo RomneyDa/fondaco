@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchBotStatus, fetchSlugs, fetchStrategies, startBot, startMarket, stopMarket, tradeBotOn, tradeBotOff, stopBot, killBot, setBotCash, reloadBot } from "../api";
+import { Link } from "react-router-dom";
+import { fetchBotStatus, fetchSlugs, fetchStrategies, startBot, startMarket, stopMarket, tradeBotOn, tradeBotOff, stopBot, killBot, setBotCash, reloadBot, setAutoExit } from "../api";
 import type { SlugInfo } from "../api";
 import type { BotStatus, MarketStatus } from "../types";
 import { TradingLog } from "./TradingLog";
@@ -11,40 +12,33 @@ interface Props {
 }
 
 export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
-  const [strategy, setStrategy] = useState("");
-  const [params, setParams] = useState("");
-  const [cash, setCash] = useState("100");
-  const [dryRun, setDryRun] = useState(true);
-  const [sessionCap, setSessionCap] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [selectedMarket, setSelectedMarket] = useState("");
+  const [starting, setStarting] = useState(false);
 
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const markets = botStatus?.markets ?? [];
   const isRunning = botStatus?.running ?? false;
 
+  // Clear "starting" once the app reports running
+  useEffect(() => {
+    if (isRunning && starting) setStarting(false);
+  }, [isRunning, starting]);
+
   useEffect(() => {
     return () => {
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        clearInterval(refreshTimerRef.current);
+      }
     };
   }, []);
-
-  // Auto-select first market
-  useEffect(() => {
-    if (markets.length > 0 && (!selectedMarket || !markets.some(m => m.slug_prefix === selectedMarket))) {
-      setSelectedMarket(markets[0].slug_prefix);
-    }
-  }, [markets, selectedMarket]);
 
   // --- Strategies (dynamic) ---
   const [strategies, setStrategies] = useState<string[]>([]);
   useEffect(() => {
-    fetchStrategies().then((s) => {
-      setStrategies(s);
-      if (s.length > 0 && !strategy) setStrategy(s[0]);
-    });
+    fetchStrategies().then(setStrategies);
   }, []);
 
   // --- Slugs for market-on ---
@@ -70,10 +64,27 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
 
   async function handleStartApp() {
     setLoading(true);
+    setStarting(true);
     const res = await startBot({ restore: true });
-    flashMessage(res.ok ? `App started (PID ${res.pid})` : res.error || "Failed to start");
+    if (!res.ok) {
+      flashMessage(res.error || "Failed to start");
+      setStarting(false);
+    } else {
+      flashMessage(`App started (PID ${res.pid})`);
+      // Poll aggressively until the app is confirmed running
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        onRefresh();
+        if (attempts >= 10) {
+          clearInterval(poll);
+          setStarting(false);
+        }
+      }, 1000);
+      // Clear interval once we detect running (via the useEffect above)
+      refreshTimerRef.current = poll as unknown as ReturnType<typeof setTimeout>;
+    }
     setLoading(false);
-    refreshTimerRef.current = setTimeout(onRefresh, 2500);
   }
 
   async function handleMarketOn() {
@@ -97,27 +108,17 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
     refreshTimerRef.current = setTimeout(onRefresh, 2000);
   }
 
-  async function handleTradeOn() {
-    if (!selectedMarket) { flashMessage("Select a market first"); return; }
-    if (!strategy) { flashMessage("Select a strategy"); return; }
+  async function handleTradeOn(slugPrefix: string, strategyName: string, opts: { cash: number; sessionCap?: number; dryRun: boolean }) {
     setLoading(true);
-    const parsedParams: Record<string, string> = {};
-    if (params.trim()) {
-      for (const pair of params.split(",")) {
-        const [k, v] = pair.split("=").map((s) => s.trim());
-        if (k && v) parsedParams[k] = v;
-      }
-    }
     const body: any = {
-      slug_prefix: selectedMarket,
-      strategy,
-      params: parsedParams,
-      cash: parseFloat(cash) || 100,
-      dry_run: dryRun,
+      slug_prefix: slugPrefix,
+      strategy: strategyName,
+      cash: opts.cash,
+      dry_run: opts.dryRun,
     };
-    if (sessionCap.trim()) body.session_cap = parseFloat(sessionCap);
+    if (opts.sessionCap != null) body.session_cap = opts.sessionCap;
     const res = await tradeBotOn(body);
-    flashMessage(res.ok ? `Started: ${strategy}` : res.error || "Failed");
+    flashMessage(res.ok ? `Started: ${strategyName}` : res.error || "Failed");
     setLoading(false);
     onRefresh();
   }
@@ -164,8 +165,8 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
           <div className="meta-card">
             <div className="meta-label">Status</div>
             <div className="meta-value">
-              <span className={`bot-status-dot ${isRunning ? "running" : "stopped"}`} />
-              {botStatus === null ? "Loading..." : isRunning ? "Running" : "Offline"}
+              <span className={`bot-status-dot ${isRunning ? "running" : starting ? "starting" : "stopped"}`} />
+              {botStatus === null ? "Loading..." : isRunning ? "Running" : starting ? "Starting..." : "Offline"}
             </div>
           </div>
           {isRunning && (
@@ -198,16 +199,23 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
               key={m.slug_key}
               market={m}
               loading={loading}
+              strategies={strategies}
+              onTradeOn={handleTradeOn}
               onTradeOff={handleTradeOff}
               onReload={handleReload}
               onMarketOff={handleMarketOff}
+              onToggleAutoExit={async (slug, strat, enabled) => {
+                const res = await setAutoExit(slug, enabled, strat);
+                if (!res.ok) flashMessage(res.error || "Failed");
+                onRefresh();
+              }}
+              flashMessage={flashMessage}
             />
           ))}
 
-          {/* Control forms */}
-          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 20 }}>
-            {/* Add Market */}
-            <div className="bot-form" style={{ flex: "1 1 280px" }}>
+          {/* Add Market */}
+          <div style={{ marginTop: 20 }}>
+            <div className="bot-form" style={{ maxWidth: 360 }}>
               <h3>Add Market</h3>
               <div className="bot-form-row">
                 <label>
@@ -229,69 +237,6 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
                 Start Market
               </button>
             </div>
-
-            {/* Add Worker */}
-            {markets.length > 0 && (
-              <div className="bot-form" style={{ flex: "2 1 400px" }}>
-                <h3>Add Strategy</h3>
-                <div style={{ display: "flex", gap: 12 }}>
-                  <div className="bot-form-row" style={{ flex: 1 }}>
-                    <label>
-                      Market
-                      <select value={selectedMarket} onChange={(e) => setSelectedMarket(e.target.value)}>
-                        {markets.map((m) => (
-                          <option key={m.slug_key} value={m.slug_prefix}>{m.slug_key}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                  <div className="bot-form-row" style={{ flex: 1 }}>
-                    <label>
-                      Strategy
-                      <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
-                        {strategies.map((s) => (
-                          <option key={s} value={s}>{s}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                </div>
-                <div className="bot-form-row">
-                  <label>
-                    Params <span className="subtitle">(key=val,key=val)</span>
-                    <input
-                      type="text"
-                      value={params}
-                      onChange={(e) => setParams(e.target.value)}
-                      placeholder="min_elapsed=0.7,threshold=0.5"
-                    />
-                  </label>
-                </div>
-                <div style={{ display: "flex", gap: 12 }}>
-                  <div className="bot-form-row" style={{ flex: 1 }}>
-                    <label>
-                      Cash ($)
-                      <input type="number" value={cash} onChange={(e) => setCash(e.target.value)} min="1" step="1" />
-                    </label>
-                  </div>
-                  <div className="bot-form-row" style={{ flex: 1 }}>
-                    <label>
-                      Session Cap ($) <span className="subtitle">optional</span>
-                      <input type="number" value={sessionCap} onChange={(e) => setSessionCap(e.target.value)} min="1" step="1" placeholder="none" />
-                    </label>
-                  </div>
-                  <div className="bot-form-row" style={{ flex: 1, display: "flex", alignItems: "flex-end" }}>
-                    <label className="bot-checkbox">
-                      <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
-                      Dry Run
-                    </label>
-                  </div>
-                </div>
-                <button className="bot-btn bot-btn-start" onClick={handleTradeOn} disabled={loading}>
-                  Add Strategy
-                </button>
-              </div>
-            )}
           </div>
 
           {/* App-level actions */}
@@ -321,12 +266,18 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
       {!isRunning && botStatus !== null && (
         <div className="bot-controls">
           <div className="bot-form">
-            <p className="subtitle" style={{ marginBottom: 12 }}>
-              Start the app and restore previous markets &amp; strategies.
-            </p>
-            <button className="bot-btn bot-btn-start" onClick={handleStartApp} disabled={loading}>
-              Start App
-            </button>
+            {starting ? (
+              <p className="subtitle">Starting app...</p>
+            ) : (
+              <>
+                <p className="subtitle" style={{ marginBottom: 12 }}>
+                  Start the app and restore previous markets &amp; strategies.
+                </p>
+                <button className="bot-btn bot-btn-start" onClick={handleStartApp} disabled={loading}>
+                  Start App
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -341,21 +292,35 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
 function MarketSection({
   market,
   loading,
+  strategies: allStrategies,
+  onTradeOn,
   onTradeOff,
   onReload,
   onMarketOff,
+  onToggleAutoExit,
+  flashMessage,
 }: {
   market: MarketStatus;
   loading: boolean;
+  strategies: string[];
+  onTradeOn: (slug: string, strategy: string, opts: { cash: number; sessionCap?: number; dryRun: boolean }) => void;
   onTradeOff: (slug: string, strategy?: string) => void;
   onReload: (slug: string, strategy: string) => void;
   onMarketOff: (slug: string) => void;
+  onToggleAutoExit: (slug: string, strategy: string, enabled: boolean) => void;
+  flashMessage: (msg: string) => void;
 }) {
-  const strategies = market.strategies ?? [];
+  const activeStrategies = market.strategies ?? [];
+  const activeNames = new Set(activeStrategies.map((s) => s.name));
+  const available = allStrategies.filter((s) => !activeNames.has(s));
+
+  const [selected, setSelected] = useState("");
+  const [cash, setCash] = useState("10");
+  const [sessionCap, setSessionCap] = useState("5");
 
   return (
     <div style={{ marginTop: 16, padding: 16, background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: strategies.length > 0 ? 12 : 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: activeStrategies.length > 0 ? 12 : 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span
             style={{
@@ -367,7 +332,9 @@ function MarketSection({
               animation: market.running ? "pulse 2s infinite" : "none",
             }}
           />
-          <strong style={{ fontSize: 15 }}>{market.slug_key}</strong>
+          <Link to={`/live/${market.slug_key}`} style={{ fontSize: 15, fontWeight: 600, color: "var(--text)", textDecoration: "none" }}>
+            {market.slug_key}
+          </Link>
           <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
             {market.session_count} sessions
             {(market.tick_clients ?? 0) > 0 && ` · ${market.tick_clients} clients`}
@@ -389,9 +356,9 @@ function MarketSection({
         </button>
       </div>
 
-      {strategies.length > 0 ? (
+      {activeStrategies.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {strategies.map((s) => {
+          {activeStrategies.map((s) => {
             const alive = s.alive !== false;
             return (
               <div key={s.name} style={{
@@ -414,6 +381,17 @@ function MarketSection({
                     <span style={{ opacity: 0.6 }}> (${s.session_cap.toFixed(0)}/s)</span>
                   )}
                 </span>
+                {(market.market_type ?? "updown") === "updown" && (
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, cursor: "pointer", color: "var(--text-dim)" }}>
+                    <input
+                      type="checkbox"
+                      checked={!!s.auto_exit}
+                      onChange={(e) => onToggleAutoExit(market.slug_prefix, s.name, e.target.checked)}
+                      style={{ width: 13, height: 13, accentColor: "var(--accent)" }}
+                    />
+                    Auto-exit
+                  </label>
+                )}
                 {s.pid != null && (
                   <span style={{ color: "var(--text-dim)", fontSize: 11 }}>PID {s.pid}</span>
                 )}
@@ -439,9 +417,50 @@ function MarketSection({
             );
           })}
         </div>
-      ) : (
-        <div style={{ color: "var(--text-dim)", fontSize: 13, fontStyle: "italic" }}>
-          No strategies — add one below
+      )}
+
+      {available.length > 0 && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8, marginTop: 10,
+          padding: "8px 12px", background: "var(--bg)", borderRadius: 6, border: "1px dashed var(--border)",
+        }}>
+          <select
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+            style={{ flex: 1, fontSize: 13 }}
+          >
+            <option value="">Add strategy...</option>
+            {available.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+          <input
+            type="number" value={cash} onChange={(e) => setCash(e.target.value)}
+            min="1" step="1" placeholder="Cash" title="Cash ($)"
+            style={{ width: 60, fontSize: 13 }}
+          />
+          <input
+            type="number" value={sessionCap} onChange={(e) => setSessionCap(e.target.value)}
+            min="1" step="1" placeholder="Cap" title="Session cap ($)"
+            style={{ width: 60, fontSize: 13 }}
+          />
+          <button
+            className="bot-btn"
+            style={{ fontSize: 11, padding: "4px 12px", background: "var(--green)", color: "#fff" }}
+            disabled={loading || !selected}
+            onClick={() => {
+              if (!selected) return;
+              const cap = sessionCap.trim() ? parseFloat(sessionCap) : undefined;
+              onTradeOn(market.slug_prefix, selected, {
+                cash: parseFloat(cash) || 10,
+                sessionCap: cap,
+                dryRun: false,
+              });
+              setSelected("");
+            }}
+          >
+            Add
+          </button>
         </div>
       )}
     </div>

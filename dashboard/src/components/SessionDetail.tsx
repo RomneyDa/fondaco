@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
-import { fetchSession, fetchSessionTrading } from "../api";
-import type { BotTrade, SessionData, TradingInfo } from "../types";
+import { useParams, useNavigate } from "react-router-dom";
+import { fetchSession, fetchSessionTrading, archiveSession } from "../api";
+import type { BotTrade, SessionData } from "../types";
 import { MetaGrid } from "./MetaGrid";
 import { SessionCharts } from "./SessionCharts";
+import { TradeTable } from "./TradeTable";
 
 export function SessionDetail() {
   const { prefix, file } = useParams<{ prefix: string; file: string }>();
+  const navigate = useNavigate();
   const [session, setSession] = useState<SessionData | null>(null);
   const [trading, setTrading] = useState<any | null>(null);
+  const [archiving, setArchiving] = useState(false);
 
   useEffect(() => {
     if (prefix && file) {
@@ -44,9 +47,31 @@ export function SessionDetail() {
 
   const anyDryRun = strategyEntries.some((s) => s.dry_run);
 
+  const handleArchive = async () => {
+    if (!prefix || !file || archiving) return;
+    if (!window.confirm("Archive this session?")) return;
+    setArchiving(true);
+    const result = await archiveSession(prefix, file);
+    setArchiving(false);
+    if (result.ok) {
+      navigate(`/sessions/${prefix}`);
+    } else {
+      alert("Failed to archive: " + (result.error || "unknown error"));
+    }
+  };
+
   return (
     <div>
-      <h2>{session.metadata?.event_title || file?.replace(".json", "")}</h2>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <h2 style={{ flex: 1 }}>{session.metadata?.event_title || file?.replace(".json", "")}</h2>
+        <button
+          className="archive-btn"
+          onClick={handleArchive}
+          disabled={archiving}
+        >
+          {archiving ? "Archiving..." : "Archive"}
+        </button>
+      </div>
 
       {strategyEntries.length > 0 && (
         <div className="trading-summary">
@@ -88,6 +113,7 @@ export function SessionDetail() {
         trades={allTrades.length > 0 ? allTrades : undefined}
         isDryRun={anyDryRun}
       />
+      <TradeTable trades={allTrades} />
     </div>
   );
 }
