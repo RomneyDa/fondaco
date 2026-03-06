@@ -1,7 +1,7 @@
-"""HTTP control server for the unified app process.
+"""HTTP control server for the multi-market app.
 
 Runs a stdlib HTTPServer in a daemon thread, exposing endpoints to
-query status, toggle trading, and trigger graceful shutdown.
+query status, manage markets, toggle trading, and trigger shutdown.
 """
 
 import json
@@ -11,7 +11,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.runner import Runner
+    from app.app_manager import AppManager
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +19,9 @@ logger = logging.getLogger(__name__)
 class _Handler(BaseHTTPRequestHandler):
     """Request handler for the control server."""
 
-    runner = None  # type: Optional[Runner]
+    app_manager = None  # type: Optional[AppManager]
 
     def log_message(self, format, *args):
-        # Suppress default stderr logging
         pass
 
     def _set_cors_headers(self):
@@ -47,6 +46,22 @@ class _Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         return json.loads(raw.decode("utf-8"))
 
+    def _require_app_manager(self):
+        # type: () -> Optional[AppManager]
+        if self.app_manager is None:
+            self._send_json({"error": "No app manager"}, 500)
+            return None
+        return self.app_manager
+
+    def _require_slug(self, body):
+        # type: (Dict[str, Any]) -> Optional[str]
+        """Extract and validate slug_prefix from request body."""
+        slug_prefix = body.get("slug_prefix")
+        if not slug_prefix or not isinstance(slug_prefix, str):
+            self._send_json({"error": "Missing 'slug_prefix'"}, 400)
+            return None
+        return slug_prefix
+
     def do_OPTIONS(self):
         self.send_response(204)
         self._set_cors_headers()
@@ -59,33 +74,102 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "Not found"}, 404)
 
     def do_POST(self):
-        if self.path == "/api/control/trade-on":
-            self._handle_trade_on()
-        elif self.path == "/api/control/trade-off":
-            self._handle_trade_off()
-        elif self.path == "/api/control/set-cash":
-            self._handle_set_cash()
-        elif self.path == "/api/control/kill":
-            self._handle_kill()
-        elif self.path == "/api/control/stop":
-            self._handle_stop()
+        routes = {
+            "/api/control/market-on": self._handle_market_on,
+            "/api/control/market-off": self._handle_market_off,
+            "/api/control/trade-on": self._handle_trade_on,
+            "/api/control/trade-off": self._handle_trade_off,
+            "/api/control/set-cash": self._handle_set_cash,
+            "/api/control/reload": self._handle_reload,
+            "/api/control/kill": self._handle_kill,
+            "/api/control/stop": self._handle_stop,
+        }
+        handler = routes.get(self.path)
+        if handler:
+            handler()
         else:
             self._send_json({"error": "Not found"}, 404)
 
-    def _handle_status(self):
-        runner = self.runner
-        if runner is None:
-            self._send_json({"error": "No runner"}, 500)
-            return
-        self._send_json(runner.get_status())
+    # --- App-level endpoints ---
 
-    def _handle_trade_on(self):
-        runner = self.runner
-        if runner is None:
-            self._send_json({"error": "No runner"}, 500)
+    def _handle_status(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        self._send_json(mgr.get_status())
+
+    def _handle_stop(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        mgr.request_stop()
+        self._send_json({"ok": True, "stopping": True})
+
+    def _handle_kill(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        mgr.request_stop_after_session()
+        self._send_json({"ok": True, "stop_after_session": True})
+
+    # --- Market lifecycle ---
+
+    def _handle_market_on(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
             return
         try:
             body = self._read_json_body()
+            slug_prefix = self._require_slug(body)
+            if slug_prefix is None:
+                return
+            window = body.get("window")
+            market_type = body.get("market_type", "updown")
+            restore = body.get("restore", False)
+
+            kwargs = {"market_type": market_type}
+            if window is not None:
+                kwargs["window_duration"] = int(window)
+
+            runner = mgr.start_market(slug_prefix, **kwargs)
+
+            if restore:
+                runner.restore_strategies()
+
+            self._send_json({
+                "ok": True,
+                "slug_prefix": slug_prefix,
+                "slug_key": runner.slug_key,
+            })
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
+
+    def _handle_market_off(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        try:
+            body = self._read_json_body()
+            slug_prefix = self._require_slug(body)
+            if slug_prefix is None:
+                return
+            after_session = body.get("after_session", False)
+            mgr.stop_market(slug_prefix, after_session=after_session)
+            self._send_json({"ok": True, "slug_prefix": slug_prefix})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
+
+    # --- Bot lifecycle (per-market) ---
+
+    def _handle_trade_on(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        try:
+            body = self._read_json_body()
+            slug_prefix = self._require_slug(body)
+            if slug_prefix is None:
+                return
             strategy_name = body.get("strategy")
             if not strategy_name:
                 self._send_json({"error": "Missing 'strategy' field"}, 400)
@@ -97,72 +181,125 @@ class _Handler(BaseHTTPRequestHandler):
             session_cap = body.get("session_cap")
             if session_cap is not None:
                 session_cap = float(session_cap)
-            runner.enable_trading(strategy_name, params, cash=cash, dry_run=dry_run,
-                                  per_session=per_session, session_cap=session_cap)
-            self._send_json({"ok": True, "trading": True, "strategy": strategy_name})
+
+            runner = mgr.get_market(slug_prefix)
+            runner.enable_trading(
+                strategy_name, params, cash=cash, dry_run=dry_run,
+                per_session=per_session, session_cap=session_cap,
+            )
+            self._send_json({
+                "ok": True,
+                "trading": True,
+                "strategy": strategy_name,
+                "slug_prefix": slug_prefix,
+            })
         except Exception as e:
             self._send_json({"error": str(e)}, 400)
 
     def _handle_trade_off(self):
-        runner = self.runner
-        if runner is None:
-            self._send_json({"error": "No runner"}, 500)
+        mgr = self._require_app_manager()
+        if mgr is None:
             return
         try:
             body = self._read_json_body()
+            slug_prefix = self._require_slug(body)
+            if slug_prefix is None:
+                return
             strategy_name = body.get("strategy")
+            runner = mgr.get_market(slug_prefix)
             runner.disable_trading(strategy_name=strategy_name)
-            self._send_json({"ok": True, "trading": False, "strategy": strategy_name})
+            self._send_json({
+                "ok": True,
+                "trading": False,
+                "strategy": strategy_name,
+                "slug_prefix": slug_prefix,
+            })
         except Exception as e:
             self._send_json({"error": str(e)}, 400)
 
     def _handle_set_cash(self):
-        runner = self.runner
-        if runner is None:
-            self._send_json({"error": "No runner"}, 500)
+        mgr = self._require_app_manager()
+        if mgr is None:
             return
         try:
             body = self._read_json_body()
+            slug_prefix = self._require_slug(body)
+            if slug_prefix is None:
+                return
             cash = body.get("cash")
             if cash is None:
                 self._send_json({"error": "Missing 'cash' field"}, 400)
                 return
             strategy_name = body.get("strategy")
+            runner = mgr.get_market(slug_prefix)
             runner.set_cash(float(cash), strategy_name=strategy_name)
-            self._send_json({"ok": True, "cash": round(float(cash), 4)})
+            self._send_json({
+                "ok": True,
+                "cash": round(float(cash), 4),
+                "slug_prefix": slug_prefix,
+            })
         except Exception as e:
             self._send_json({"error": str(e)}, 400)
 
-    def _handle_kill(self):
-        runner = self.runner
-        if runner is None:
-            self._send_json({"error": "No runner"}, 500)
+    def _handle_reload(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
             return
-        runner.request_stop_after_session()
-        self._send_json({"ok": True, "stop_after_session": True})
+        try:
+            body = self._read_json_body()
+            slug_prefix = self._require_slug(body)
+            if slug_prefix is None:
+                return
+            strategy_name = body.get("strategy")
+            if not strategy_name:
+                self._send_json({"error": "Missing 'strategy' field"}, 400)
+                return
 
-    def _handle_stop(self):
-        runner = self.runner
-        if runner is None:
-            self._send_json({"error": "No runner"}, 500)
-            return
-        runner.request_stop()
-        self._send_json({"ok": True, "stopping": True})
+            runner = mgr.get_market(slug_prefix)
+
+            # Find the worker to get its config
+            with runner._lock:
+                target = None
+                for w in runner._workers:
+                    if w.strategy_name == strategy_name:
+                        target = w
+                        break
+            if target is None:
+                self._send_json(
+                    {"error": "No active worker for '{}'".format(strategy_name)}, 404,
+                )
+                return
+
+            state = runner._read_worker_state(strategy_name)
+            cash = state.get("cash", target.cash) if state else target.cash
+
+            runner.enable_trading(
+                strategy_name, target.params, cash=cash,
+                dry_run=target.dry_run, per_session=target.per_session,
+                session_cap=target.session_cap,
+            )
+            self._send_json({
+                "ok": True,
+                "strategy": strategy_name,
+                "reloaded": True,
+                "slug_prefix": slug_prefix,
+            })
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
 
 
 class ControlServer:
     """HTTP control server wrapping HTTPServer in a daemon thread."""
 
-    def __init__(self, runner, port):
-        # type: (Runner, int) -> None
+    def __init__(self, app_manager, port):
+        # type: (AppManager, int) -> None
         self.port = port
-        _Handler.runner = runner
+        _Handler.app_manager = app_manager
         self._server = HTTPServer(("0.0.0.0", port), _Handler)
         self._thread = None  # type: Optional[threading.Thread]
 
     def start(self):
         # type: () -> None
-        """Start serving in a daemon thread."""
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             daemon=True,
@@ -173,7 +310,6 @@ class ControlServer:
 
     def stop(self):
         # type: () -> None
-        """Shut down the server."""
         self._server.shutdown()
         if self._thread is not None:
             self._thread.join(timeout=5)

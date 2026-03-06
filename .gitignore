@@ -1,15 +1,5 @@
-# Raw API request/response logs (can be very large)
-data/api_raw/
-
-# Collected session data
-data/sessions/
-
-# Collection log
-data/collection_log.jsonl
-data/collector.log
-
-# Live session data (transient)
-data/live/
+# All runtime data (sessions, logs, workers, sockets, etc.)
+data/
 
 # Fetched slug prefixes (may go stale)
 slugs.json
@@ -17,19 +7,6 @@ slugs.json
 # Secrets and cached auth
 .env
 .cache/
-
-# Bot data
-data/bot.pid
-data/bot.log
-data/bot_trades.jsonl
-data/bot_log.jsonl
-data/bot_position.json
-data/bot_positions/
-data/app.json
-data/app.log
-
-# Backtest results
-data/backtest_log.jsonl
 
 # Python
 __pycache__/

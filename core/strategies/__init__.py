@@ -1,30 +1,6 @@
-"""Trading strategies for Polymarket up/down markets."""
+"""Strategy base class and shared utilities.
 
-from core.strategies.base import Strategy
-from core.strategies.always_buy_up import AlwaysBuyUp
-from core.strategies.always_buy_down import AlwaysBuyDown
-from core.strategies.momentum_entry import MomentumEntry
-from core.strategies.midpoint_momentum import MidpointMomentum
-from core.strategies.late_sniper import LateSniper
-from core.strategies.late_sniper_tp import LateSniperTP
-from core.strategies.fade_the_market import FadeTheMarket
-from core.strategies.buy_trend import BuyTrend
-from core.strategies.digital_option import DigitalOption
-from core.strategies.cheap_shot import CheapShot
-from core.strategies.brenda_flipper import BrendaFlipper
-from core.strategies.volatility_bargain import VolatilityBargain
-
-ALL_STRATEGIES = {
-    "AlwaysBuyUp": AlwaysBuyUp,
-    "AlwaysBuyDown": AlwaysBuyDown,
-    "MomentumEntry": MomentumEntry,
-    "MidpointMomentum": MidpointMomentum,
-    "LateSniper": LateSniper,
-    "LateSniperTP": LateSniperTP,
-    "FadeTheMarket": FadeTheMarket,
-    "BuyTrend": BuyTrend,
-    "DigitalOption": DigitalOption,
-    "CheapShot": CheapShot,
-    "BrendaFlipper": BrendaFlipper,
-    "VolatilityBargain": VolatilityBargain,
-}
+The Strategy ABC lives here (core/strategies/base.py).
+Concrete implementations live in bots/ (e.g. bots/updown/).
+Registries live in bots/__init__.py.
+"""

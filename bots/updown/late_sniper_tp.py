@@ -1,7 +1,7 @@
 """LateSniper variant with take-profit: sells early when ROI target is hit."""
 
 from core.trader import HOLD, TradeAction
-from core.strategies.late_sniper import LateSniper
+from bots.updown.late_sniper import LateSniper
 
 
 class LateSniperTP(LateSniper):

@@ -1,4 +1,5 @@
 import type { SessionData } from "../types";
+import { fmtTime } from "../utils/formatTime";
 
 interface Props {
   session: SessionData;
@@ -7,15 +8,6 @@ interface Props {
 function fmtPrice(v: number | null): string {
   if (v == null) return "\u2014";
   return "$" + v.toLocaleString(undefined, { maximumFractionDigits: 2 });
-}
-
-function fmtTime(iso: string | undefined): string {
-  if (!iso) return "\u2014";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
 }
 
 export function MetaGrid({ session }: Props) {

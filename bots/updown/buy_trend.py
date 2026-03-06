@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from core.defaults import DATA_DIR
+from core.defaults import BASE_DIR
 from core.trader import HOLD, TradeAction
 from core.strategies.base import Strategy
 
@@ -120,7 +120,7 @@ class BuyTrend(Strategy):
         # Infer from event_slug: "btc-updown-5m-1771585200" -> "btc-updown-5m"
         event_slug = metadata.get("event_slug", "")
         slug_key = event_slug.rsplit("-", 1)[0] if event_slug else ""
-        return os.path.join(DATA_DIR, slug_key)
+        return os.path.join(BASE_DIR, "data", slug_key)
 
     def on_session_start(self, metadata):
         # type: (Dict[str, Any]) -> None

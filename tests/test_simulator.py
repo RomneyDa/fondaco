@@ -4,8 +4,8 @@ import json
 import os
 
 import pytest
-from core.strategies.always_buy_up import AlwaysBuyUp
-from core.strategies.always_buy_down import AlwaysBuyDown
+from bots.updown.archived.always_buy_up import AlwaysBuyUp
+from bots.updown.archived.always_buy_down import AlwaysBuyDown
 from core.strategies.base import Strategy
 from core.trader import HOLD, TradeAction
 from simulator.engine import Simulator, load_sessions

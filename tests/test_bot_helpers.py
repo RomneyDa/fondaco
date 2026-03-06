@@ -9,61 +9,57 @@ from core.trader import Position
 
 
 # ---------------------------------------------------------------------------
-# _save_slot_position (per-strategy position persistence)
+# _save_position (per-strategy position persistence)
 # ---------------------------------------------------------------------------
 
 
 class TestPositionPersistence:
     def test_save_and_load_roundtrip(self, tmp_path):
         pos_dir = str(tmp_path / "bot_positions")
-        with patch("app.runner.POSITION_DIR", pos_dir):
-            from app.runner import _save_slot_position
-            pos = Position(cash=42.5, up_tokens=10.0, down_tokens=5.0)
-            _save_slot_position("TestStrategy", pos)
+        from app.bot_worker import _save_position
+        pos = Position(cash=42.5, up_tokens=10.0, down_tokens=5.0)
+        _save_position(pos_dir, "TestStrategy", pos)
 
-            filepath = os.path.join(pos_dir, "TestStrategy.json")
-            assert os.path.exists(filepath)
-            with open(filepath) as f:
-                data = json.load(f)
-            loaded = Position.from_dict(data)
-            assert loaded.cash == 42.5
-            assert loaded.up_tokens == 10.0
-            assert loaded.down_tokens == 5.0
+        filepath = os.path.join(pos_dir, "TestStrategy.json")
+        assert os.path.exists(filepath)
+        with open(filepath) as f:
+            data = json.load(f)
+        loaded = Position.from_dict(data)
+        assert loaded.cash == 42.5
+        assert loaded.up_tokens == 10.0
+        assert loaded.down_tokens == 5.0
 
     def test_save_is_atomic(self, tmp_path):
         """Verify atomic write: .tmp file should not persist after save."""
         pos_dir = str(tmp_path / "bot_positions")
-        with patch("app.runner.POSITION_DIR", pos_dir):
-            from app.runner import _save_slot_position
-            _save_slot_position("TestStrategy", Position(cash=99.0))
-            filepath = os.path.join(pos_dir, "TestStrategy.json")
-            assert os.path.exists(filepath)
-            assert not os.path.exists(filepath + ".tmp")
+        from app.bot_worker import _save_position
+        _save_position(pos_dir, "TestStrategy", Position(cash=99.0))
+        filepath = os.path.join(pos_dir, "TestStrategy.json")
+        assert os.path.exists(filepath)
+        assert not os.path.exists(filepath + ".tmp")
 
     def test_save_overwrites(self, tmp_path):
         pos_dir = str(tmp_path / "bot_positions")
-        with patch("app.runner.POSITION_DIR", pos_dir):
-            from app.runner import _save_slot_position
-            _save_slot_position("TestStrategy", Position(cash=10.0))
-            _save_slot_position("TestStrategy", Position(cash=20.0))
-            filepath = os.path.join(pos_dir, "TestStrategy.json")
-            with open(filepath) as f:
-                data = json.load(f)
-            assert data["cash"] == 20.0
+        from app.bot_worker import _save_position
+        _save_position(pos_dir, "TestStrategy", Position(cash=10.0))
+        _save_position(pos_dir, "TestStrategy", Position(cash=20.0))
+        filepath = os.path.join(pos_dir, "TestStrategy.json")
+        with open(filepath) as f:
+            data = json.load(f)
+        assert data["cash"] == 20.0
 
     def test_multiple_strategies(self, tmp_path):
         """Different strategy names write to different files."""
         pos_dir = str(tmp_path / "bot_positions")
-        with patch("app.runner.POSITION_DIR", pos_dir):
-            from app.runner import _save_slot_position
-            _save_slot_position("StratA", Position(cash=100.0))
-            _save_slot_position("StratB", Position(cash=200.0))
-            assert os.path.exists(os.path.join(pos_dir, "StratA.json"))
-            assert os.path.exists(os.path.join(pos_dir, "StratB.json"))
-            with open(os.path.join(pos_dir, "StratA.json")) as f:
-                assert json.load(f)["cash"] == 100.0
-            with open(os.path.join(pos_dir, "StratB.json")) as f:
-                assert json.load(f)["cash"] == 200.0
+        from app.bot_worker import _save_position
+        _save_position(pos_dir, "StratA", Position(cash=100.0))
+        _save_position(pos_dir, "StratB", Position(cash=200.0))
+        assert os.path.exists(os.path.join(pos_dir, "StratA.json"))
+        assert os.path.exists(os.path.join(pos_dir, "StratB.json"))
+        with open(os.path.join(pos_dir, "StratA.json")) as f:
+            assert json.load(f)["cash"] == 100.0
+        with open(os.path.join(pos_dir, "StratB.json")) as f:
+            assert json.load(f)["cash"] == 200.0
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +70,8 @@ class TestPositionPersistence:
 class TestBalanceCache:
     def test_save_and_load(self, tmp_path):
         cache_file = str(tmp_path / "balance.json")
-        with patch("app.runner.BALANCE_CACHE_FILE", cache_file):
-            from app.runner import _save_balance_cache, _load_balance_cache
+        with patch("app.market_runner.BALANCE_CACHE_FILE", cache_file):
+            from app.market_runner import _save_balance_cache, _load_balance_cache
             _save_balance_cache(95.5, "btc-updown-5m-", 3)
             data = _load_balance_cache()
             assert data is not None
@@ -85,8 +81,8 @@ class TestBalanceCache:
 
     def test_load_missing_returns_none(self, tmp_path):
         cache_file = str(tmp_path / "missing.json")
-        with patch("app.runner.BALANCE_CACHE_FILE", cache_file):
-            from app.runner import _load_balance_cache
+        with patch("app.market_runner.BALANCE_CACHE_FILE", cache_file):
+            from app.market_runner import _load_balance_cache
             assert _load_balance_cache() is None
 
 
@@ -176,29 +172,3 @@ class TestAuthCache:
         with patch("app.auth.AUTH_CACHE_FILE", cache_file):
             from app.auth import _clear_auth_cache
             _clear_auth_cache()  # should not raise
-
-
-# ---------------------------------------------------------------------------
-# Runner._is_auth_error
-# ---------------------------------------------------------------------------
-
-
-class TestIsAuthError:
-    def test_detects_unauthorized(self):
-        from app.runner import _AUTH_ERROR_STRINGS
-        def _is_auth_error(error):
-            msg = str(error)
-            return any(s in msg for s in _AUTH_ERROR_STRINGS)
-
-        assert _is_auth_error(Exception("Unauthorized"))
-        assert _is_auth_error(Exception("Something Invalid api key something"))
-        assert _is_auth_error(Exception("invalid signature from server"))
-
-    def test_non_auth_error(self):
-        from app.runner import _AUTH_ERROR_STRINGS
-        def _is_auth_error(error):
-            msg = str(error)
-            return any(s in msg for s in _AUTH_ERROR_STRINGS)
-
-        assert not _is_auth_error(Exception("Connection timeout"))
-        assert not _is_auth_error(Exception("Rate limited"))

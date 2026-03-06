@@ -5,26 +5,27 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from core.defaults import DATA_DIR, LIVE_DIR, LOG_FILE
+from core.defaults import market_sessions_dir, market_live_dir, market_session_log
 from core.models import SessionData
 
 
 class SessionRecorder:
     """Manages writing session data to disk.
 
-    Sessions are stored under data/sessions/{slug_prefix}/ so different
+    Sessions are stored under data/markets/{slug_key}/sessions/ so different
     market types are kept separate.
     """
 
-    def __init__(self, slug_prefix):
-        # type: (str) -> None
-        # Strip trailing dash for the folder name (e.g. "btc-updown-5m-" -> "btc-updown-5m")
+    def __init__(self, slug_prefix, sessions_dir=None, live_dir=None, log_file=None):
+        # type: (str, Optional[str], Optional[str], Optional[str]) -> None
         self.slug_key = slug_prefix.rstrip("-")
-        self.market_dir = os.path.join(DATA_DIR, self.slug_key)
-        self.live_filepath = os.path.join(LIVE_DIR, "{}.json".format(self.slug_key))
+        self.market_dir = sessions_dir or market_sessions_dir(self.slug_key)
+        self._live_dir = live_dir or market_live_dir(self.slug_key)
+        self.live_filepath = os.path.join(self._live_dir, "session.json")
+        self._log_file = log_file or market_session_log(self.slug_key)
         os.makedirs(self.market_dir, exist_ok=True)
-        os.makedirs(LIVE_DIR, exist_ok=True)
-        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        os.makedirs(self._live_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(self._log_file), exist_ok=True)
 
     def session_filepath(self, window_start_utc):
         # type: (str) -> str
@@ -53,18 +54,12 @@ class SessionRecorder:
             "message": message,
         }
         entry.update(kwargs)
-        with open(LOG_FILE, "a") as f:
+        with open(self._log_file, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
     def write_live_status(self, status, next_window_utc=None, trading_info=None):
         # type: (str, Optional[str], Optional[Dict[str, Any]]) -> None
-        """Write a status-only live file so the dashboard knows a process is active.
-
-        Args:
-            status: e.g. "waiting", "collecting", "resolving"
-            next_window_utc: ISO timestamp of next window start
-            trading_info: optional dict merged under "trading" key
-        """
+        """Write a status-only live file so the dashboard knows a process is active."""
         entry = {
             "status": status,
             "slug_key": self.slug_key,
@@ -78,12 +73,7 @@ class SessionRecorder:
 
     def write_live_session(self, session, trading_info=None):
         # type: (SessionData, Optional[Dict[str, Any]]) -> None
-        """Write in-progress session data to the live directory for dashboard consumption.
-
-        Args:
-            session: current session data
-            trading_info: optional dict merged under "trading" key
-        """
+        """Write in-progress session data to the live directory for dashboard consumption."""
         data = json.loads(session.to_json())
         if trading_info is not None:
             data["trading"] = trading_info

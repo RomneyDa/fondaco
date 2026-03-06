@@ -32,6 +32,7 @@ class TradeAction:
     side: str  # buy_up, buy_down, sell_up, sell_down, hold
     amount: float = 0.0  # dollars for buys, token count for sells
     price: Optional[float] = None  # if set → GTC limit order; if None → FAK (current behavior)
+    expiration_seconds: Optional[float] = None  # TTL in seconds; None=GTC, set=GTD
 
 
 HOLD = TradeAction(side="hold", amount=0.0)
@@ -39,7 +40,7 @@ HOLD = TradeAction(side="hold", amount=0.0)
 
 @dataclass
 class OpenOrder:
-    """Tracks a pending GTC limit order."""
+    """Tracks a pending GTC/GTD limit order."""
     order_id: str
     side: str               # buy_up, buy_down, sell_up, sell_down
     token: str              # "up" or "down"
@@ -49,6 +50,7 @@ class OpenOrder:
     tokens_reserved: float   # tokens held aside (sells only)
     tick_placed: int
     token_id: Optional[str] = None
+    expiration: Optional[float] = None  # sim: elapsed_seconds deadline; live: unix timestamp
 
 
 @dataclass
@@ -353,7 +355,7 @@ class SimExecutor(Executor):
 
     def place_limit_order(self, action, tick_index, metadata, sample, position):
         # type: (TradeAction, int, Dict[str, Any], Dict[str, Any], Position) -> Optional[OpenOrder]
-        """Simulate posting a GTC limit order."""
+        """Simulate posting a GTC/GTD limit order."""
         if action.side == "hold" or action.amount <= 0 or action.price is None:
             return None
 
@@ -379,6 +381,12 @@ class SimExecutor(Executor):
             action.side, price, tokens,
         )
 
+        # Compute GTD expiration deadline (elapsed_seconds)
+        expiration = None
+        if action.expiration_seconds is not None:
+            current_elapsed = sample.get("elapsed_seconds", 0.0)
+            expiration = current_elapsed + action.expiration_seconds
+
         self._sim_order_counter += 1
         return OpenOrder(
             order_id="sim-{}".format(self._sim_order_counter),
@@ -389,6 +397,7 @@ class SimExecutor(Executor):
             dollars_reserved=dollars_reserved,
             tokens_reserved=tokens_reserved,
             tick_placed=tick_index,
+            expiration=expiration,
         )
 
     def check_fills(self, open_orders, sample, position):
@@ -401,8 +410,16 @@ class SimExecutor(Executor):
         """
         fills = []
         remaining = []
+        current_elapsed = sample.get("elapsed_seconds", 0.0)
 
         for order in open_orders:
+            # GTD expiration: if past deadline, unreserve and discard
+            if order.expiration is not None and current_elapsed >= order.expiration:
+                position.unreserve_for_order(
+                    order.side, order.dollars_reserved, order.tokens_reserved,
+                )
+                continue
+
             mid_key = "up_token_midpoint" if order.token == "up" else "down_token_midpoint"
             midpoint = sample.get(mid_key)
             if midpoint is None:
@@ -436,7 +453,7 @@ class SimExecutor(Executor):
                     amount=order.tokens * order.price,
                     tokens=order.tokens,
                     order_id=order.order_id,
-                    order_type="GTC",
+                    order_type="GTD" if order.expiration is not None else "GTC",
                     elapsed_seconds=sample.get("elapsed_seconds"),
                 ))
             else:
@@ -652,7 +669,7 @@ class ClobExecutor(Executor):
 
     def place_limit_order(self, action, tick_index, metadata, sample, position):
         # type: (TradeAction, int, Dict[str, Any], Dict[str, Any], Position) -> Optional[OpenOrder]
-        """Post a GTC limit order via the CLOB API."""
+        """Post a GTC/GTD limit order via the CLOB API."""
         from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
 
         if action.side == "hold" or action.amount <= 0 or action.price is None:
@@ -688,39 +705,55 @@ class ClobExecutor(Executor):
 
         token = "up" if action.side in ("buy_up", "sell_up") else "down"
 
+        # Determine order type: GTD if expiration_seconds set, else GTC
+        is_gtd = action.expiration_seconds is not None
+        order_type_label = "GTD" if is_gtd else "GTC"
+
         try:
-            order_args = OrderArgs(
+            order_args_kwargs = dict(
                 token_id=token_id,
                 price=price,
                 size=tokens,
                 side=order_side,
             )
+            if is_gtd:
+                order_args_kwargs["expiration"] = str(
+                    int(time.time()) + int(action.expiration_seconds)
+                )
+            order_args = OrderArgs(**order_args_kwargs)
             options = PartialCreateOrderOptions(
                 tick_size="0.01",
                 neg_risk=False,
             )
             signed_order = self.client.create_order(order_args, options)
-            resp = self.client.post_order(signed_order, orderType=OrderType.GTC)
+            clob_order_type = OrderType.GTD if is_gtd else OrderType.GTC
+            resp = self.client.post_order(signed_order, orderType=clob_order_type)
 
             order_id = None
             if isinstance(resp, dict):
                 if resp.get("success") is False:
                     raise RuntimeError(
-                        "CLOB rejected GTC order: {}".format(resp.get("errorMsg", "unknown"))
+                        "CLOB rejected {} order: {}".format(
+                            order_type_label, resp.get("errorMsg", "unknown"))
                     )
                 order_id = resp.get("orderID") or resp.get("id")
 
             if order_id is None:
-                raise RuntimeError("No order ID in GTC response")
+                raise RuntimeError("No order ID in {} response".format(order_type_label))
 
             # Reserve funds in position
             dollars_reserved, tokens_reserved = position.reserve_for_order(
                 action.side, price, tokens,
             )
 
+            # Compute expiration for OpenOrder tracking
+            expiration = None
+            if is_gtd:
+                expiration = time.time() + action.expiration_seconds
+
             logger.info(
-                "GTC limit order placed: %s %s %.0f tokens @ %.2f (order_id=%s)",
-                order_side, token, tokens, price, order_id,
+                "%s limit order placed: %s %s %.0f tokens @ %.2f (order_id=%s)",
+                order_type_label, order_side, token, tokens, price, order_id,
             )
 
             # Log the placement
@@ -728,7 +761,7 @@ class ClobExecutor(Executor):
                 tick_index=tick_index, side=action.side, price=price,
                 amount=dollars, tokens=tokens, order_id=order_id,
                 token_id=token_id, success=True, error=None,
-                timestamp=now, order_type="GTC",
+                timestamp=now, order_type=order_type_label,
                 elapsed_seconds=sample.get("elapsed_seconds"),
             )
             self._log_trade(trade_record)
@@ -743,15 +776,16 @@ class ClobExecutor(Executor):
                 tokens_reserved=tokens_reserved,
                 tick_placed=tick_index,
                 token_id=token_id,
+                expiration=expiration,
             )
 
         except Exception as e:
-            logger.error("GTC order placement failed: %s", e)
+            logger.error("%s order placement failed: %s", order_type_label, e)
             trade_record = Trade(
                 tick_index=tick_index, side=action.side, price=price,
                 amount=dollars, tokens=tokens, order_id=None,
                 token_id=token_id, success=False, error=str(e),
-                timestamp=now, order_type="GTC",
+                timestamp=now, order_type=order_type_label,
                 elapsed_seconds=sample.get("elapsed_seconds"),
             )
             self._log_trade(trade_record)
@@ -951,12 +985,16 @@ class Trader:
                 else:
                     del self._settlement_cooldowns[token]
 
+        if action.side.startswith("cancel"):
+            return action
+
         if action.side.startswith("buy"):
             cash = self._position.cash
             if cash <= 0:
                 return HOLD
             if action.amount > cash:
-                action = TradeAction(side=action.side, amount=cash, price=action.price)
+                action = TradeAction(side=action.side, amount=cash, price=action.price,
+                                     expiration_seconds=action.expiration_seconds)
 
         return action
 
@@ -1024,6 +1062,20 @@ class Trader:
 
         # 4. Apply guardrails (settlement cooldown, cap buys to cash)
         action = self._apply_guardrails(action, sample)
+
+        # 5b. Route cancel actions — cancel pending orders on the target token
+        if action.side.startswith("cancel"):
+            token = "up" if action.side == "cancel_up" else "down"
+            for order in list(self._open_orders):
+                if order.token == token:
+                    try:
+                        self.executor.cancel_order(order, self._position)
+                    except NotImplementedError:
+                        pass
+                    self._open_orders.remove(order)
+            self._history.append(sample)
+            self._tick_index += 1
+            return None
 
         # 6. Route: limit order vs FAK
         trade = None

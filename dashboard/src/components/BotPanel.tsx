@@ -1,38 +1,8 @@
-import { useEffect, useState } from "react";
-import { fetchBotStatus, fetchSlugs, startBot, tradeBotOn, tradeBotOff, stopBot, setBotCash } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { fetchBotStatus, fetchSlugs, fetchStrategies, startBot, startMarket, stopMarket, tradeBotOn, tradeBotOff, stopBot, killBot, setBotCash, reloadBot } from "../api";
 import type { SlugInfo } from "../api";
-import type { BotStatus } from "../types";
+import type { BotStatus, MarketStatus } from "../types";
 import { TradingLog } from "./TradingLog";
-
-const STRATEGIES: Record<string, string> = {
-  AlwaysBuyUp: "Immediately buys Up tokens at the first tick and holds until resolution. Simple benchmark \u2014 profits whenever BTC ends higher.",
-  AlwaysBuyDown: "Immediately buys Down tokens at the first tick and holds until resolution. Simple benchmark \u2014 profits whenever BTC ends lower.",
-  MomentumEntry: "Watches BTC price early in the window. If BTC moves more than a threshold and the token midpoint confirms, buys in that direction. Exits on stop-loss.",
-  MidpointMomentum: "Tracks token midpoint trends over recent ticks. If a token\u2019s midpoint is rising with enough momentum above a threshold, buys that side. Trend-following on market sentiment.",
-  LateSniper: "Waits until late in the window when the outcome is more predictable, then buys the likely winner. Exits on stop-loss if the market reverses.",
-  LateSniperTP: "LateSniper variant that takes profit early. Waits until late in the window, buys the likely winner, then sells if ROI exceeds the take-profit threshold rather than holding to resolution.",
-  FadeTheMarket: "Mean reversion contrarian play. If a token midpoint stays at an extreme for several ticks early in the window, bets against it. Exits on stop-loss if the trend continues.",
-  BuyTrend: "Checks recent session history for a BTC price trend. If enough sessions confirm a directional move exceeding a threshold, buys in that direction at the start of the session.",
-  DigitalOption: "Models the market as a digital option using Black-Scholes fair probability. Enters when market midpoint diverges from model price, with regime-adaptive thresholds.",
-  CheapShot: "Buys cheap tokens early when BTC is near the opening price, using slight momentum to pick the winning direction at favorable odds.",
-  BrendaFlipper: "Buys a cheap token early, holds briefly, then flips on a gain target or cuts on a stop-loss. A BTC gap override lets big movers ride.",
-  VolatilityBargain: "Buys cheap tokens when high recent BTC volatility makes them underpriced relative to remaining session time. Never sells \u2014 holds to resolution.",
-};
-
-const STRATEGY_DEFAULTS: Record<string, string> = {
-  AlwaysBuyUp: "bet_fraction=1.0",
-  AlwaysBuyDown: "bet_fraction=1.0",
-  MomentumEntry: "entry_window=0.2,price_threshold_bps=35.0,midpoint_confirm=0.52,stop_loss_pct=0.15,bet_fraction=1.0",
-  MidpointMomentum: "lookback_ticks=5,midpoint_threshold=0.55,momentum_threshold=0.03,entry_deadline=0.6,bet_fraction=0.5",
-  LateSniper: "min_elapsed=0.7,confidence_threshold=0.70,max_price=0.85,bet_fraction=1.0",
-  LateSniperTP: "min_elapsed=0.7,confidence_threshold=0.68,max_price=0.9,stop_loss_pct=0.1,take_profit_pct=0.15",
-  FadeTheMarket: "overreaction_threshold=0.70,max_elapsed=0.3,bet_fraction=0.5",
-  BuyTrend: "min_sessions=5,lookback_minutes=60,min_change_bps=5.0,min_direction_pct=0.75",
-  DigitalOption: "sigma_span=15,momentum_span=32,momentum_weight=0.05,base_edge=0.25,no_new_after=0.70,stop_loss_pct=0.06,bet_fraction=1.0",
-  CheapShot: "max_deviation_bps=3.0,entry_window=0.25,momentum_lookback=50,max_token_price=0.60,stop_loss_pct=0.15,bet_fraction=1.0",
-  BrendaFlipper: "entry_window=0.25,min_price=0.10,max_price=0.29,hold_seconds=10.0,drop_pct=0.15,gain_mult=3.0,btc_gap_override=50.0,bet_fraction=1.0",
-  VolatilityBargain: "lookback_sessions=10,min_sessions=5,threshold=150.0,max_token_price=0.30,min_elapsed=0.05,bet_fraction=1.0",
-};
 
 interface Props {
   botStatus: BotStatus | null;
@@ -41,22 +11,96 @@ interface Props {
 }
 
 export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
-  const [strategy, setStrategy] = useState("LateSniper");
-  const [params, setParams] = useState(STRATEGY_DEFAULTS["LateSniper"] ?? "");
+  const [strategy, setStrategy] = useState("");
+  const [params, setParams] = useState("");
   const [cash, setCash] = useState("100");
   const [dryRun, setDryRun] = useState(true);
+  const [sessionCap, setSessionCap] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [editingCash, setEditingCash] = useState(false);
-  const [cashInput, setCashInput] = useState("");
+  const [selectedMarket, setSelectedMarket] = useState("");
 
-  const strategies = botStatus?.strategies ?? [];
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const markets = botStatus?.markets ?? [];
   const isRunning = botStatus?.running ?? false;
-  const isTrading = strategies.length > 0;
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    };
+  }, []);
+
+  // Auto-select first market
+  useEffect(() => {
+    if (markets.length > 0 && (!selectedMarket || !markets.some(m => m.slug_prefix === selectedMarket))) {
+      setSelectedMarket(markets[0].slug_prefix);
+    }
+  }, [markets, selectedMarket]);
+
+  // --- Strategies (dynamic) ---
+  const [strategies, setStrategies] = useState<string[]>([]);
+  useEffect(() => {
+    fetchStrategies().then((s) => {
+      setStrategies(s);
+      if (s.length > 0 && !strategy) setStrategy(s[0]);
+    });
+  }, []);
+
+  // --- Slugs for market-on ---
+  const [slugs, setSlugs] = useState<SlugInfo[]>([]);
+  const [selectedSlug, setSelectedSlug] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSlugs().then((s) => {
+      if (cancelled) return;
+      setSlugs(s);
+      if (s.length > 0 && !selectedSlug) {
+        setSelectedSlug(s[0].slug_prefix);
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  function flashMessage(msg: string) {
+    setMessage(msg);
+    setTimeout(() => setMessage(null), 5000);
+  }
+
+  async function handleStartApp() {
+    setLoading(true);
+    const res = await startBot({ restore: true });
+    flashMessage(res.ok ? `App started (PID ${res.pid})` : res.error || "Failed to start");
+    setLoading(false);
+    refreshTimerRef.current = setTimeout(onRefresh, 2500);
+  }
+
+  async function handleMarketOn() {
+    const slug = slugs.find((s) => s.slug_prefix === selectedSlug);
+    if (!selectedSlug) { flashMessage("Select a market"); return; }
+    setLoading(true);
+    const res = await startMarket({
+      slug_prefix: selectedSlug,
+      window: slug?.window_duration_seconds,
+    });
+    flashMessage(res.ok ? `Market started: ${res.slug_key || selectedSlug}` : res.error || "Failed");
+    setLoading(false);
+    refreshTimerRef.current = setTimeout(onRefresh, 2000);
+  }
+
+  async function handleMarketOff(slug_prefix: string) {
+    setLoading(true);
+    const res = await stopMarket({ slug_prefix });
+    flashMessage(res.ok ? `Market stopped: ${slug_prefix}` : res.error || "Failed");
+    setLoading(false);
+    refreshTimerRef.current = setTimeout(onRefresh, 2000);
+  }
 
   async function handleTradeOn() {
+    if (!selectedMarket) { flashMessage("Select a market first"); return; }
+    if (!strategy) { flashMessage("Select a strategy"); return; }
     setLoading(true);
-    setMessage(null);
     const parsedParams: Record<string, string> = {};
     if (params.trim()) {
       for (const pair of params.split(",")) {
@@ -64,358 +108,223 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
         if (k && v) parsedParams[k] = v;
       }
     }
-    const res = await tradeBotOn({
+    const body: any = {
+      slug_prefix: selectedMarket,
       strategy,
       params: parsedParams,
       cash: parseFloat(cash) || 100,
       dry_run: dryRun,
-    });
-    if (res.ok) {
-      setMessage("Trading enabled");
-    } else {
-      setMessage(res.error || "Failed");
-    }
+    };
+    if (sessionCap.trim()) body.session_cap = parseFloat(sessionCap);
+    const res = await tradeBotOn(body);
+    flashMessage(res.ok ? `Started: ${strategy}` : res.error || "Failed");
     setLoading(false);
     onRefresh();
   }
 
-  async function handleTradeOff(strategyName?: string) {
+  async function handleTradeOff(slug_prefix: string, strategyName?: string) {
     setLoading(true);
-    setMessage(null);
-    const res = await tradeBotOff(strategyName);
-    if (res.ok) {
-      setMessage(strategyName ? `${strategyName} removed` : "Trading disabled");
-    } else {
-      setMessage(res.error || "Failed");
-    }
+    const res = await tradeBotOff(slug_prefix, strategyName);
+    flashMessage(res.ok
+      ? (strategyName ? `Stopped: ${strategyName}` : "All strategies stopped")
+      : res.error || "Failed");
     setLoading(false);
     onRefresh();
   }
 
-  function startEditCash() {
-    // For single strategy, edit that one; for multiple, don't use inline edit
-    if (strategies.length === 1) {
-      setCashInput(strategies[0].starting_cash.toFixed(2));
-      setEditingCash(true);
-    }
-  }
-
-  async function handleSetCash(strategyName?: string) {
-    const val = parseFloat(cashInput);
-    if (isNaN(val) || val <= 0) {
-      setMessage("Invalid cash amount");
-      return;
-    }
+  async function handleReload(slug_prefix: string, strategyName: string) {
     setLoading(true);
-    setMessage(null);
-    const res = await setBotCash(val, strategyName);
-    if (res.ok) {
-      setMessage(`Cash updated to $${val.toFixed(2)}`);
-    } else {
-      setMessage(res.error || "Failed to update cash");
-    }
-    setEditingCash(false);
+    const res = await reloadBot(slug_prefix, strategyName);
+    flashMessage(res.ok ? `Reloaded: ${strategyName}` : res.error || "Failed");
     setLoading(false);
     onRefresh();
   }
 
   async function handleStop() {
     setLoading(true);
-    setMessage(null);
     const res = await stopBot();
-    setMessage(res.ok ? "Stop requested" : res.error || "Failed");
+    flashMessage(res.ok ? "Stop requested" : res.error || "Failed");
     setLoading(false);
     onRefresh();
   }
 
-  // --- Start app form state ---
-  const [slugs, setSlugs] = useState<SlugInfo[]>([]);
-  const [selectedSlug, setSelectedSlug] = useState("");
-
-  useEffect(() => {
-    if (!isRunning) {
-      fetchSlugs().then((s) => {
-        setSlugs(s);
-        if (s.length > 0 && !selectedSlug) {
-          setSelectedSlug(s[0].slug_prefix);
-        }
-      });
-    }
-  }, [isRunning]);
-
-  async function handleStartApp() {
-    const slug = slugs.find((s) => s.slug_prefix === selectedSlug);
-    if (!selectedSlug) {
-      setMessage("Select a market");
-      return;
-    }
+  async function handleKill() {
     setLoading(true);
-    setMessage(null);
-    const res = await startBot({
-      slug_prefix: selectedSlug,
-      window: slug?.window_duration_seconds,
-    });
-    if (res.ok) {
-      setMessage("App started (PID " + res.pid + ")");
-    } else {
-      setMessage(res.error || "Failed to start");
-    }
+    const res = await killBot();
+    flashMessage(res.ok ? "Kill signal sent — stopping after current sessions" : res.error || "Failed");
     setLoading(false);
-    // Give the app a moment to write app.json, then refresh status
-    setTimeout(onRefresh, 2500);
+    onRefresh();
   }
-
-  const totalCash = strategies.reduce((sum, s) => sum + s.starting_cash, 0);
 
   return (
     <div>
-      <h2>Bot Control</h2>
-
+      {/* Status header */}
       <div className="bot-status-section">
         <div className="meta-grid">
           <div className="meta-card">
             <div className="meta-label">Status</div>
             <div className="meta-value">
               <span className={`bot-status-dot ${isRunning ? "running" : "stopped"}`} />
-              {isRunning ? "Running" : "Stopped"}
+              {botStatus === null ? "Loading..." : isRunning ? "Running" : "Offline"}
             </div>
           </div>
           {isRunning && (
-            <>
-              <div className="meta-card">
-                <div className="meta-label">Trading</div>
-                <div className="meta-value">
-                  {isTrading ? (
-                    <>
-                      {strategies.length === 1
-                        ? strategies[0].name
-                        : `${strategies.length} strategies`}
-                      {strategies.length === 1 && strategies[0].dry_run && (
-                        <span className="dry-run-tag">DRY RUN</span>
-                      )}
-                    </>
-                  ) : (
-                    <span className="subtitle">Off</span>
-                  )}
-                </div>
+            <div className="meta-card">
+              <div className="meta-label">Markets</div>
+              <div className="meta-value">
+                {markets.length > 0
+                  ? `${markets.length} active`
+                  : <span style={{ color: "var(--text-dim)" }}>None</span>}
               </div>
-              <div
-                className={`meta-card${isTrading && strategies.length === 1 ? " meta-card-editable" : ""}`}
-                onClick={() => !editingCash && isTrading && strategies.length === 1 && startEditCash()}
-              >
-                <div className="meta-label">
-                  Cash
-                  {isTrading && strategies.length === 1 && !editingCash && (
-                    <span className="edit-hint">click to edit</span>
-                  )}
-                </div>
-                {editingCash ? (
-                  <div className="cash-edit">
-                    <input
-                      type="number"
-                      value={cashInput}
-                      onChange={(e) => setCashInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleSetCash(strategies.length === 1 ? strategies[0].name : undefined);
-                        if (e.key === "Escape") setEditingCash(false);
-                      }}
-                      autoFocus
-                      min="0"
-                      step="0.01"
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                    <div className="cash-edit-btns">
-                      <button
-                        className="cash-btn save"
-                        onClick={(e) => { e.stopPropagation(); handleSetCash(strategies.length === 1 ? strategies[0].name : undefined); }}
-                        disabled={loading}
-                      >Save</button>
-                      <button className="cash-btn cancel" onClick={(e) => { e.stopPropagation(); setEditingCash(false); }}>Cancel</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="meta-value">
-                    {isTrading ? (
-                      <>
-                        ${totalCash.toFixed(2)}
-                        {strategies.length === 1 && strategies[0].session_cap != null && (
-                          <span className="subtitle" style={{ marginLeft: 4, fontSize: 11 }}>
-                            (${strategies[0].session_cap!.toFixed(0)}/session)
-                          </span>
-                        )}
-                        {strategies.length === 1 && strategies[0].per_session_cash != null && !strategies[0].session_cap && (
-                          <span className="subtitle" style={{ marginLeft: 4, fontSize: 11 }}>
-                            (reset ${strategies[0].per_session_cash!.toFixed(0)}/session)
-                          </span>
-                        )}
-                      </>
-                    ) : "\u2014"}
-                  </div>
-                )}
+            </div>
+          )}
+          {isRunning && (
+            <div className="meta-card">
+              <div className="meta-label">Strategies</div>
+              <div className="meta-value">
+                {markets.reduce((n, m) => n + (m.strategies?.length ?? 0), 0)}
               </div>
-              <div className="meta-card">
-                <div className="meta-label">Sessions</div>
-                <div className="meta-value">{botStatus?.session_count ?? 0}</div>
-              </div>
-              <div className="meta-card">
-                <div className="meta-label">Slug</div>
-                <div className="meta-value" style={{ fontSize: 13 }}>
-                  {botStatus?.slug_prefix || "\u2014"}
-                </div>
-              </div>
-            </>
+            </div>
           )}
         </div>
-
-        {isTrading && (
-          <div className="strategies-list" style={{ marginTop: 12 }}>
-            {strategies.map((s) => (
-              <div key={s.name} className="meta-grid" style={{ marginBottom: 4 }}>
-                <div className="meta-card" style={{ flex: 2 }}>
-                  <div className="meta-label">Strategy</div>
-                  <div className="meta-value">
-                    {s.name}
-                    {s.dry_run && <span className="dry-run-tag">DRY RUN</span>}
-                  </div>
-                </div>
-                <div className="meta-card">
-                  <div className="meta-label">Cash</div>
-                  <div className="meta-value">
-                    ${s.starting_cash.toFixed(2)}
-                    {s.session_cap != null && (
-                      <span className="subtitle" style={{ marginLeft: 4, fontSize: 11 }}>
-                        (${s.session_cap.toFixed(0)}/session)
-                      </span>
-                    )}
-                    {s.per_session_cash != null && !s.session_cap && (
-                      <span className="subtitle" style={{ marginLeft: 4, fontSize: 11 }}>
-                        (reset ${s.per_session_cash.toFixed(0)}/session)
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="meta-card" style={{ flex: 0 }}>
-                  <button
-                    className="bot-btn bot-btn-stop-trading"
-                    style={{ fontSize: 11, padding: "2px 8px", marginTop: 4 }}
-                    onClick={() => handleTradeOff(s.name)}
-                    disabled={loading}
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
+      {/* Running: show markets, controls */}
       {isRunning && (
-        <div className="bot-controls">
-          <div className="bot-form">
-            <h3>{isTrading ? "Add Strategy" : "Start Trading"}</h3>
-            <div className="bot-form-row">
-              <label>
-                Strategy
-                <select value={strategy} onChange={(e) => { setStrategy(e.target.value); setParams(STRATEGY_DEFAULTS[e.target.value] ?? ""); }}>
-                  {Object.keys(STRATEGIES).map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {STRATEGIES[strategy] && (
-                <p className="strategy-description">{STRATEGIES[strategy]}</p>
-              )}
+        <>
+          {/* Per-market status */}
+          {markets.map((m) => (
+            <MarketSection
+              key={m.slug_key}
+              market={m}
+              loading={loading}
+              onTradeOff={handleTradeOff}
+              onReload={handleReload}
+              onMarketOff={handleMarketOff}
+            />
+          ))}
+
+          {/* Control forms */}
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 20 }}>
+            {/* Add Market */}
+            <div className="bot-form" style={{ flex: "1 1 280px" }}>
+              <h3>Add Market</h3>
+              <div className="bot-form-row">
+                <label>
+                  Market
+                  <select value={selectedSlug} onChange={(e) => setSelectedSlug(e.target.value)}>
+                    {slugs.map((s) => (
+                      <option key={s.slug_prefix} value={s.slug_prefix}>
+                        {s.asset} {s.window_duration_seconds / 60}m ({s.slug_prefix})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <button
+                className="bot-btn bot-btn-start"
+                onClick={handleMarketOn}
+                disabled={loading || !selectedSlug}
+              >
+                Start Market
+              </button>
             </div>
-            <div className="bot-form-row">
-              <label>
-                Params <span className="subtitle">(key=val,key=val)</span>
-                <input
-                  type="text"
-                  value={params}
-                  onChange={(e) => setParams(e.target.value)}
-                  placeholder="min_elapsed=0.7"
-                />
-              </label>
-            </div>
-            <div className="bot-form-row">
-              <label>
-                Cash ($)
-                <input
-                  type="number"
-                  value={cash}
-                  onChange={(e) => setCash(e.target.value)}
-                  min="1"
-                  step="1"
-                />
-              </label>
-            </div>
-            <div className="bot-form-row">
-              <label className="bot-checkbox">
-                <input
-                  type="checkbox"
-                  checked={dryRun}
-                  onChange={(e) => setDryRun(e.target.checked)}
-                />
-                Dry Run (simulated orders)
-              </label>
-            </div>
-            <button
-              className="bot-btn bot-btn-start"
-              onClick={handleTradeOn}
-              disabled={loading}
-            >
-              {isTrading ? "Add Strategy" : "Start Trading"}
-            </button>
+
+            {/* Add Worker */}
+            {markets.length > 0 && (
+              <div className="bot-form" style={{ flex: "2 1 400px" }}>
+                <h3>Add Strategy</h3>
+                <div style={{ display: "flex", gap: 12 }}>
+                  <div className="bot-form-row" style={{ flex: 1 }}>
+                    <label>
+                      Market
+                      <select value={selectedMarket} onChange={(e) => setSelectedMarket(e.target.value)}>
+                        {markets.map((m) => (
+                          <option key={m.slug_key} value={m.slug_prefix}>{m.slug_key}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="bot-form-row" style={{ flex: 1 }}>
+                    <label>
+                      Strategy
+                      <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+                        {strategies.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                <div className="bot-form-row">
+                  <label>
+                    Params <span className="subtitle">(key=val,key=val)</span>
+                    <input
+                      type="text"
+                      value={params}
+                      onChange={(e) => setParams(e.target.value)}
+                      placeholder="min_elapsed=0.7,threshold=0.5"
+                    />
+                  </label>
+                </div>
+                <div style={{ display: "flex", gap: 12 }}>
+                  <div className="bot-form-row" style={{ flex: 1 }}>
+                    <label>
+                      Cash ($)
+                      <input type="number" value={cash} onChange={(e) => setCash(e.target.value)} min="1" step="1" />
+                    </label>
+                  </div>
+                  <div className="bot-form-row" style={{ flex: 1 }}>
+                    <label>
+                      Session Cap ($) <span className="subtitle">optional</span>
+                      <input type="number" value={sessionCap} onChange={(e) => setSessionCap(e.target.value)} min="1" step="1" placeholder="none" />
+                    </label>
+                  </div>
+                  <div className="bot-form-row" style={{ flex: 1, display: "flex", alignItems: "flex-end" }}>
+                    <label className="bot-checkbox">
+                      <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
+                      Dry Run
+                    </label>
+                  </div>
+                </div>
+                <button className="bot-btn bot-btn-start" onClick={handleTradeOn} disabled={loading}>
+                  Add Strategy
+                </button>
+              </div>
+            )}
           </div>
 
-          <div className="bot-actions">
-            {isTrading && (
-              <button
-                className="bot-btn bot-btn-stop-trading"
-                onClick={() => handleTradeOff()}
-                disabled={loading}
-              >
-                {strategies.length > 1 ? "Stop All Trading" : "Stop Trading"}
-              </button>
-            )}
+          {/* App-level actions */}
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button
+              className="bot-btn"
+              style={{ background: "var(--btc)", color: "#fff" }}
+              onClick={handleKill}
+              disabled={loading}
+              title="Stop all markets after their current sessions finish"
+            >
+              Stop After Sessions
+            </button>
             <button
               className="bot-btn bot-btn-stop"
               onClick={handleStop}
               disabled={loading}
+              title="Immediately stop the app and all markets"
             >
-              Stop App
+              Stop Now
             </button>
           </div>
-        </div>
+        </>
       )}
 
-      {!isRunning && (
+      {/* Offline: show start button */}
+      {!isRunning && botStatus !== null && (
         <div className="bot-controls">
           <div className="bot-form">
-            <h3>Start App</h3>
-            <div className="bot-form-row">
-              <label>
-                Market
-                <select
-                  value={selectedSlug}
-                  onChange={(e) => setSelectedSlug(e.target.value)}
-                >
-                  {slugs.map((s) => (
-                    <option key={s.slug_prefix} value={s.slug_prefix}>
-                      {s.asset} {s.window_duration_seconds / 60}m ({s.slug_prefix})
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <button
-              className="bot-btn bot-btn-start"
-              onClick={handleStartApp}
-              disabled={loading || !selectedSlug}
-            >
+            <p className="subtitle" style={{ marginBottom: 12 }}>
+              Start the app and restore previous markets &amp; strategies.
+            </p>
+            <button className="bot-btn bot-btn-start" onClick={handleStartApp} disabled={loading}>
               Start App
             </button>
           </div>
@@ -425,6 +334,116 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
       {message && <div className="bot-message">{message}</div>}
 
       <TradingLog refreshTrigger={tradeRefresh} />
+    </div>
+  );
+}
+
+function MarketSection({
+  market,
+  loading,
+  onTradeOff,
+  onReload,
+  onMarketOff,
+}: {
+  market: MarketStatus;
+  loading: boolean;
+  onTradeOff: (slug: string, strategy?: string) => void;
+  onReload: (slug: string, strategy: string) => void;
+  onMarketOff: (slug: string) => void;
+}) {
+  const strategies = market.strategies ?? [];
+
+  return (
+    <div style={{ marginTop: 16, padding: 16, background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: strategies.length > 0 ? 12 : 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              display: "inline-block",
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              background: market.running ? "var(--green)" : "var(--red)",
+              animation: market.running ? "pulse 2s infinite" : "none",
+            }}
+          />
+          <strong style={{ fontSize: 15 }}>{market.slug_key}</strong>
+          <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
+            {market.session_count} sessions
+            {(market.tick_clients ?? 0) > 0 && ` · ${market.tick_clients} clients`}
+          </span>
+          {market.stop_after_session && (
+            <span style={{
+              padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 600,
+              background: "rgba(248,81,73,0.15)", color: "var(--red)"
+            }}>STOPPING</span>
+          )}
+        </div>
+        <button
+          className="bot-btn bot-btn-stop-trading"
+          style={{ fontSize: 11, padding: "3px 10px" }}
+          onClick={() => onMarketOff(market.slug_prefix)}
+          disabled={loading}
+        >
+          Stop Market
+        </button>
+      </div>
+
+      {strategies.length > 0 ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {strategies.map((s) => {
+            const alive = s.alive !== false;
+            return (
+              <div key={s.name} style={{
+                display: "flex", alignItems: "center", gap: 12, padding: "8px 12px",
+                background: "var(--bg)", borderRadius: 6, border: "1px solid var(--border)"
+              }}>
+                <span style={{
+                  width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                  background: alive ? "var(--green)" : "var(--red)",
+                }} />
+                <span style={{ fontWeight: 600, fontSize: 14, minWidth: 120 }}>{s.name}</span>
+                {s.dry_run && <span className="dry-run-tag">DRY</span>}
+                {!alive && <span style={{
+                  padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 600,
+                  background: "rgba(248,81,73,0.15)", color: "var(--red)"
+                }}>DEAD</span>}
+                <span style={{ color: "var(--text-dim)", fontSize: 13, marginLeft: "auto" }}>
+                  ${(s.bankroll ?? s.cash).toFixed(2)}
+                  {s.session_cap != null && (
+                    <span style={{ opacity: 0.6 }}> (${s.session_cap.toFixed(0)}/s)</span>
+                  )}
+                </span>
+                {s.pid != null && (
+                  <span style={{ color: "var(--text-dim)", fontSize: 11 }}>PID {s.pid}</span>
+                )}
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    className="bot-btn"
+                    style={{ fontSize: 11, padding: "2px 8px", background: "var(--accent)", color: "#fff" }}
+                    onClick={() => onReload(market.slug_prefix, s.name)}
+                    disabled={loading}
+                  >
+                    Reload
+                  </button>
+                  <button
+                    className="bot-btn bot-btn-stop-trading"
+                    style={{ fontSize: 11, padding: "2px 8px" }}
+                    onClick={() => onTradeOff(market.slug_prefix, s.name)}
+                    disabled={loading}
+                  >
+                    Kill
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ color: "var(--text-dim)", fontSize: 13, fontStyle: "italic" }}>
+          No strategies — add one below
+        </div>
+      )}
     </div>
   );
 }

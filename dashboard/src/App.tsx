@@ -19,7 +19,7 @@ export function App() {
 
   const refreshNav = useCallback(() => setNavVersion((v) => v + 1), []);
   const refreshBotStatus = useCallback(() => {
-    fetchBotStatus().then(setBotStatus);
+    fetchBotStatus().then((s) => { if (s) setBotStatus(s); });
   }, []);
 
   useEffect(() => {
@@ -28,7 +28,15 @@ export function App() {
 
   useEffect(() => {
     fetchLivePrefixes().then(setLivePrefixes);
-    fetchBotStatus().then(setBotStatus);
+    fetchBotStatus().then((s) => { if (s) setBotStatus(s); });
+  }, []);
+
+  // Poll bot status every 5s to catch external changes
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchBotStatus().then((s) => { if (s) setBotStatus(s); });
+    }, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   const [tradeRefresh, setTradeRefresh] = useState(0);

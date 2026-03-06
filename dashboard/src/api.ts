@@ -1,4 +1,4 @@
-import type { BotStatus, LivePayload, PrefixInfo, SessionData, SessionSummary, TradeLogEntry, TradingInfo } from "./types";
+import type { AppStatus, BotStatus, LivePayload, PrefixInfo, SessionData, SessionSummary, TradeLogEntry, TradingInfo } from "./types";
 
 export async function fetchPrefixes(): Promise<PrefixInfo[]> {
   const res = await fetch("/api/prefixes");
@@ -68,21 +68,76 @@ export async function fetchLiveSession(
   return res.json();
 }
 
+/**
+ * Fetch bot/app status. Returns:
+ * - AppStatus object when app is running
+ * - { running: false } when app is not running (502/503)
+ * - null only on network failure
+ */
 export async function fetchBotStatus(): Promise<BotStatus | null> {
   try {
     const res = await fetch("/api/bot/status");
+    if (res.status === 502 || res.status === 503) {
+      // App not running — return definitive offline status
+      return { running: false };
+    }
     if (!res.ok) return null;
-    return res.json();
+    const data = await res.json();
+    // Ensure running field exists
+    if (typeof data.running !== "boolean") {
+      return { running: false };
+    }
+    return data;
   } catch {
     return null;
   }
 }
 
+// --- Market lifecycle ---
+
+export async function startMarket(body: {
+  slug_prefix: string;
+  window?: number;
+  market_type?: string;
+  restore?: boolean;
+}): Promise<{ ok: boolean; error?: string; slug_key?: string }> {
+  try {
+    const res = await fetch("/api/bot/market-on", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+export async function stopMarket(body: {
+  slug_prefix: string;
+  after_session?: boolean;
+}): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/bot/market-off", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+// --- Bot lifecycle (with slug_prefix) ---
+
 export async function tradeBotOn(body: {
+  slug_prefix: string;
   strategy: string;
   params?: Record<string, string>;
   cash?: number;
   dry_run?: boolean;
+  session_cap?: number;
 }): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await fetch("/api/bot/trade-on", {
@@ -96,14 +151,15 @@ export async function tradeBotOn(body: {
   }
 }
 
-export async function tradeBotOff(strategy?: string): Promise<{ ok: boolean; error?: string }> {
+export async function tradeBotOff(slug_prefix: string, strategy?: string): Promise<{ ok: boolean; error?: string }> {
   try {
-    const opts: RequestInit = { method: "POST" };
-    if (strategy) {
-      opts.headers = { "Content-Type": "application/json" };
-      opts.body = JSON.stringify({ strategy });
-    }
-    const res = await fetch("/api/bot/trade-off", opts);
+    const body: Record<string, any> = { slug_prefix };
+    if (strategy) body.strategy = strategy;
+    const res = await fetch("/api/bot/trade-off", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
     return res.json();
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -119,9 +175,31 @@ export async function stopBot(): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
-export async function setBotCash(cash: number, strategy?: string): Promise<{ ok: boolean; error?: string }> {
+export async function killBot(): Promise<{ ok: boolean; error?: string }> {
   try {
-    const body: Record<string, any> = { cash };
+    const res = await fetch("/api/bot/kill", { method: "POST" });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+export async function reloadBot(slug_prefix: string, strategy: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/bot/reload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug_prefix, strategy }),
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+export async function setBotCash(slug_prefix: string, cash: number, strategy?: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const body: Record<string, any> = { slug_prefix, cash };
     if (strategy) body.strategy = strategy;
     const res = await fetch("/api/bot/set-cash", {
       method: "POST",
@@ -152,8 +230,7 @@ export async function fetchSlugs(): Promise<SlugInfo[]> {
 }
 
 export async function startBot(body: {
-  slug_prefix: string;
-  window?: number;
+  restore?: boolean;
 }): Promise<{ ok: boolean; error?: string; pid?: number }> {
   try {
     const res = await fetch("/api/bot/start", {
@@ -164,6 +241,17 @@ export async function startBot(body: {
     return res.json();
   } catch (e) {
     return { ok: false, error: String(e) };
+  }
+}
+
+export async function fetchStrategies(): Promise<string[]> {
+  try {
+    const res = await fetch("/api/strategies");
+    if (!res.ok) return [];
+    const { strategies } = (await res.json()) as { strategies: string[] };
+    return strategies;
+  } catch {
+    return [];
   }
 }
 

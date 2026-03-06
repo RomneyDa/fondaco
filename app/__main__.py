@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Unified Polymarket App: Collect + Trade
+Multi-Market Polymarket App
 
-Always collects data. Optionally trades (toggled on/off via CLI or HTTP).
+Central app managing multiple markets. Each market has its own data stream
+and bot workers.
 
 Usage:
-    uv run python -m app start btc-updown-5m-
-    uv run python -m app start btc-updown-5m- --strategy LateSniper --params min_elapsed=0.7
-    uv run python -m app trade-on --strategy LateSniper --params min_elapsed=0.7
-    uv run python -m app trade-off
+    uv run python -m app start
+    uv run python -m app start --restore
+    uv run python -m app market-on btc-updown-5m-
+    uv run python -m app trade-on btc-updown-5m- --strategy LateSniper --cash 100
+    uv run python -m app trade-off btc-updown-5m- --strategy LateSniper
     uv run python -m app status
     uv run python -m app stop
     uv run python -m app claim [--no-wait]
@@ -17,6 +19,7 @@ Usage:
 import argparse
 import json
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -31,12 +34,9 @@ from core.defaults import (
     APP_STATE_FILE,
     BASE_DIR,
     DEFAULT_CONTROL_PORT,
-    POLL_INTERVAL_SECONDS,
-    RESOLUTION_POLL_INTERVAL,
-    RESOLUTION_TIMEOUT_SECONDS,
     WINDOW_DURATION_SECONDS,
 )
-from core.strategies import ALL_STRATEGIES
+from bots import ALL_STRATEGIES
 
 os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
 
@@ -45,10 +45,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(APP_LOG_FILE),
+        logging.handlers.RotatingFileHandler(
+            APP_LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3,
+        ),
     ],
 )
-# Console stays at INFO; file gets everything (DEBUG)
 logging.getLogger().handlers[0].setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,6 @@ logger = logging.getLogger(__name__)
 
 def _write_state(pid, port):
     # type: (int, int) -> None
-    """Write process state to data/app.json."""
     os.makedirs(os.path.dirname(APP_STATE_FILE), exist_ok=True)
     with open(APP_STATE_FILE, "w") as f:
         json.dump({"pid": pid, "port": port}, f, indent=2)
@@ -68,7 +68,6 @@ def _write_state(pid, port):
 
 def _read_state():
     # type: () -> Optional[Dict[str, Any]]
-    """Read state from data/app.json, cleaning up if process is dead."""
     if not os.path.exists(APP_STATE_FILE):
         return None
     try:
@@ -77,7 +76,6 @@ def _read_state():
         pid = data.get("pid")
         if pid and _pid_alive(pid):
             return data
-        # Stale state file — clean up
         os.remove(APP_STATE_FILE)
         return None
     except (ValueError, OSError, json.JSONDecodeError):
@@ -86,7 +84,6 @@ def _read_state():
 
 def _remove_state():
     # type: () -> None
-    """Remove state file."""
     try:
         os.remove(APP_STATE_FILE)
     except OSError:
@@ -95,7 +92,6 @@ def _remove_state():
 
 def _pid_alive(pid):
     # type: (int) -> bool
-    """Check if a process is alive without signaling it."""
     try:
         os.kill(pid, 0)
         return True
@@ -105,7 +101,6 @@ def _pid_alive(pid):
 
 def _parse_params(params_str):
     # type: (str) -> Dict[str, Any]
-    """Parse 'k=v,k=v' string into dict with number coercion."""
     params = {}  # type: Dict[str, Any]
     if not params_str:
         return params
@@ -117,14 +112,13 @@ def _parse_params(params_str):
             try:
                 v = float(v)
             except ValueError:
-                pass  # keep as string
+                pass
         params[k.strip()] = v
     return params
 
 
 def _http_request(method, path, body=None):
     # type: (str, str, Optional[Dict[str, Any]]) -> Dict[str, Any]
-    """Make an HTTP request to the running control server."""
     state = _read_state()
     if state is None:
         print("App is not running.")
@@ -140,7 +134,7 @@ def _http_request(method, path, body=None):
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.URLError as e:
         print("Failed to connect to control server on port {}: {}".format(port, e))
@@ -153,11 +147,10 @@ def _http_request(method, path, body=None):
 
 
 def cmd_start(args):
-    """Start the unified process (collector + optional trading)."""
-    from app.runner import Runner
+    """Start the central app (no markets by default)."""
+    from app.app_manager import AppManager
     from app.server import ControlServer
 
-    # Check for existing process
     state = _read_state()
     if state is not None:
         print("App already running (PID {}). Use 'uv run python -m app stop'.".format(
@@ -166,83 +159,70 @@ def cmd_start(args):
         sys.exit(1)
 
     port = args.port
+    mgr = AppManager(port=port)
 
-    # Parse strategy params
-    strategy_name = getattr(args, "strategy", None)
-    strategy_params = _parse_params(getattr(args, "params", "") or "")
-
-    # Resolve starting cash
-    cash_str = getattr(args, "cash", None)
-    dry_run = getattr(args, "dry_run", False)
-
-    if cash_str == "cached":
-        from app.runner import _load_balance_cache
-        cached = _load_balance_cache()
-        if cached:
-            starting_cash = cached["cash"]
-            logger.info(
-                "Loaded cached balance: $%.2f (from %s, session %s)",
-                starting_cash, cached.get("slug_prefix"), cached.get("session_count"),
-            )
-        else:
-            print("No cached balance found. Use a numeric value or run first.")
-            sys.exit(1)
-    elif cash_str is not None:
-        starting_cash = float(cash_str)
-    elif dry_run:
-        # Dry-run with no --cash: default to 100
-        starting_cash = 100.0
-    else:
-        # Live trading: None signals Runner to fetch real CLOB balance
-        starting_cash = None
-    max_sessions = getattr(args, "sessions", 0)
-    per_session = getattr(args, "per_session", False)
-    session_cap = getattr(args, "session_cap", None)
-
-    # Create runner
-    runner = Runner(
-        slug_prefix=args.slug_prefix,
-        window_duration=args.window,
-        poll_interval=args.poll,
-        resolution_poll_interval=args.resolution_poll,
-        resolution_timeout=args.resolution_timeout,
-        strategy_name=strategy_name,
-        strategy_params=strategy_params if strategy_name else None,
-        starting_cash=starting_cash,
-        dry_run=dry_run,
-        max_sessions=max_sessions,
-        per_session=per_session,
-        session_cap=session_cap,
-    )
-
-    # Restore strategies from last run if requested (only when no --strategy given)
-    if getattr(args, "restore", False) and strategy_name is None:
-        runner.restore_strategies()
-
-    # Start control server
-    server = ControlServer(runner, port)
+    server = ControlServer(mgr, port)
     server.start()
 
-    # Write state file
     _write_state(os.getpid(), port)
 
+    if getattr(args, "restore", False):
+        mgr.restore()
+
     try:
-        runner.run()
+        mgr.run()
     finally:
         server.stop()
         _remove_state()
 
 
-def cmd_trade_on(args):
-    """Enable trading on the running process."""
+def cmd_market_on(args):
+    """Start data collection for a market."""
     body = {
+        "slug_prefix": args.slug_prefix,
+    }  # type: Dict[str, Any]
+    if args.window != WINDOW_DURATION_SECONDS:
+        body["window"] = args.window
+    if getattr(args, "market_type", None):
+        body["market_type"] = args.market_type
+    if getattr(args, "restore", False):
+        body["restore"] = True
+
+    resp = _http_request("POST", "/api/control/market-on", body)
+    if resp.get("ok"):
+        print("Market started: {}".format(resp.get("slug_key", args.slug_prefix)))
+    else:
+        print("Error: {}".format(resp.get("error", "unknown")))
+        sys.exit(1)
+
+
+def cmd_market_off(args):
+    """Stop data collection for a market."""
+    body = {
+        "slug_prefix": args.slug_prefix,
+    }  # type: Dict[str, Any]
+    if getattr(args, "after_session", False):
+        body["after_session"] = True
+
+    resp = _http_request("POST", "/api/control/market-off", body)
+    if resp.get("ok"):
+        print("Market stopped: {}".format(args.slug_prefix))
+    else:
+        print("Error: {}".format(resp.get("error", "unknown")))
+        sys.exit(1)
+
+
+def cmd_trade_on(args):
+    """Enable trading on a running market."""
+    body = {
+        "slug_prefix": args.slug_prefix,
         "strategy": args.strategy,
         "params": _parse_params(getattr(args, "params", "") or ""),
-    }
+    }  # type: Dict[str, Any]
     if getattr(args, "cash", None):
         cash_str = args.cash
         if cash_str == "cached":
-            from app.runner import _load_balance_cache
+            from app.market_runner import _load_balance_cache
             cached = _load_balance_cache()
             if cached:
                 body["cash"] = cached["cash"]
@@ -261,15 +241,38 @@ def cmd_trade_on(args):
 
     resp = _http_request("POST", "/api/control/trade-on", body)
     if resp.get("ok"):
-        print("Trading enabled: strategy={}".format(resp.get("strategy")))
+        print("Trading enabled: strategy={} on {}".format(
+            resp.get("strategy"), resp.get("slug_prefix"),
+        ))
+    else:
+        print("Error: {}".format(resp.get("error", "unknown")))
+        sys.exit(1)
+
+
+def cmd_trade_off(args):
+    """Disable trading on a running market."""
+    body = {"slug_prefix": args.slug_prefix}  # type: Dict[str, Any]
+    strategy = getattr(args, "strategy", None)
+    if strategy:
+        body["strategy"] = strategy
+
+    resp = _http_request("POST", "/api/control/trade-off", body)
+    if resp.get("ok"):
+        if strategy:
+            print("Trading disabled for {} on {}.".format(strategy, args.slug_prefix))
+        else:
+            print("All trading disabled on {}.".format(args.slug_prefix))
     else:
         print("Error: {}".format(resp.get("error", "unknown")))
         sys.exit(1)
 
 
 def cmd_set_cash(args):
-    """Update cash on the running process."""
-    body = {"cash": float(args.amount)}  # type: Dict[str, Any]
+    """Update cash on a running market."""
+    body = {
+        "slug_prefix": args.slug_prefix,
+        "cash": float(args.amount),
+    }  # type: Dict[str, Any]
     strategy = getattr(args, "strategy", None)
     if strategy:
         body["strategy"] = strategy
@@ -281,26 +284,25 @@ def cmd_set_cash(args):
         sys.exit(1)
 
 
-def cmd_trade_off(args):
-    """Disable trading on the running process."""
-    strategy = getattr(args, "strategy", None)
-    body = {"strategy": strategy} if strategy else None
-    resp = _http_request("POST", "/api/control/trade-off", body)
+def cmd_reload(args):
+    """Reload (restart) a worker to pick up code changes."""
+    body = {
+        "slug_prefix": args.slug_prefix,
+        "strategy": args.strategy,
+    }
+    resp = _http_request("POST", "/api/control/reload", body)
     if resp.get("ok"):
-        if strategy:
-            print("Trading disabled for {} (takes effect next session).".format(strategy))
-        else:
-            print("Trading disabled for all strategies (takes effect next session).")
+        print("Reloaded worker: {} on {}".format(args.strategy, args.slug_prefix))
     else:
         print("Error: {}".format(resp.get("error", "unknown")))
         sys.exit(1)
 
 
 def cmd_kill(args):
-    """Signal the app to stop after the current session finishes."""
+    """Signal the app to stop all markets after their current sessions finish."""
     resp = _http_request("POST", "/api/control/kill")
     if resp.get("ok"):
-        print("Kill signal sent — app will stop after the current session.")
+        print("Kill signal sent — all markets will stop after their current sessions.")
     else:
         print("Error: {}".format(resp.get("error", "unknown")))
         sys.exit(1)
@@ -315,29 +317,40 @@ def cmd_status(args):
 
     resp = _http_request("GET", "/api/control/status")
     print("App running (PID {})".format(state["pid"]))
-    print("  Slug: {}".format(resp.get("slug_prefix", "?")))
-    print("  Sessions: {}".format(resp.get("session_count", 0)))
-    if resp.get("stop_after_session"):
-        print("  ** Stopping after current session (kill pending) **")
-    strategies = resp.get("strategies", [])
-    if strategies:
-        print("  Trading: ENABLED ({} {})".format(
-            len(strategies), "strategy" if len(strategies) == 1 else "strategies",
-        ))
-        for s in strategies:
-            dry_tag = " [DRY RUN]" if s.get("dry_run") else ""
-            # Show total bankroll; add deployed/reserve breakdown if session_cap active
-            bankroll = s.get("bankroll", s.get("cash", 0))
-            cap_info = ""
-            if s.get("session_cap"):
-                cap_info = " (deployed=${:.2f}, reserve=${:.2f})".format(
-                    s.get("cash", 0), s.get("reserve", 0),
-                )
-            print("    - {} | bankroll=${:.2f}{}{} | params={}".format(
-                s["name"], bankroll, cap_info, dry_tag, s.get("params", {}),
-            ))
+
+    markets = resp.get("markets", [])
+    if not markets:
+        print("  No markets active.")
     else:
-        print("  Trading: disabled")
+        print("  Markets: {}".format(len(markets)))
+        for m in markets:
+            slug = m.get("slug_prefix", m.get("slug_key", "?"))
+            session_count = m.get("session_count", 0)
+            tick_clients = m.get("tick_clients", 0)
+            stop_tag = ""
+            if m.get("stop_after_session"):
+                stop_tag = " [STOPPING]"
+
+            strategies = m.get("strategies", [])
+            print("  {} | sessions={} | tick_clients={}{}".format(
+                slug, session_count, tick_clients, stop_tag,
+            ))
+
+            if strategies:
+                for s in strategies:
+                    dry_tag = " [DRY RUN]" if s.get("dry_run") else ""
+                    alive_tag = "" if s.get("alive", True) else " [DEAD]"
+                    pid_tag = " PID={}".format(s["pid"]) if s.get("pid") else ""
+                    bankroll = s.get("bankroll", s.get("cash", 0))
+                    cap_info = ""
+                    if s.get("session_cap"):
+                        cap_info = " (cap=${:.2f})".format(s["session_cap"])
+                    print("    - {} | bankroll=${:.2f}{}{}{}{} | params={}".format(
+                        s["name"], bankroll, cap_info, dry_tag, pid_tag, alive_tag,
+                        s.get("params", {}),
+                    ))
+            else:
+                print("    No workers")
 
 
 def cmd_stop(args):
@@ -347,7 +360,6 @@ def cmd_stop(args):
         print("App is not running.")
         return
 
-    # Try HTTP stop first
     try:
         resp = _http_request("POST", "/api/control/stop")
         if resp.get("ok"):
@@ -355,7 +367,6 @@ def cmd_stop(args):
                 state["pid"],
             ))
     except SystemExit:
-        # HTTP failed, fall back to SIGTERM
         print("HTTP stop failed, sending SIGTERM to PID {}...".format(state["pid"]))
         try:
             os.kill(state["pid"], signal.SIGTERM)
@@ -364,7 +375,6 @@ def cmd_stop(args):
             _remove_state()
             return
 
-    # Wait for process to exit
     pid = state["pid"]
     for _ in range(30):
         if not _pid_alive(pid):
@@ -399,21 +409,18 @@ def cmd_claim(args):
     safe_address = auth["safe_address"]
     logger.info("Safe wallet: %s", safe_address)
 
-    # Check builder creds early
     try:
         _get_builder_relay_client(private_key)
     except ValueError as e:
         print("ERROR: {}".format(e))
         sys.exit(1)
 
-    # Query redeemable positions
     positions = fetch_redeemable_positions(safe_address)
 
     if not positions:
         print("Nothing to claim.")
         return
 
-    # Display summary
     print("\nRedeemable positions:")
     print("{:<64}  {:>10}  {:>10}  {}".format(
         "Condition ID", "Tokens", "Value ($)", "Market",
@@ -435,13 +442,11 @@ def cmd_claim(args):
     print("-" * 120)
     print("Total: ${:.2f} across {} position(s)\n".format(total_value, len(positions)))
 
-    # Redeem
     wait = not getattr(args, "no_wait", False)
     succeeded, failed, _ = claim_redeemable(
         private_key, safe_address, wait_for_confirm=wait,
     )
 
-    # Summary
     action = "confirmed" if wait else "submitted"
     print("\nClaim complete: {} {}, {} failed".format(succeeded, action, failed))
     if succeeded > 0 and failed == 0:
@@ -454,144 +459,111 @@ def cmd_claim(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Polymarket Unified App")
+    parser = argparse.ArgumentParser(description="Polymarket Multi-Market App")
     subparsers = parser.add_subparsers(dest="command")
 
     # start
-    start_parser = subparsers.add_parser("start", help="Start the app (collector + optional trading)")
+    start_parser = subparsers.add_parser("start", help="Start the central app")
     start_parser.add_argument(
-        "slug_prefix",
-        help='Market slug prefix, e.g. "btc-updown-5m-"',
-    )
-    start_parser.add_argument(
-        "--strategy",
-        default=None,
-        help="Strategy name to enable trading: {}".format(list(ALL_STRATEGIES.keys())),
-    )
-    start_parser.add_argument(
-        "--params",
-        default="",
-        help="Strategy params as k=v,k=v (e.g. min_elapsed=0.7,bet_fraction=0.5)",
-    )
-    start_parser.add_argument(
-        "--window",
-        type=int,
-        default=WINDOW_DURATION_SECONDS,
-        help="Window duration in seconds (default: {})".format(WINDOW_DURATION_SECONDS),
-    )
-    start_parser.add_argument(
-        "--poll",
-        type=float,
-        default=POLL_INTERVAL_SECONDS,
-        help="Poll interval in seconds (default: {})".format(POLL_INTERVAL_SECONDS),
-    )
-    start_parser.add_argument(
-        "--resolution-poll",
-        type=float,
-        default=RESOLUTION_POLL_INTERVAL,
-        help="Resolution poll interval (default: {})".format(RESOLUTION_POLL_INTERVAL),
-    )
-    start_parser.add_argument(
-        "--resolution-timeout",
-        type=int,
-        default=RESOLUTION_TIMEOUT_SECONDS,
-        help="Resolution timeout (default: {})".format(RESOLUTION_TIMEOUT_SECONDS),
-    )
-    start_parser.add_argument(
-        "--cash",
-        type=str,
-        default=None,
-        help='Starting cash. Omit for live trading (fetches real balance). '
-             'Use "cached" for .cache/balance.json. Required for --dry-run.',
-    )
-    start_parser.add_argument(
-        "--port",
-        type=int,
-        default=DEFAULT_CONTROL_PORT,
+        "--port", type=int, default=DEFAULT_CONTROL_PORT,
         help="Control server port (default: {})".format(DEFAULT_CONTROL_PORT),
     )
     start_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Run trading without placing real orders (uses SimExecutor)",
+        "--restore", action="store_true",
+        help="Restore all markets and strategies from last run",
     )
-    start_parser.add_argument(
-        "--sessions",
-        type=int,
-        default=0,
-        help="Max sessions to run before exiting (default: 0 = unlimited)",
+
+    # market-on
+    market_on_parser = subparsers.add_parser("market-on", help="Start data collection for a market")
+    market_on_parser.add_argument(
+        "slug_prefix", help='Market slug prefix, e.g. "btc-updown-5m-"',
     )
-    start_parser.add_argument(
-        "--per-session",
-        action="store_true",
-        help="Reset cash to --cash amount at the start of each session",
+    market_on_parser.add_argument(
+        "--window", type=int, default=WINDOW_DURATION_SECONDS,
+        help="Window duration in seconds (default: {})".format(WINDOW_DURATION_SECONDS),
     )
-    start_parser.add_argument(
-        "--session-cap",
-        type=float,
-        default=None,
-        help="Max dollars deployed per session (rest held in reserve)",
+    market_on_parser.add_argument(
+        "--market-type", default="updown",
+        help="Market type for strategy validation (default: updown)",
     )
-    start_parser.add_argument(
-        "--restore",
-        action="store_true",
-        help="Restore strategy configs from last run (data/strategies.json)",
+    market_on_parser.add_argument(
+        "--restore", action="store_true",
+        help="Restore strategies for this market from last run",
+    )
+
+    # market-off
+    market_off_parser = subparsers.add_parser("market-off", help="Stop a market")
+    market_off_parser.add_argument(
+        "slug_prefix", help="Market slug prefix to stop",
+    )
+    market_off_parser.add_argument(
+        "--after-session", action="store_true",
+        help="Stop after the current session finishes (graceful)",
     )
 
     # trade-on
-    trade_on_parser = subparsers.add_parser("trade-on", help="Enable trading on running app")
+    trade_on_parser = subparsers.add_parser("trade-on", help="Enable trading on a market")
     trade_on_parser.add_argument(
-        "--strategy",
-        required=True,
+        "slug_prefix", help="Market slug prefix",
+    )
+    trade_on_parser.add_argument(
+        "--strategy", required=True,
         help="Strategy name: {}".format(list(ALL_STRATEGIES.keys())),
     )
     trade_on_parser.add_argument(
-        "--params",
-        default="",
+        "--params", default="",
         help="Strategy params as k=v,k=v",
     )
     trade_on_parser.add_argument(
-        "--cash",
-        type=str,
-        default=None,
+        "--cash", type=str, default=None,
         help='Starting cash. Use "cached" for .cache/balance.json',
     )
     trade_on_parser.add_argument(
-        "--dry-run",
-        action="store_true",
+        "--dry-run", action="store_true",
         help="Trade without real orders",
     )
     trade_on_parser.add_argument(
-        "--per-session",
-        action="store_true",
-        help="Reset cash to --cash amount at the start of each session",
+        "--per-session", action="store_true",
+        help="Reset cash at the start of each session",
     )
     trade_on_parser.add_argument(
-        "--session-cap",
-        type=float,
-        default=None,
-        help="Max dollars deployed per session (rest held in reserve)",
+        "--session-cap", type=float, default=None,
+        help="Max dollars deployed per session",
     )
 
     # trade-off
-    trade_off_parser = subparsers.add_parser("trade-off", help="Disable trading on running app")
+    trade_off_parser = subparsers.add_parser("trade-off", help="Disable trading on a market")
     trade_off_parser.add_argument(
-        "--strategy",
-        default=None,
+        "slug_prefix", help="Market slug prefix",
+    )
+    trade_off_parser.add_argument(
+        "--strategy", default=None,
         help="Remove only this strategy (omit to disable all)",
     )
 
     # set-cash
-    set_cash_parser = subparsers.add_parser("set-cash", help="Update cash on running app")
+    set_cash_parser = subparsers.add_parser("set-cash", help="Update cash on a market")
+    set_cash_parser.add_argument(
+        "slug_prefix", help="Market slug prefix",
+    )
     set_cash_parser.add_argument("amount", type=float, help="New cash amount in dollars")
     set_cash_parser.add_argument(
-        "--strategy",
-        default=None,
-        help="Target strategy (required when multiple strategies are active)",
+        "--strategy", default=None,
+        help="Target strategy (required when multiple active)",
+    )
+
+    # reload
+    reload_parser = subparsers.add_parser("reload", help="Reload a worker")
+    reload_parser.add_argument(
+        "slug_prefix", help="Market slug prefix",
+    )
+    reload_parser.add_argument(
+        "--strategy", required=True,
+        help="Strategy worker to reload",
     )
 
     # kill
-    subparsers.add_parser("kill", help="Stop the app after the current session finishes")
+    subparsers.add_parser("kill", help="Stop all markets after their current sessions")
 
     # status
     subparsers.add_parser("status", help="Check app status")
@@ -602,8 +574,7 @@ def main():
     # claim
     claim_parser = subparsers.add_parser("claim", help="Claim/redeem resolved positions")
     claim_parser.add_argument(
-        "--no-wait",
-        action="store_true",
+        "--no-wait", action="store_true",
         help="Submit without waiting for on-chain confirmation",
     )
 
@@ -611,9 +582,12 @@ def main():
 
     commands = {
         "start": cmd_start,
+        "market-on": cmd_market_on,
+        "market-off": cmd_market_off,
         "trade-on": cmd_trade_on,
         "trade-off": cmd_trade_off,
         "set-cash": cmd_set_cash,
+        "reload": cmd_reload,
         "kill": cmd_kill,
         "status": cmd_status,
         "stop": cmd_stop,

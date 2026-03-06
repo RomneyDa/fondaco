@@ -1,115 +1,184 @@
 # Polymarket Up/Down Trading System
 
-Collect data, backtest strategies, and trade live on Polymarket crypto up/down prediction markets. This system was originally built for the **5-minute BTC up/down market** (`btc-updown-5m-`).
+Collect data, backtest strategies, and trade live on Polymarket crypto up/down prediction markets. Originally built for the **5-minute BTC up/down market** (`btc-updown-5m-`).
 
 ## The 5-Minute BTC Up/Down Market
 
-A new market opens every 5 minutes. Two tokens are minted — **Up** and **Down**. At resolution (5 minutes later), if BTC price (Chainlink oracle) is higher than at market open, the Up token pays $1 and Down pays $0, and vice versa.
+A new market opens every 5 minutes. Two tokens — **Up** and **Down** — are minted. At resolution, if BTC price (Chainlink oracle) is higher than at open, Up pays $1 / Down pays $0, and vice versa.
 
-**Book structure:** The CLOB order book on these markets is extremely thin. Typically only two price levels exist: **best_bid=0.01** and **best_ask=0.99** on both tokens, giving a 0.98 spread. There are no intermediate resting orders. The **midpoint** (derived from market maker activity, not the visible book) is the real signal — it smoothly evolves from ~0.50 at open to ~0.99 on the winning side by resolution.
+**Book structure:** The CLOB book is extremely thin — typically just **best_bid=0.01** and **best_ask=0.99** on both tokens (0.98 spread, no intermediate orders). The **midpoint** (from market maker activity, not the visible book) is the real signal — it evolves from ~0.50 at open to ~0.99 on the winning side by resolution.
 
-**Implications for execution:**
-- The edge comes from **picking the right direction**, not from getting a better fill price
-- Both `SimExecutor` and `ClobExecutor` default to **book execution** (FAK at best_ask for buys, best_bid for sells) — backtests match live behavior
-- The 0.01/0.99 spread is normal and expected; there is no spread guardrail
-- Early in the session (0-2 min), midpoint is noisy (0.40-0.55); by 3-4 min it trends strongly; by 4.5+ min the losing side's book vanishes entirely (ask=None)
+**Execution implications:**
+- Edge comes from **picking the right direction**, not better fills
+- Both `SimExecutor` and `ClobExecutor` default to **book execution** (FAK at best_ask for buys, best_bid for sells) — backtests match live
+- 0.01/0.99 spread is normal; no spread guardrail
+- Early (0-2 min): midpoint noisy (0.40-0.55); late (3-4 min): trends strongly; 4.5+ min: losing side's book vanishes (ask=None)
 
-## Architecture: Simulate First, Trade Live
+## Architecture
 
-The simulator and bot share all core logic via `core/`. Strategies, position math, trade sizing, and the tick loop (`Trader.process_tick`) are identical between backtesting and live trading. The only difference is the Executor: `SimExecutor` replays historical data, `ClobExecutor` places real CLOB orders.
+### Simulate First, Trade Live
 
-**This is a hard constraint.** Any behavior change to how trades are decided, sized, or executed MUST go through shared code in `core/` so it can be validated in simulation before risking real money. Never add trading logic only in `app/` — if the simulator can't test it, it shouldn't go live.
+Simulator and bot share all core logic via `core/`. Strategies, position math, trade sizing, and the tick loop (`Trader.process_tick`) are identical. Only the Executor differs: `SimExecutor` replays history, `ClobExecutor` places real orders.
 
-The `app/` module is a unified process that always collects data and optionally trades. Trading is toggled on/off via CLI or HTTP control server (port 8420). The Runner (`app/runner.py`) manages both modes, snapshotting trading state at session boundaries. State file at `data/app.json` tracks PID + port.
+**Hard constraint:** Any trading behavior change MUST go through `core/` so it can be validated in simulation before risking real money. Never add trading logic only in `app/`.
+
+### Multi-Market Architecture: AppManager + MarketRunners
+
+One central process manages multiple markets. Each market has its own data stream and bot workers:
+
+```
+AppManager (one process, port 8420)
+├── HTTP ControlServer (daemon thread)
+├── MarketRunner "btc-updown-5m" (thread)
+│   ├── TickBroadcaster (data/markets/btc-updown-5m/ticks.sock)
+│   ├── PriceFetcher, SessionRecorder
+│   └── Bot Workers (subprocesses)
+│       ├── LateSniper (PID 1234)
+│       └── DigitalOption (PID 1235)
+├── MarketRunner "btc-updown-15m" (thread)
+│   └── ...
+└── Shared: LoggingSession, RTDSClient (BTC/USD feed)
+```
+
+**Key properties:**
+- **Data stream never dies** — killing/restarting a strategy doesn't touch the collector
+- **Per-strategy isolation** — each bot is a separate process; crash one, others keep running
+- **Hot reload** — `reload` kills and respawns a worker, picking up code changes
+- **Multi-market** — one process manages all markets, shared resources (HTTP session, RTDS WebSocket)
+- **Market-on/market-off** — start/stop individual markets without affecting others
+- **A market ALWAYS has a data stream** — `market-off` kills bots + data; `trade-off` only kills bots
+
+The AppManager broadcasts ticks as JSON lines over per-market Unix sockets. Workers (`app/bot_worker.py`) connect, receive ticks, and run their strategy via `Trader.process_tick()`. Each worker has its own Position, Executor, and state file.
+
+State file at `data/app.json` tracks PID, port, and active markets. Per-market strategy configs persisted to `data/markets/{slug_key}/strategies.json` for `--restore`.
+
+### Strategy Organization
+
+Strategy base class (`Strategy` ABC) lives in `core/strategies/base.py` as shared infrastructure. Concrete implementations live in `bots/`, organized by market type:
+
+- `bots/updown/` — strategies for crypto up/down markets (13 active, 6 archived)
+- `bots/__init__.py` — registries: `MARKET_STRATEGIES`, `ALL_STRATEGIES`, `get_strategies_for_market()`
+- Import strategies from `bots`, not `core.strategies`: `from bots import ALL_STRATEGIES`
+- Import base class from core: `from core.strategies.base import Strategy`
 
 ## Usage
 
 ```bash
 uv sync
 
-# Start unified app (always collects data; optionally trades)
-uv run python -m app start btc-updown-5m-
-uv run python -m app start btc-updown-5m- --strategy LateSniper --params min_elapsed=0.7 --cash 100 --dry-run
+# App lifecycle
+uv run python -m app start                              # Start central app (empty, no markets)
+uv run python -m app start --restore                    # Start + restore all markets & strategies
+uv run python -m app stop                               # Immediate stop (all markets + bots)
+uv run python -m app kill                               # Graceful: stop all after current session
+uv run python -m app status                             # Global status
 
-# Toggle trading on a running app (HTTP calls to control server)
-uv run python -m app trade-on --strategy LateSniper --params min_elapsed=0.7 --cash 100
-uv run python -m app trade-on --strategy DigitalOption --cash 10 --session-cap 5  # $10 bankroll, $5/session
-uv run python -m app trade-off
+# Market lifecycle
+uv run python -m app market-on btc-updown-5m-           # Start data collection
+uv run python -m app market-on btc-updown-5m- --restore # Start + restore strategies for this market
+uv run python -m app market-off btc-updown-5m-          # Stop market (kills bots + data)
+uv run python -m app market-off btc-updown-5m- --after-session  # Graceful stop
 
-# Multi-strategy startup: start app, then add each strategy via trade-on
-uv run python -m app start btc-updown-5m-
-uv run python -m app trade-on --strategy LateSniper --cash 20 --session-cap 10
-uv run python -m app trade-on --strategy BuyTrend --cash 20 --session-cap 10
-uv run python -m app trade-on --strategy DigitalOption --cash 10 --session-cap 5
-
-# Restart with same strategies as last run (reads data/strategies.json)
-uv run python -m app start btc-updown-5m- --restore
-
-# Control
-uv run python -m app status
-uv run python -m app kill    # graceful: stop after current session finishes
-uv run python -m app stop    # immediate: interrupt current session
+# Bot lifecycle (slug_prefix is first positional arg)
+uv run python -m app trade-on btc-updown-5m- --strategy LateSniper --cash 100 --session-cap 5
+uv run python -m app trade-off btc-updown-5m- --strategy LateSniper
+uv run python -m app trade-off btc-updown-5m-           # Kill all bots on this market
+uv run python -m app reload btc-updown-5m- --strategy LateSniper
+uv run python -m app set-cash btc-updown-5m- 50 --strategy LateSniper
 
 # Standalone claim (no running app needed)
 uv run python -m app claim [--no-wait]
 
-# Backtest strategies
-uv run python -m simulator.backtest data/sessions/btc-updown-5m --strategy all --top 10
+# Backtest (slug key shorthand resolves to data/markets/{slug}/sessions)
+uv run python -m simulator.backtest btc-updown-5m --strategy all --top 10 --recent 30
 ```
 
-Slug prefix is always required (positional arg). Known prefixes in `slugs.json` (git-ignored). Use `--window` matching the slug (300 for 5m, 900 for 15m).
+Known prefixes in `slugs.json` (git-ignored). Use `--window` matching the slug (300 for 5m, 900 for 15m).
 
 ### Per-Session Cash Limits
 
-Two flags control how cash is allocated across sessions:
-
 | Flag | Effect |
 |---|---|
-| `--per-session` | Reset `position.cash` to the `--cash` amount at the start of every session. Wins/losses don't carry over. |
-| `--session-cap <N>` | Deploy at most $N per session; hold excess in reserve. Reserve is restored after resolution, so the bankroll grows/shrinks but per-session risk is capped. |
+| `--per-session` | Reset cash to `--cash` at each session start. No accumulation. |
+| `--session-cap <N>` | Deploy at most $N per session; excess held in reserve. Bankroll grows/shrinks but per-session risk is capped. |
 
-**`--session-cap` is the typical choice for bankroll management.** Example: `--cash 10 --session-cap 5` starts with a $10 bankroll and risks $5 per session. If the first session wins $2, the bankroll becomes $12 and the next session still deploys $5 (with $7 in reserve). Use `--per-session` only when you want a hard fixed budget with no accumulation.
+**`--session-cap` is the typical choice.** Example: `--cash 10 --session-cap 5` → $10 bankroll, $5 deployed per session. Win $2 → bankroll=$12, next session still deploys $5.
 
 ## File Structure
 
 ```
 core/
-  defaults.py               Timing, API URLs, paths (BASE_DIR resolves to project root)
+  defaults.py               Timing, API URLs, market-aware path helpers (BASE_DIR = project root)
   models.py                 PriceSample, MarketMetadata, SessionData
   api_logger.py             LoggingSession — all HTTP requests go through this
   trader.py                 TradeAction, Position, TickContext, Trade, Executor ABC,
                             SimExecutor, ClobExecutor, Trader (shared tick loop)
+  tick_broadcast.py         TickBroadcaster (Unix socket server), TickSubscriber (client)
   rtds_client.py            WebSocket client for Chainlink prices (resolution source)
   market_discovery.py       Gamma API market lookup and resolution
   price_fetcher.py          BTC price + CLOB token price polling
   window_ops.py             Window wait, metadata retry, resolution polling
-  session_recorder.py       Session JSON I/O and logging
+  session_recorder.py       Session JSON I/O and logging (accepts per-market paths)
   strategies/
-    __init__.py             ALL_STRATEGIES registry
     base.py                 Strategy ABC (on_session_start, on_tick, param_grid)
-    always_buy_up.py        Baseline: buy Up at first tick
-    always_buy_down.py      Baseline: buy Down at first tick
-    momentum_entry.py       BTC momentum threshold entry
-    midpoint_momentum.py    Token midpoint trend following
-    late_sniper.py          Late-window confident entry
-    fade_the_market.py      Mean reversion against early extremes
-    archived/               Strategies that don't work with 0.01/0.99 book (round-trip sellers)
+bots/
+  __init__.py               MARKET_STRATEGIES, ALL_STRATEGIES, get_strategies_for_market()
+  updown/
+    __init__.py             STRATEGIES dict — all updown strategy implementations
+    late_sniper.py, bargain_hunter.py, ...
+    archived/               Strategies that don't work with 0.01/0.99 book
 app/
-  __main__.py               CLI: start, trade-on, trade-off, status, stop, claim
-  runner.py                 Runner class (unified collect + trade loop)
+  __main__.py               CLI: start, market-on/off, trade-on/off, reload, status, stop, kill, claim
+  app_manager.py            AppManager (central manager for multiple MarketRunners)
+  market_runner.py          MarketRunner (data collection + worker management per market)
+  bot_worker.py             Bot worker process (one per strategy, connects to tick socket)
   server.py                 HTTP control server (stdlib, daemon thread)
   auth.py                   CLOB auth helpers (Safe derivation, API creds, cache)
   claim.py                  Claim/redeem logic via Builder Relayer
 simulator/
   engine.py                 Simulator, SessionResult, BacktestResult, load_sessions
-  backtest.py               CLI grid search runner (logs to data/backtest_log.jsonl)
+  backtest.py               CLI grid search runner (per-market backtest logs)
 dashboard/                  React dashboard (separate)
-data/                       All runtime data (sessions, logs, etc.)
+data/
+  app.json                  App state (pid, port, active markets)
+  app.log                   Global app log
+  api_raw/                  API request logs (global)
+  markets/
+    btc-updown-5m/
+      sessions/             Collected session JSON files
+      live/
+        session.json        Current live session (updated every 2s)
+      workers/
+        LateSniper/
+          state.json        Worker state (cash, position)
+          live_trades.json   Current session trades
+          worker.log         Worker stdout/stderr
+      ticks.sock            Unix socket for tick broadcast
+      bot_trades.jsonl      Per-market trade log
+      bot_log.jsonl         Per-market session log
+      strategies.json       Per-market strategy restore config
+      backtest_log.jsonl    Per-market backtest results
+```
+
+## HTTP Control API
+
+All endpoints on port 8420. Bot lifecycle endpoints require `slug_prefix` as a top-level field in the JSON body.
+
+```
+GET  /api/control/status                         # {running, markets: [...]}
+POST /api/control/stop                           # Stop everything
+POST /api/control/kill                           # Stop after current sessions
+POST /api/control/market-on                      # {slug_prefix, window?, market_type?, restore?}
+POST /api/control/market-off                     # {slug_prefix, after_session?}
+POST /api/control/trade-on                       # {slug_prefix, strategy, params?, cash?, ...}
+POST /api/control/trade-off                      # {slug_prefix, strategy?}
+POST /api/control/reload                         # {slug_prefix, strategy}
+POST /api/control/set-cash                       # {slug_prefix, cash, strategy?}
 ```
 
 ## Tick Scale
 
-Sessions sample at ~18 ticks/sec. A 5-minute (300s) session has ~5,400 ticks; a 15-minute (900s) session has ~16,200 ticks. Strategy warmup/lookback params (EMA spans, OLS window sizes, rolling lookbacks) are measured in **ticks**, not seconds. A `slow_span=200` EMA burns only ~11 seconds of warmup in a 5-minute window. Keep param grids calibrated to this scale — a span of 50 means ~3 seconds, not 50 seconds. BTC price variance per tick is tiny (~0.01–0.15 bps), so slope/momentum thresholds in bps/tick must be correspondingly small.
+~18 ticks/sec. A 5-min session ≈ 5,400 ticks; 15-min ≈ 16,200. Strategy params (EMA spans, lookbacks) are in **ticks**, not seconds. `slow_span=200` ≈ 11 seconds. BTC variance per tick is tiny (~0.01–0.15 bps), so slope/momentum thresholds must be correspondingly small.
 
 ## CLOB API Constraints
 
@@ -117,61 +186,51 @@ Sessions sample at ~18 ticks/sec. A 5-minute (300s) session has ~5,400 ticks; a 
 |---|---|
 | Min order size | 5 tokens (`CLOB_MIN_ORDER_TOKENS`) |
 | Tick size | 0.01 |
-| Price range | 0.01–0.99 |
-| Price precision | 2 decimal places |
+| Price range | 0.01–0.99 (2 decimal places) |
 | Order type | FAK (Fill-and-Kill) |
 | neg_risk | False |
-| Book spread | Typically 0.01/0.99 (default `book` execution = FAK at best_ask/best_bid) |
+| Book spread | Typically 0.01/0.99 |
 
-Buy token sizes are floored to integer in `ClobExecutor` for clean maker amounts. Sell token sizes use `math.floor` to 4 decimals — never round up sells.
+Buy sizes floored to integer. Sell sizes `math.floor` to 4 decimals — never round up sells.
 
 ## API Latency
 
-CLOB order round-trip (TTFB) is ~300ms. Gamma ~270ms, Data API ~375ms, Builder Relayer ~675ms. Network RTT to servers (Cloudflare, US East) is ~45ms; rest is TLS + server processing. Negligible for 5-minute windows.
+CLOB ~300ms, Gamma ~270ms, Data API ~375ms, Builder Relayer ~675ms. Network RTT ~45ms (Cloudflare, US East). Negligible for 5-minute windows.
 
-## Guardrails (shared, constants in core/defaults.py)
+## Guardrails
 
 | Guardrail | Constant | Default |
 |---|---|---|
 | Min order size | CLOB_MIN_ORDER_TOKENS | 5 tokens |
 
-Per-session risk is controlled by `--session-cap`. Settlement cooldown prevents selling tokens before on-chain settlement completes. Enforced in `Trader.process_tick()` (shared tick loop). App caches balance to `.cache/balance.json`; use `--cash cached` in backtest/app to start from real balance.
+Per-session risk controlled by `--session-cap`. Settlement cooldown prevents selling before on-chain settlement; enforced in `Trader.process_tick()`. Balance cached to `.cache/balance.json`; use `--cash cached` to start from real balance.
 
-## Strategy Param Optimization Workflow
+## Strategy Param Optimization
 
-When tuning a strategy's parameters, use iterative grid refinement — not a single massive grid.
+Use iterative grid refinement — coarse grid → zoom in → zoom in. Keep each sweep **< 1000 combos**.
 
-1. **Coarse sweep** — Design an initial `param_grid()` with wide spacing that produces **< 1000 total combinations**. Multiply out the grid dimensions to verify before running. Example: 5 values × 5 values × 4 values = 100 combos. Run the backtest:
+1. **Coarse sweep** — Wide spacing, verify combo count before running:
    ```bash
-   uv run python -m simulator.backtest data/sessions/btc-updown-5m --strategy MyStrategy --top 10 --recent 30
+   uv run python -m simulator.backtest btc-updown-5m --strategy MyStrategy --top 10 --recent 30
    ```
-
-2. **Refine around the optimum** — Read the best params from the leaderboard output. Build a tighter grid centered on those values with finer step sizes, again keeping total combos under ~1000. Override `param_grid()` (or use `--params` for a single run) and re-run.
-
-3. **Final polish (optional)** — Repeat once more with even finer steps around the new best. Diminishing returns after 2–3 rounds — stop when the top results are clustered tightly.
-
-This is a numerical-methods-style approach: coarse grid → zoom in → zoom in. It avoids combinatorial explosion (a 6-param grid with 10 values each = 1M combos) while still finding near-optimal params efficiently.
+2. **Refine** — Tighter grid centered on best params from step 1.
+3. **Polish (optional)** — Even finer steps. Stop when top results cluster tightly.
 
 ## CRITICAL RULES — REAL MONEY
 
 This bot trades real money. No sandbox, no undo.
 
-1. **All trades flow through `ClobExecutor.execute_trade`** — no ad-hoc scripts, no direct `create_and_post_order` calls outside the app's execution path.
-
+1. **All trades flow through `ClobExecutor.execute_trade`** — no ad-hoc scripts, no direct `create_and_post_order` calls outside the execution path.
 2. **Read before modifying trade execution code** — before changing `ClobExecutor.execute_trade`, `SimExecutor.execute_trade`, `Position.compute_trade_size`, `Position.apply_trade`, `Position.resolve`, or `Trader.process_tick`: read it, understand it, confirm no path where money is lost silently.
-
-3. **Position must stay in sync** — `position.apply_trade()` is called only after a successful CLOB order. Failed order = position unchanged. No exceptions.
-
-4. **Private keys are sacred** — loaded from `.env` via `python-dotenv`, never logged/printed/committed. `.env` is gitignored.
-
-5. **Log everything** — every order attempt → `data/bot_trades.jsonl`, every session → `data/bot_log.jsonl`, every API call → `data/api_raw/`. Never bypass logging. Backtest runs → `data/backtest_log.jsonl`.
-
-6. **When in doubt, do not trade** — ask the user. The cost of asking is zero.
+3. **Position must stay in sync** — `position.apply_trade()` called only after successful CLOB order. Failed order = position unchanged.
+4. **Private keys are sacred** — loaded from `.env` via `python-dotenv`, never logged/printed/committed.
+5. **Log everything** — orders → `data/markets/{slug}/bot_trades.jsonl`, sessions → `data/markets/{slug}/bot_log.jsonl`, API calls → `data/api_raw/`, backtests → `data/markets/{slug}/backtest_log.jsonl`.
+6. **When in doubt, do not trade** — ask the user.
 
 ## Rules
 
-- **Always pass `--recent 30`** (or less) when running backtests. Never run against the full session history — it's slow and the oldest data is least relevant.
-- **uv** for package management. `uv sync` to install, `uv add <pkg>` to add deps. Run via `uv run python -m <module>`.
-- **Python >=3.10** — use `typing.Optional`/`typing.Union`, not `X | Y` syntax.
-- **All HTTP requests through `LoggingSession`** — no bare `requests.get()`. Logs to `data/api_raw/{host}/{date}.jsonl`.
-- **Auth**: `.env` has `POLYMARKET_PRIVATE_KEY`. App derives Gnosis Safe address via Polygon RPC (`CTF_EXCHANGE` at `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E`), caches creds in `.cache/auth.json` (git-ignored, auto-invalidates on key change). Auth is lazy-initialized when trading is enabled.
+- **Always pass `--recent 30`** (or less) when running backtests.
+- **uv** for package management. `uv sync`, `uv add <pkg>`, `uv run python -m <module>`.
+- **Python >=3.10** — use `typing.Optional`/`typing.Union`, not `X | Y`.
+- **All HTTP requests through `LoggingSession`** — no bare `requests.get()`.
+- **Auth**: `.env` has `POLYMARKET_PRIVATE_KEY`. Derives Gnosis Safe via Polygon RPC (`CTF_EXCHANGE` at `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E`), caches in `.cache/auth.json` (git-ignored, auto-invalidates on key change). Lazy-initialized when trading is enabled.

@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
-import type { BotStatus, PrefixInfo } from "../types";
+import type { BotStatus, MarketStatus, PrefixInfo } from "../types";
+import { fmtSessionName } from "../utils/formatTime";
 
 interface Props {
   prefixes: PrefixInfo[];
@@ -7,21 +8,9 @@ interface Props {
   botStatus: BotStatus | null;
 }
 
-function formatSessionName(file: string): string {
-  // file looks like "2026-02-20T03-45-00Z.json" — show a compact label
-  const name = file.replace(".json", "");
-  const match = name.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})/);
-  if (match) {
-    return `${match[1]} ${match[2]}:${match[3]}`;
-  }
-  return name;
-}
-
 export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
   const isRunning = botStatus?.running ?? false;
-  const strategies = botStatus?.strategies ?? [];
-  const isTrading = strategies.length > 0;
-  const allDryRun = strategies.length > 0 && strategies.every((s) => s.dry_run);
+  const markets = botStatus?.markets ?? [];
 
   return (
     <nav className="sidebar">
@@ -50,30 +39,26 @@ export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
       </div>
 
       <div className="nav-section">
-        <div className="nav-section-header">Bot</div>
+        <div className="nav-section-header">Trading</div>
         <NavLink
           to="/bot"
           className={({ isActive }) =>
             `nav-item live-item${isActive ? " active" : ""}`
           }
         >
-          {isTrading ? (
+          {isRunning ? (
             <>
               <span
                 className="live-dot"
-                style={allDryRun ? { background: "var(--accent)" } : undefined}
+                style={
+                  markets.length === 0
+                    ? { background: "var(--text-dim)", animation: "none" }
+                    : undefined
+                }
               />
-              {strategies.length === 1
-                ? strategies[0].name
-                : `${strategies.length} strategies`}
-            </>
-          ) : isRunning ? (
-            <>
-              <span
-                className="live-dot"
-                style={{ background: "var(--text-dim)", animation: "none" }}
-              />
-              Idle
+              {markets.length === 0
+                ? "Idle"
+                : `${markets.length} market${markets.length !== 1 ? "s" : ""}`}
             </>
           ) : (
             <>
@@ -85,20 +70,14 @@ export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
             </>
           )}
         </NavLink>
-        {isTrading && strategies.map((s) => (
-          <div key={s.name} className="nav-item nav-session" style={{ paddingLeft: 28 }}>
-            <span>{s.name}</span>
-            <span className="count">
-              ${(s.starting_cash ?? s.cash).toFixed(0)}
-              {s.session_cap != null && <span style={{ opacity: 0.6 }}> (${s.session_cap}/s)</span>}
-            </span>
-            {s.dry_run && <span className="dry-run-tag" style={{ fontSize: 9, marginLeft: 4 }}>DRY</span>}
-          </div>
+
+        {markets.map((m) => (
+          <MarketSidebarItem key={m.slug_key} market={m} />
         ))}
       </div>
 
       <div className="nav-section">
-        <div className="nav-section-header">Recent Sessions</div>
+        <div className="nav-section-header">Sessions</div>
         {prefixes.map((p) => (
           <div key={p.name}>
             <NavLink
@@ -118,7 +97,7 @@ export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
                   `nav-item nav-session${isActive ? " active" : ""}`
                 }
               >
-                <span>{formatSessionName(s.file)}</span>
+                <span>{fmtSessionName(s.file)}</span>
                 {s.outcome && (
                   <span className={`session-outcome ${s.outcome.toLowerCase()}`}>
                     {s.outcome}
@@ -130,5 +109,62 @@ export function Sidebar({ prefixes, livePrefixes, botStatus }: Props) {
         ))}
       </div>
     </nav>
+  );
+}
+
+function MarketSidebarItem({ market }: { market: MarketStatus }) {
+  const strategies = market.strategies ?? [];
+  const isTrading = strategies.length > 0;
+  const anyDead = strategies.some((s) => s.alive === false);
+  const allDryRun = strategies.length > 0 && strategies.every((s) => s.dry_run);
+
+  return (
+    <>
+      <div className="nav-item" style={{ paddingLeft: 20 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <span
+            style={{
+              display: "inline-block",
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: anyDead
+                ? "var(--red)"
+                : isTrading
+                  ? allDryRun ? "var(--accent)" : "var(--green)"
+                  : "var(--text-dim)",
+              animation: isTrading && !anyDead ? "pulse 2s infinite" : "none",
+              flexShrink: 0,
+            }}
+          />
+          {market.slug_key}
+        </span>
+        {market.stop_after_session && (
+          <span className="dry-run-tag" style={{ background: "var(--red)", marginLeft: 4, fontSize: 9 }}>STOPPING</span>
+        )}
+      </div>
+      {strategies.map((s) => (
+        <div key={s.name} className="nav-item nav-session" style={{ paddingLeft: 36 }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <span
+              style={{
+                display: "inline-block",
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: s.alive === false ? "var(--red)" : "var(--green)",
+                flexShrink: 0,
+              }}
+            />
+            {s.name}
+          </span>
+          <span className="count">
+            ${(s.bankroll ?? s.cash).toFixed(0)}
+            {s.session_cap != null && <span style={{ opacity: 0.6 }}> (${s.session_cap}/s)</span>}
+          </span>
+          {s.dry_run && <span className="dry-run-tag" style={{ fontSize: 9, marginLeft: 4 }}>DRY</span>}
+        </div>
+      ))}
+    </>
   );
 }

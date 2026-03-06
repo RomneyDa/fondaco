@@ -18,41 +18,43 @@ export function useSSE(handlers: SSEHandlers) {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let mounted = true;
 
+    function onLiveUpdate(e: Event) {
+      const { prefix, session } = JSON.parse(
+        (e as MessageEvent).data
+      ) as { prefix: string; session: LivePayload };
+      ref.current.onLiveUpdate?.(prefix, session);
+    }
+    function onLiveStart(e: Event) {
+      const { prefix } = JSON.parse((e as MessageEvent).data) as {
+        prefix: string;
+      };
+      ref.current.onLiveStart?.(prefix);
+    }
+    function onLiveEnd(e: Event) {
+      const { prefix } = JSON.parse((e as MessageEvent).data) as {
+        prefix: string;
+      };
+      ref.current.onLiveEnd?.(prefix);
+    }
+    function onSessionSaved(e: Event) {
+      const { prefix, file } = JSON.parse(
+        (e as MessageEvent).data
+      ) as { prefix: string; file: string };
+      ref.current.onSessionSaved?.(prefix, file);
+    }
+    function onBotStatus(e: Event) {
+      const data = JSON.parse((e as MessageEvent).data) as BotStatus;
+      ref.current.onBotStatus?.(data);
+    }
+
     function connect() {
       es = new EventSource("/events");
 
-      es.addEventListener("live-update", (e) => {
-        const { prefix, session } = JSON.parse(
-          (e as MessageEvent).data
-        ) as { prefix: string; session: LivePayload };
-        ref.current.onLiveUpdate?.(prefix, session);
-      });
-
-      es.addEventListener("live-start", (e) => {
-        const { prefix } = JSON.parse((e as MessageEvent).data) as {
-          prefix: string;
-        };
-        ref.current.onLiveStart?.(prefix);
-      });
-
-      es.addEventListener("live-end", (e) => {
-        const { prefix } = JSON.parse((e as MessageEvent).data) as {
-          prefix: string;
-        };
-        ref.current.onLiveEnd?.(prefix);
-      });
-
-      es.addEventListener("session-saved", (e) => {
-        const { prefix, file } = JSON.parse(
-          (e as MessageEvent).data
-        ) as { prefix: string; file: string };
-        ref.current.onSessionSaved?.(prefix, file);
-      });
-
-      es.addEventListener("bot-status", (e) => {
-        const data = JSON.parse((e as MessageEvent).data) as BotStatus;
-        ref.current.onBotStatus?.(data);
-      });
+      es.addEventListener("live-update", onLiveUpdate);
+      es.addEventListener("live-start", onLiveStart);
+      es.addEventListener("live-end", onLiveEnd);
+      es.addEventListener("session-saved", onSessionSaved);
+      es.addEventListener("bot-status", onBotStatus);
 
       es.onerror = () => {
         es?.close();
@@ -66,8 +68,15 @@ export function useSSE(handlers: SSEHandlers) {
 
     return () => {
       mounted = false;
-      es?.close();
       if (timer) clearTimeout(timer);
+      if (es) {
+        es.removeEventListener("live-update", onLiveUpdate);
+        es.removeEventListener("live-start", onLiveStart);
+        es.removeEventListener("live-end", onLiveEnd);
+        es.removeEventListener("session-saved", onSessionSaved);
+        es.removeEventListener("bot-status", onBotStatus);
+        es.close();
+      }
     };
   }, []);
 }

@@ -18,8 +18,8 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 
 from simulator.engine import Simulator, BacktestResult, load_sessions
-from core.defaults import BALANCE_CACHE_FILE, BACKTEST_LOG_FILE
-from core.strategies import ALL_STRATEGIES
+from core.defaults import BALANCE_CACHE_FILE, MARKETS_DIR, market_backtest_log, market_sessions_dir
+from bots import ALL_STRATEGIES
 
 
 # -- Process pool worker globals & functions --
@@ -159,8 +159,39 @@ def print_verbose(result):
     ))
 
 
-def log_backtest_run(args, sessions, all_results, optimize):
-    # type: (argparse.Namespace, list, list, str) -> None
+def _resolve_data_dir(raw_path):
+    # type: (str) -> str
+    """Resolve data_dir: if it looks like a slug key, expand to market sessions dir."""
+    # If path exists as-is, use it
+    if os.path.isdir(raw_path):
+        return raw_path
+    # Try as slug key -> data/markets/{slug_key}/sessions
+    slug_key = raw_path.rstrip("-")
+    market_path = market_sessions_dir(slug_key)
+    if os.path.isdir(market_path):
+        return market_path
+    # Return as-is (will fail with a clear error later)
+    return raw_path
+
+
+def _resolve_backtest_log(data_dir):
+    # type: (str) -> str
+    """Determine backtest log path based on data_dir location."""
+    # If data_dir is under data/markets/{slug}/sessions, use per-market log
+    markets_dir = os.path.normpath(MARKETS_DIR)
+    norm_dir = os.path.normpath(data_dir)
+    if norm_dir.startswith(markets_dir + os.sep):
+        # Extract slug_key from path
+        rel = os.path.relpath(norm_dir, markets_dir)
+        slug_key = rel.split(os.sep)[0]
+        return market_backtest_log(slug_key)
+    # Fallback: global backtest log (shouldn't happen with new layout)
+    from core.defaults import BASE_DIR
+    return os.path.join(BASE_DIR, "data", "backtest_log.jsonl")
+
+
+def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
+    # type: (argparse.Namespace, list, list, str, str) -> None
     """Append a JSONL entry with the full backtest run inputs and results."""
     sort_key = {
         "sharpe": lambda r: r.sharpe,
@@ -202,9 +233,9 @@ def log_backtest_run(args, sessions, all_results, optimize):
         "best_per_strategy": best_per_strategy,
     }
 
-    os.makedirs(os.path.dirname(BACKTEST_LOG_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(backtest_log_file), exist_ok=True)
     try:
-        with open(BACKTEST_LOG_FILE, "a") as f:
+        with open(backtest_log_file, "a") as f:
             f.write(json.dumps(entry, default=str) + "\n")
     except Exception as e:
         print("Warning: failed to write backtest log: {}".format(e))
@@ -283,6 +314,10 @@ def main():
     # Update args.cash so log_backtest_run logs the numeric value
     args.cash = starting_cash
 
+    # Resolve data dir (supports slug key shorthand)
+    args.data_dir = _resolve_data_dir(args.data_dir)
+    backtest_log_file = _resolve_backtest_log(args.data_dir)
+
     # Load sessions
     all_sessions = load_sessions(args.data_dir)
     if not all_sessions:
@@ -360,8 +395,8 @@ def main():
         print_verbose(best)
 
     # Persist full run to JSONL log
-    log_backtest_run(args, sessions, all_results, args.optimize)
-    print("Results logged to {}".format(BACKTEST_LOG_FILE))
+    log_backtest_run(args, sessions, all_results, args.optimize, backtest_log_file)
+    print("Results logged to {}".format(backtest_log_file))
 
 
 if __name__ == "__main__":

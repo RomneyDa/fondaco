@@ -5,6 +5,7 @@ import type { LivePayload } from "../types";
 import { isLiveStatus, isSessionData } from "../types";
 import { MetaGrid } from "./MetaGrid";
 import { SessionCharts } from "./SessionCharts";
+import { fmtTimeOnly } from "../utils/formatTime";
 
 interface Props {
   liveData: Record<string, LivePayload>;
@@ -30,11 +31,13 @@ export function LiveView({ liveData }: Props) {
   // Initial fetch
   useEffect(() => {
     if (prefix) {
+      let cancelled = false;
       setEnded(false);
       setHadSSE(false);
       fetchLiveSession(prefix).then((data) => {
-        if (data) setPayload(data);
+        if (!cancelled && data) setPayload(data);
       });
+      return () => { cancelled = true; };
     }
   }, [prefix]);
 
@@ -54,12 +57,13 @@ export function LiveView({ liveData }: Props) {
   }, [prefix, hadSSE, payload, liveData]);
 
   // Tick the countdown every second when waiting
+  const isWaiting = payload && isLiveStatus(payload) && payload.status === "waiting";
   useEffect(() => {
-    if (payload && isLiveStatus(payload) && payload.status === "waiting") {
+    if (isWaiting) {
       const id = setInterval(() => setTick((t) => t + 1), 1000);
       return () => clearInterval(id);
     }
-  }, [payload]);
+  }, [isWaiting]);
 
   const statusLabel = ended
     ? "Session Complete"
@@ -209,7 +213,7 @@ export function LiveView({ liveData }: Props) {
       ) : payload && isLiveStatus(payload) ? (
         <p className="subtitle">
           {payload.status === "waiting"
-            ? `Next window starts at ${new Date(payload.next_window_utc || "").toLocaleTimeString()}`
+            ? `Next window starts at ${fmtTimeOnly(payload.next_window_utc)}`
             : "Window ended, waiting for market to resolve..."}
         </p>
       ) : (

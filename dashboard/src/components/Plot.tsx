@@ -13,14 +13,10 @@ export function Plot({ data, layout, config, className }: Props) {
   useEffect(() => {
     if (!ref.current) return;
     Plotly.react(ref.current, data, layout, config);
-  });
-
-  useEffect(() => {
-    const el = ref.current;
     return () => {
-      if (el) Plotly.purge(el);
+      if (ref.current) Plotly.purge(ref.current);
     };
-  }, []);
+  }, [data, layout, config]);
 
   return <div ref={ref} className={className} />;
 }

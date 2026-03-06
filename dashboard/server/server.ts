@@ -9,10 +9,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const DATA_DIR = path.resolve(__dirname, "../../data");
-const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
-const LIVE_DIR = path.join(DATA_DIR, "live");
+const MARKETS_DIR = path.join(DATA_DIR, "markets");
 const APP_JSON = path.join(DATA_DIR, "app.json");
-const BOT_TRADES_FILE = path.join(DATA_DIR, "bot_trades.jsonl");
 const CLIENT_DIR = path.resolve(__dirname, "../dist/client");
 const PORT = parseInt(process.env.PORT || "3456", 10);
 
@@ -34,6 +32,37 @@ function getControlPort(): number | null {
     return data.port || null;
   } catch {
     return null;
+  }
+}
+
+function marketSessionsDir(prefix: string): string {
+  return path.join(MARKETS_DIR, prefix, "sessions");
+}
+
+function marketLiveDir(prefix: string): string {
+  return path.join(MARKETS_DIR, prefix, "live");
+}
+
+function marketWorkersDir(prefix: string): string {
+  return path.join(MARKETS_DIR, prefix, "workers");
+}
+
+function marketTradesFile(prefix: string): string {
+  return path.join(MARKETS_DIR, prefix, "bot_trades.jsonl");
+}
+
+/** List all market slug keys that have a sessions directory */
+function listMarketPrefixes(): string[] {
+  try {
+    if (!fs.existsSync(MARKETS_DIR)) return [];
+    return fs
+      .readdirSync(MARKETS_DIR, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .filter((name) => fs.existsSync(path.join(MARKETS_DIR, name, "sessions")))
+      .sort();
+  } catch {
+    return [];
   }
 }
 
@@ -67,15 +96,7 @@ async function proxyToControl(
 
 app.get("/api/prefixes", (_req: Request, res: Response) => {
   try {
-    if (!fs.existsSync(SESSIONS_DIR)) {
-      res.json({ prefixes: [] });
-      return;
-    }
-    const entries = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
-    const prefixes = entries
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-      .sort();
+    const prefixes = listMarketPrefixes();
     res.json({ prefixes });
   } catch (err) {
     res.status(500).json({ error: String(err) });
@@ -84,7 +105,7 @@ app.get("/api/prefixes", (_req: Request, res: Response) => {
 
 app.get("/api/sessions/:prefix/summaries", (req: Request, res: Response) => {
   try {
-    const dir = safePath(SESSIONS_DIR, req.params.prefix);
+    const dir = safePath(MARKETS_DIR, req.params.prefix, "sessions");
     if (!dir) {
       res.status(403).json({ error: "Forbidden" });
       return;
@@ -125,7 +146,7 @@ app.get("/api/sessions/:prefix/summaries", (req: Request, res: Response) => {
 
 app.get("/api/sessions/:prefix", (req: Request, res: Response) => {
   try {
-    const dir = safePath(SESSIONS_DIR, req.params.prefix);
+    const dir = safePath(MARKETS_DIR, req.params.prefix, "sessions");
     if (!dir) {
       res.status(403).json({ error: "Forbidden" });
       return;
@@ -148,8 +169,9 @@ app.get("/api/sessions/:prefix", (req: Request, res: Response) => {
 app.get("/api/session/:prefix/:file", (req: Request, res: Response) => {
   try {
     const filepath = safePath(
-      SESSIONS_DIR,
+      MARKETS_DIR,
       req.params.prefix,
+      "sessions",
       req.params.file
     );
     if (!filepath) {
@@ -171,18 +193,49 @@ app.get(
   "/api/session/:prefix/:file/trading",
   (req: Request, res: Response) => {
     try {
-      const sidecarFile = req.params.file + ".trading.json";
-      const filepath = safePath(SESSIONS_DIR, req.params.prefix, sidecarFile);
-      if (!filepath) {
+      const dir = safePath(MARKETS_DIR, req.params.prefix, "sessions");
+      if (!dir) {
         res.status(403).json({ error: "Forbidden" });
         return;
       }
-      if (!fs.existsSync(filepath)) {
+
+      // Try legacy single sidecar first
+      const legacyFile = req.params.file + ".trading.json";
+      const legacyPath = path.join(dir, legacyFile);
+      if (fs.existsSync(legacyPath)) {
+        const data = JSON.parse(fs.readFileSync(legacyPath, "utf-8"));
+        res.json(data);
+        return;
+      }
+
+      // Look for per-worker sidecars: {file}.trading.{strategy}.json
+      const prefix = req.params.file + ".trading.";
+      const workerSidecars = fs.existsSync(dir)
+        ? fs.readdirSync(dir).filter(
+            (f) => f.startsWith(prefix) && f.endsWith(".json") && f !== legacyFile
+          )
+        : [];
+
+      if (workerSidecars.length === 0) {
         res.status(404).json({ error: "No trading data" });
         return;
       }
-      const data = JSON.parse(fs.readFileSync(filepath, "utf-8"));
-      res.json(data);
+
+      // Merge per-worker sidecars into a combined response
+      const strategies: any[] = [];
+      let firstData: any = null;
+      for (const sidecar of workerSidecars) {
+        try {
+          const data = JSON.parse(
+            fs.readFileSync(path.join(dir, sidecar), "utf-8")
+          );
+          strategies.push(data);
+          if (!firstData) firstData = data;
+        } catch {}
+      }
+
+      const merged = { ...(firstData || {}), strategies };
+      res.json(merged);
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -191,12 +244,13 @@ app.get(
 
 app.get("/api/live", (_req: Request, res: Response) => {
   try {
-    if (!fs.existsSync(LIVE_DIR)) {
-      res.json({ live: [] });
-      return;
+    const live: string[] = [];
+    for (const prefix of listMarketPrefixes()) {
+      const liveFile = path.join(MARKETS_DIR, prefix, "live", "session.json");
+      if (fs.existsSync(liveFile)) {
+        live.push(prefix);
+      }
     }
-    const files = fs.readdirSync(LIVE_DIR).filter((f) => f.endsWith(".json"));
-    const live = files.map((f) => f.replace(".json", ""));
     res.json({ live });
   } catch (err) {
     res.status(500).json({ error: String(err) });
@@ -205,7 +259,7 @@ app.get("/api/live", (_req: Request, res: Response) => {
 
 app.get("/api/live/:prefix", (req: Request, res: Response) => {
   try {
-    const filepath = safePath(LIVE_DIR, `${req.params.prefix}.json`);
+    const filepath = safePath(MARKETS_DIR, req.params.prefix, "live", "session.json");
     if (!filepath) {
       res.status(403).json({ error: "Forbidden" });
       return;
@@ -225,6 +279,24 @@ app.get("/api/live/:prefix", (req: Request, res: Response) => {
 
 app.get("/api/bot/status", async (_req: Request, res: Response) => {
   const { status, data } = await proxyToControl("/api/control/status");
+  res.status(status).json(data);
+});
+
+app.post("/api/bot/market-on", async (req: Request, res: Response) => {
+  const { status, data } = await proxyToControl(
+    "/api/control/market-on",
+    "POST",
+    req.body
+  );
+  res.status(status).json(data);
+});
+
+app.post("/api/bot/market-off", async (req: Request, res: Response) => {
+  const { status, data } = await proxyToControl(
+    "/api/control/market-off",
+    "POST",
+    req.body
+  );
   res.status(status).json(data);
 });
 
@@ -258,6 +330,62 @@ app.post("/api/bot/set-cash", async (req: Request, res: Response) => {
 app.post("/api/bot/stop", async (_req: Request, res: Response) => {
   const { status, data } = await proxyToControl("/api/control/stop", "POST");
   res.status(status).json(data);
+});
+
+app.post("/api/bot/reload", async (req: Request, res: Response) => {
+  const { status, data } = await proxyToControl(
+    "/api/control/reload",
+    "POST",
+    req.body
+  );
+  res.status(status).json(data);
+});
+
+app.post("/api/bot/kill", async (_req: Request, res: Response) => {
+  const { status, data } = await proxyToControl("/api/control/kill", "POST");
+  res.status(status).json(data);
+});
+
+// --- Strategies ---
+
+app.get("/api/strategies", async (_req: Request, res: Response) => {
+  // Try to get from running app, fall back to scanning bots/ dir
+  const port = getControlPort();
+  if (port) {
+    try {
+      const r = await fetch(`http://localhost:${port}/api/control/status`);
+      const data = await r.json() as any;
+      // Collect all strategy names from running markets
+      const names = new Set<string>();
+      for (const m of data.markets || []) {
+        for (const s of m.strategies || []) {
+          names.add(s.name);
+        }
+      }
+      if (names.size > 0) {
+        res.json({ strategies: [...names].sort() });
+        return;
+      }
+    } catch {}
+  }
+  // Fall back: scan bots/updown/*.py for class names
+  try {
+    const botsDir = path.join(PROJECT_ROOT, "bots", "updown");
+    if (fs.existsSync(botsDir)) {
+      const files = fs.readdirSync(botsDir).filter(f => f.endsWith(".py") && f !== "__init__.py");
+      const names: string[] = [];
+      for (const file of files) {
+        const content = fs.readFileSync(path.join(botsDir, file), "utf-8");
+        const match = content.match(/^class\s+(\w+)\s*\(/m);
+        if (match) names.push(match[1]);
+      }
+      res.json({ strategies: names.sort() });
+    } else {
+      res.json({ strategies: [] });
+    }
+  } catch {
+    res.json({ strategies: [] });
+  }
 });
 
 // --- Slugs & App start ---
@@ -297,15 +425,10 @@ app.post("/api/bot/start", async (req: Request, res: Response) => {
     } catch {}
   }
 
-  const { slug_prefix, window: windowDuration } = req.body;
-  if (!slug_prefix) {
-    res.status(400).json({ error: "Missing slug_prefix" });
-    return;
-  }
-
-  const args = ["run", "python", "-m", "app", "start", slug_prefix];
-  if (windowDuration) {
-    args.push("--window", String(windowDuration));
+  const { restore } = req.body;
+  const args = ["run", "python", "-m", "app", "start"];
+  if (restore) {
+    args.push("--restore");
   }
 
   try {
@@ -333,92 +456,112 @@ app.get("/api/bot/trades", (req: Request, res: Response) => {
       Math.max(parseInt(req.query.limit as string) || 100, 1),
       500
     );
-    // Collect trades from live session files and recent trading sidecars.
-    // Each trade gets a session_start timestamp for global sorting.
     const allTrades: any[] = [];
 
-    // 1. Live session files (current/in-progress sessions)
-    if (fs.existsSync(LIVE_DIR)) {
-      for (const file of fs.readdirSync(LIVE_DIR).filter((f) => f.endsWith(".json"))) {
-        try {
-          const data = JSON.parse(fs.readFileSync(path.join(LIVE_DIR, file), "utf-8"));
-          const sessionStart = data.metadata?.window_start_utc || data.collection_started_utc || "";
-          const trading = data.trading;
-          if (trading?.strategies) {
-            for (const strat of trading.strategies) {
-              if (strat.trades?.length) {
-                for (const t of strat.trades) {
-                  allTrades.push({ ...t, session_start: sessionStart, strategy: strat.name });
+    // Scan all markets
+    for (const prefix of listMarketPrefixes()) {
+      const liveDir = marketLiveDir(prefix);
+      const sessionsDir = marketSessionsDir(prefix);
+      const workersDir = marketWorkersDir(prefix);
+      const tradesFile = marketTradesFile(prefix);
+
+      // 1. Live session files
+      if (fs.existsSync(liveDir)) {
+        for (const file of fs.readdirSync(liveDir).filter((f) => f.endsWith(".json"))) {
+          try {
+            const data = JSON.parse(fs.readFileSync(path.join(liveDir, file), "utf-8"));
+            const sessionStart = data.metadata?.window_start_utc || data.collection_started_utc || "";
+            const trading = data.trading;
+            if (trading?.strategies) {
+              for (const strat of trading.strategies) {
+                if (strat.trades?.length) {
+                  for (const t of strat.trades) {
+                    allTrades.push({ ...t, session_start: sessionStart, strategy: strat.name, market: prefix });
+                  }
                 }
               }
+            } else if (trading?.trades?.length) {
+              for (const t of trading.trades) {
+                allTrades.push({ ...t, session_start: sessionStart, market: prefix });
+              }
             }
-          } else if (trading?.trades?.length) {
-            for (const t of trading.trades) {
-              allTrades.push({ ...t, session_start: sessionStart });
-            }
-          }
-        } catch {}
+          } catch {}
+        }
       }
-    }
 
-    // 2. Recent trading sidecar files (historical sessions)
-    if (fs.existsSync(SESSIONS_DIR)) {
-      const prefixes = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name);
-      for (const prefix of prefixes) {
-        const dir = path.join(SESSIONS_DIR, prefix);
-        const sidecars = fs.readdirSync(dir)
-          .filter((f) => f.endsWith(".trading.json"))
+      // 2. Recent trading sidecar files
+      if (fs.existsSync(sessionsDir)) {
+        const sidecars = fs.readdirSync(sessionsDir)
+          .filter((f) => f.includes(".trading.") && f.endsWith(".json"))
           .sort()
           .reverse()
-          .slice(0, 20); // last 20 sessions
+          .slice(0, 40);
         for (const sidecar of sidecars) {
           try {
-            const data = JSON.parse(fs.readFileSync(path.join(dir, sidecar), "utf-8"));
-            // Session timestamp from filename (e.g. "1234567890.json.trading.json")
-            const sessionStart = sidecar.replace(".json.trading.json", "");
+            const data = JSON.parse(fs.readFileSync(path.join(sessionsDir, sidecar), "utf-8"));
+            const sessionStart = sidecar.replace(/\.json\.trading.*$/, "");
             if (data.strategies) {
               for (const strat of data.strategies) {
                 if (strat.trades?.length) {
                   for (const t of strat.trades) {
-                    allTrades.push({ ...t, session_start: sessionStart, strategy: strat.strategy || strat.name });
+                    allTrades.push({ ...t, session_start: sessionStart, strategy: strat.strategy || strat.name, market: prefix });
                   }
                 }
               }
             } else if (data.trades?.length) {
               for (const t of data.trades) {
-                allTrades.push({ ...t, session_start: sessionStart });
+                allTrades.push({ ...t, session_start: sessionStart, strategy: data.strategy, market: prefix });
               }
             }
           } catch {}
         }
       }
-    }
 
-    // 3. bot_trades.jsonl (includes trade attempts + resolution records)
-    if (fs.existsSync(BOT_TRADES_FILE)) {
-      try {
-        const lines = fs.readFileSync(BOT_TRADES_FILE, "utf-8").trim().split("\n");
-        // Read last N lines to avoid loading entire history
-        const recentLines = lines.slice(-limit * 2);
-        for (const line of recentLines) {
-          if (!line) continue;
-          try {
-            const entry = JSON.parse(line);
-            if (entry.type === "resolution") {
-              allTrades.push({
-                ...entry,
-                _type: "resolution",
-                session_start: entry.timestamp,
-              });
+      // 2b. Worker live_trades.json files
+      if (fs.existsSync(workersDir)) {
+        try {
+          const workerDirs = fs.readdirSync(workersDir, { withFileTypes: true })
+            .filter((e) => e.isDirectory());
+          for (const wd of workerDirs) {
+            const livePath = path.join(workersDir, wd.name, "live_trades.json");
+            if (fs.existsSync(livePath)) {
+              try {
+                const data = JSON.parse(fs.readFileSync(livePath, "utf-8"));
+                if (data.trades?.length) {
+                  for (const t of data.trades) {
+                    allTrades.push({ ...t, session_start: "", strategy: data.strategy || wd.name, market: prefix });
+                  }
+                }
+              } catch {}
             }
-          } catch {}
-        }
-      } catch {}
+          }
+        } catch {}
+      }
+
+      // 3. bot_trades.jsonl
+      if (fs.existsSync(tradesFile)) {
+        try {
+          const lines = fs.readFileSync(tradesFile, "utf-8").trim().split("\n");
+          const recentLines = lines.slice(-limit * 2);
+          for (const line of recentLines) {
+            if (!line) continue;
+            try {
+              const entry = JSON.parse(line);
+              if (entry.type === "resolution") {
+                allTrades.push({
+                  ...entry,
+                  _type: "resolution",
+                  session_start: entry.timestamp,
+                  market: prefix,
+                });
+              }
+            } catch {}
+          }
+        } catch {}
+      }
     }
 
-    // Sort newest-first: by timestamp if available, else by session_start
+    // Sort newest-first
     allTrades.sort((a, b) => {
       const ta = a.timestamp || a.session_start || "";
       const tb = b.timestamp || b.session_start || "";
@@ -464,18 +607,14 @@ if (fs.existsSync(CLIENT_DIR)) {
 // --- File Watching ---
 
 function startWatcher() {
-  fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-  fs.mkdirSync(LIVE_DIR, { recursive: true });
+  fs.mkdirSync(MARKETS_DIR, { recursive: true });
 
   const watchPaths = [
-    path.join(SESSIONS_DIR, "**/*.json"),
-    path.join(LIVE_DIR, "*.json"),
+    path.join(MARKETS_DIR, "*/sessions/**/*.json"),
+    path.join(MARKETS_DIR, "*/live/*.json"),
+    path.join(MARKETS_DIR, "*/workers/*/state.json"),
+    APP_JSON,
   ];
-
-  // Also watch app.json for bot status changes
-  if (fs.existsSync(path.dirname(APP_JSON))) {
-    watchPaths.push(APP_JSON);
-  }
 
   const watcher = watch(watchPaths, {
     ignoreInitial: true,
@@ -483,32 +622,38 @@ function startWatcher() {
   });
 
   watcher.on("add", (filepath: string) => {
-    if (filepath.startsWith(LIVE_DIR)) {
-      const prefix = path.basename(filepath, ".json");
-      broadcast("live-start", { prefix });
-    } else if (filepath.startsWith(SESSIONS_DIR)) {
-      const rel = path.relative(SESSIONS_DIR, filepath);
-      const parts = rel.split(path.sep);
-      if (parts.length === 2 && !parts[1].includes(".trading.")) {
-        broadcast("session-saved", { prefix: parts[0], file: parts[1] });
-      }
+    const rel = path.relative(MARKETS_DIR, filepath);
+    const parts = rel.split(path.sep);
+    if (parts.length >= 3 && parts[1] === "live") {
+      broadcast("live-start", { prefix: parts[0] });
+    } else if (parts.length >= 3 && parts[1] === "sessions" && !parts[2].includes(".trading.")) {
+      broadcast("session-saved", { prefix: parts[0], file: parts[2] });
     }
   });
 
   watcher.on("change", (filepath: string) => {
     if (filepath === APP_JSON) {
-      // Broadcast bot status change
       proxyToControl("/api/control/status")
         .then(({ data }) => broadcast("bot-status", data))
         .catch(() => {});
       return;
     }
-    if (filepath.startsWith(LIVE_DIR)) {
+
+    const rel = path.relative(MARKETS_DIR, filepath);
+    const parts = rel.split(path.sep);
+
+    if (parts.length >= 4 && parts[1] === "workers" && parts[3] === "state.json") {
+      proxyToControl("/api/control/status")
+        .then(({ data }) => broadcast("bot-status", data))
+        .catch(() => {});
+      return;
+    }
+
+    if (parts.length >= 3 && parts[1] === "live") {
       try {
         const raw = fs.readFileSync(filepath, "utf-8");
         const data = JSON.parse(raw);
-        const prefix = path.basename(filepath, ".json");
-        broadcast("live-update", { prefix, session: data });
+        broadcast("live-update", { prefix: parts[0], session: data });
       } catch {
         // File might be mid-write
       }
@@ -520,9 +665,10 @@ function startWatcher() {
       broadcast("bot-status", { running: false });
       return;
     }
-    if (filepath.startsWith(LIVE_DIR)) {
-      const prefix = path.basename(filepath, ".json");
-      broadcast("live-end", { prefix });
+    const rel = path.relative(MARKETS_DIR, filepath);
+    const parts = rel.split(path.sep);
+    if (parts.length >= 3 && parts[1] === "live") {
+      broadcast("live-end", { prefix: parts[0] });
     }
   });
 
@@ -535,8 +681,7 @@ const watcher = startWatcher();
 
 app.listen(PORT, () => {
   console.log(`API server running at http://localhost:${PORT}`);
-  console.log(`Watching: ${SESSIONS_DIR}`);
-  console.log(`Live dir: ${LIVE_DIR}`);
+  console.log(`Markets dir: ${MARKETS_DIR}`);
 });
 
 process.on("SIGINT", () => {

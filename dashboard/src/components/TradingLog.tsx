@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchTrades } from "../api";
 import type { TradeLogEntry } from "../types";
+import { fmtTimeOnly, fmtDateOnly } from "../utils/formatTime";
 
 interface Props {
   refreshTrigger: number;
@@ -29,23 +30,8 @@ export function TradingLog({ refreshTrigger }: Props) {
     return true;
   });
 
-  function formatTime(ts: string): string {
-    try {
-      const d = new Date(ts);
-      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    } catch {
-      return ts;
-    }
-  }
-
-  function formatDate(ts: string): string {
-    try {
-      const d = new Date(ts);
-      return d.toLocaleDateString([], { month: "short", day: "numeric" });
-    } catch {
-      return "";
-    }
-  }
+  const formatTime = fmtTimeOnly;
+  const formatDate = fmtDateOnly;
 
   return (
     <div className="trade-log">
@@ -99,30 +85,32 @@ export function TradingLog({ refreshTrigger }: Props) {
               {filtered.map((t, i) =>
                 t._type === "resolution" ? (
                   <tr key={`res-${i}`} className="trade-row-resolution">
-                    <td className="trade-time">
-                      {t.timestamp ? (
-                        <>
-                          <span className="trade-date">{formatDate(t.timestamp)}</span>
-                          {formatTime(t.timestamp)}
-                        </>
-                      ) : "\u2014"}
-                    </td>
-                    <td colSpan={filtered.some((tr) => tr.strategy) ? 7 : 6} className="resolution-cell">
-                      <span className={`trade-status-pill ${
-                        t.pnl != null && t.pnl > 0 ? "status-win" : t.pnl != null && t.pnl < 0 ? "status-loss" : "status-neutral"
-                      }`}>
-                        {t.outcome}
-                      </span>
-                      {t.strategy && <span className="resolution-strategy">{t.strategy}</span>}
-                      {t.trades != null && <span className="resolution-detail">{t.trades} trade{t.trades !== 1 ? "s" : ""}</span>}
-                      {t.pnl != null && (
-                        <span className={`resolution-pnl ${t.pnl > 0 ? "pnl-positive" : t.pnl < 0 ? "pnl-negative" : ""}`}>
-                          {t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)}
+                    <td colSpan={filtered.some((tr) => tr.strategy) ? 9 : 8}>
+                      <div className="resolution-cell">
+                        <span className="resolution-time">
+                          {t.timestamp ? (
+                            <>
+                              <span className="trade-date">{formatDate(t.timestamp)}</span>
+                              {formatTime(t.timestamp)}
+                            </>
+                          ) : "\u2014"}
                         </span>
-                      )}
-                      {t.final_cash != null && (
-                        <span className="resolution-detail">${t.final_cash.toFixed(2)}</span>
-                      )}
+                        <span className={`trade-status-pill ${
+                          t.pnl != null && t.pnl > 0 ? "status-win" : t.pnl != null && t.pnl < 0 ? "status-loss" : "status-neutral"
+                        }`}>
+                          {t.outcome}
+                        </span>
+                        {t.strategy && <span className="resolution-strategy">{t.strategy}</span>}
+                        {t.trades != null && <span className="resolution-detail">{t.trades} trade{t.trades !== 1 ? "s" : ""}</span>}
+                        {t.pnl != null && (
+                          <span className={`resolution-pnl ${t.pnl > 0 ? "pnl-positive" : t.pnl < 0 ? "pnl-negative" : ""}`}>
+                            {t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)}
+                          </span>
+                        )}
+                        {t.final_cash != null && (
+                          <span className="resolution-detail">${t.final_cash.toFixed(2)}</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ) : (

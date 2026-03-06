@@ -15,7 +15,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from core.defaults import DATA_DIR
+from core.defaults import BASE_DIR
 from core.trader import HOLD, TradeAction
 from core.strategies.base import Strategy
 
@@ -89,7 +89,6 @@ class VolatilityBargain(Strategy):
         threshold: deal score above which to buy
         max_token_price: don't buy tokens above this midpoint
         min_elapsed: earliest elapsed fraction to start evaluating
-        bet_fraction: fraction of cash to bet
         data_dir: session data directory (auto-detected if None)
     """
 
@@ -99,14 +98,16 @@ class VolatilityBargain(Strategy):
         "underpriced relative to remaining session time."
     )
 
+    # Defaults tuned on recent 50 sessions (Sharpe=0.190, PnL=$3578, win=28%).
     def __init__(
         self,
-        lookback_sessions=10,
+        lookback_sessions=5,
         min_sessions=5,
-        threshold=150.0,
-        max_token_price=0.30,
-        min_elapsed=0.05,
-        bet_fraction=1.0,
+        threshold=100.0,
+        max_token_price=0.36,
+        min_elapsed=0.03,
+        slope_lookback=4.5,
+        slope_threshold=0.0,
         data_dir=None,
     ):
         self.lookback_sessions = lookback_sessions
@@ -114,7 +115,8 @@ class VolatilityBargain(Strategy):
         self.threshold = threshold
         self.max_token_price = max_token_price
         self.min_elapsed = min_elapsed
-        self.bet_fraction = bet_fraction
+        self.slope_lookback = slope_lookback  # seconds
+        self.slope_threshold = slope_threshold
         self.data_dir = data_dir
         self._params = {
             "lookback_sessions": lookback_sessions,
@@ -122,12 +124,16 @@ class VolatilityBargain(Strategy):
             "threshold": threshold,
             "max_token_price": max_token_price,
             "min_elapsed": min_elapsed,
-            "bet_fraction": bet_fraction,
+            "slope_lookback": slope_lookback,
+            "slope_threshold": slope_threshold,
         }
 
         # Per-session state
         self._volatility_bps = None  # type: Optional[float]
         self._bought = False
+        self._up_midpoints = []    # type: List[float]
+        self._down_midpoints = []  # type: List[float]
+        self._window_seconds = 300  # type: int
 
     def _resolve_data_dir(self, metadata):
         # type: (Dict[str, Any]) -> str
@@ -135,12 +141,15 @@ class VolatilityBargain(Strategy):
             return self.data_dir
         event_slug = metadata.get("event_slug", "")
         slug_key = event_slug.rsplit("-", 1)[0] if event_slug else ""
-        return os.path.join(DATA_DIR, slug_key)
+        return os.path.join(BASE_DIR, "data", slug_key)
 
     def on_session_start(self, metadata):
         # type: (Dict[str, Any]) -> None
         self._volatility_bps = None
         self._bought = False
+        self._up_midpoints = []
+        self._down_midpoints = []
+        self._window_seconds = metadata.get("window", 300)
 
         # Get prior session summaries
         prior_summaries = metadata.get("_prior_session_summaries")
@@ -184,16 +193,40 @@ class VolatilityBargain(Strategy):
         self.log("Volatility: {:.2f} bps from {} sessions".format(
             self._volatility_bps, len(recent)))
 
+    @staticmethod
+    def _compute_slope(values, lookback):
+        # type: (List[float], int) -> Optional[float]
+        """Linear regression slope of the last `lookback` values."""
+        if len(values) < lookback:
+            return None
+        recent = values[-lookback:]
+        n = len(recent)
+        # Closed-form OLS slope: sum_xy / sum_x2 (mean-centered)
+        sum_x = n * (n - 1) / 2.0
+        sum_x2 = n * (n - 1) * (2 * n - 1) / 6.0
+        sum_y = sum(recent)
+        sum_xy = sum(i * y for i, y in enumerate(recent))
+        denom = n * sum_x2 - sum_x * sum_x
+        if denom == 0:
+            return 0.0
+        return (n * sum_xy - sum_x * sum_y) / denom
+
     def on_tick(self, ctx):
         # type: (Any) -> TradeAction
         if self._volatility_bps is None or self._bought:
             return HOLD
 
-        if ctx.elapsed_fraction < self.min_elapsed:
-            return HOLD
-
         up_mid = ctx.sample.get("up_token_midpoint")
         down_mid = ctx.sample.get("down_token_midpoint")
+
+        # Track midpoint history for slope calculation
+        if up_mid is not None:
+            self._up_midpoints.append(up_mid)
+        if down_mid is not None:
+            self._down_midpoints.append(down_mid)
+
+        if ctx.elapsed_fraction < self.min_elapsed:
+            return HOLD
 
         if up_mid is None or down_mid is None:
             return HOLD
@@ -210,24 +243,40 @@ class VolatilityBargain(Strategy):
         if 0 < down_mid <= self.max_token_price:
             down_score = self._volatility_bps / (down_mid * elapsed)
 
+        # Convert slope_lookback from seconds to ticks using observed tick rate
+        elapsed_s = ctx.elapsed_fraction * self._window_seconds
+        if elapsed_s > 0 and ctx.tick_index > 0:
+            tick_rate = ctx.tick_index / elapsed_s
+        else:
+            tick_rate = 18.0  # fallback
+        lookback_ticks = max(int(self.slope_lookback * tick_rate), 2)
+
         # Pick the higher-scoring token (cheaper + better deal)
         if up_score > self.threshold and up_score >= down_score:
+            slope = self._compute_slope(self._up_midpoints, lookback_ticks)
+            if slope is not None and slope < self.slope_threshold:
+                return HOLD  # midpoint still declining, wait for better price
             self._bought = True
-            self.log("BUY UP: score={:.1f} mid={:.3f} vol={:.2f} elapsed={:.2f}".format(
-                up_score, up_mid, self._volatility_bps, ctx.elapsed_fraction))
+            self.log("BUY UP: score={:.1f} mid={:.3f} vol={:.2f} elapsed={:.2f} slope={:.6f}".format(
+                up_score, up_mid, self._volatility_bps, ctx.elapsed_fraction,
+                slope if slope is not None else 0.0))
             return TradeAction(
                 side="buy_up",
-                amount=ctx.position.cash * self.bet_fraction,
+                amount=ctx.position.cash,
                 price=up_mid,
             )
 
         if down_score > self.threshold:
+            slope = self._compute_slope(self._down_midpoints, lookback_ticks)
+            if slope is not None and slope < self.slope_threshold:
+                return HOLD  # midpoint still declining, wait for better price
             self._bought = True
-            self.log("BUY DOWN: score={:.1f} mid={:.3f} vol={:.2f} elapsed={:.2f}".format(
-                down_score, down_mid, self._volatility_bps, ctx.elapsed_fraction))
+            self.log("BUY DOWN: score={:.1f} mid={:.3f} vol={:.2f} elapsed={:.2f} slope={:.6f}".format(
+                down_score, down_mid, self._volatility_bps, ctx.elapsed_fraction,
+                slope if slope is not None else 0.0))
             return TradeAction(
                 side="buy_down",
-                amount=ctx.position.cash * self.bet_fraction,
+                amount=ctx.position.cash,
                 price=down_mid,
             )
 
@@ -235,10 +284,11 @@ class VolatilityBargain(Strategy):
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]
-        # 7 * 5 * 4 * 3 = 420 combos (final polish)
+        # Centered on optimums: 3 * 5 * 5 * 3 * 2 = 450 combos
         return {
-            "threshold": [70.0, 85.0, 100.0, 120.0, 150.0, 180.0, 200.0],
-            "max_token_price": [0.22, 0.26, 0.30, 0.34, 0.38],
-            "min_elapsed": [0.03, 0.05, 0.08, 0.10],
-            "lookback_sessions": [5, 8, 10],
+            "lookback_sessions": [4, 5, 7],
+            "threshold": [70.0, 85.0, 100.0, 120.0, 150.0],
+            "max_token_price": [0.30, 0.34, 0.36, 0.38, 0.42],
+            "slope_lookback": [3.5, 4.5, 5.5],
+            "slope_threshold": [-0.00005, 0.0],
         }

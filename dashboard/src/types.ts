@@ -51,6 +51,7 @@ export interface TradeLogEntry {
   elapsed_seconds: number;
   session_start?: string;
   strategy?: string;
+  market?: string;
   // Resolution record fields
   _type?: "resolution";
   outcome?: string;
@@ -85,11 +86,32 @@ export interface StrategySlotStatus {
   params?: Record<string, any>;
   dry_run: boolean;
   cash: number;
+  bankroll?: number;
   starting_cash: number;
   per_session_cash?: number;
   session_cap?: number;
+  pid?: number | null;
+  alive?: boolean;
 }
 
+export interface MarketStatus {
+  slug_prefix: string;
+  slug_key: string;
+  market_type?: string;
+  running: boolean;
+  stop_after_session?: boolean;
+  session_count: number;
+  trading_enabled: boolean;
+  strategies: StrategySlotStatus[];
+  tick_clients?: number;
+}
+
+export interface AppStatus {
+  running: boolean;
+  markets: MarketStatus[];
+}
+
+/** Backward compat — single-market status (deprecated) */
 export interface BotStatus {
   running: boolean;
   slug_prefix?: string;
@@ -99,6 +121,10 @@ export interface BotStatus {
   dry_run?: boolean;
   cash?: number | null;
   strategies?: StrategySlotStatus[];
+  tick_clients?: number;
+  stop_after_session?: boolean;
+  // Multi-market
+  markets?: MarketStatus[];
 }
 
 export interface SessionSummary {

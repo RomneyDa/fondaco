@@ -2,10 +2,10 @@
 
 import pytest
 from core.trader import HOLD, Position, TradeAction
-from core.strategies.always_buy_up import AlwaysBuyUp
-from core.strategies.always_buy_down import AlwaysBuyDown
-from core.strategies.late_sniper import LateSniper
-from core.strategies.fade_the_market import FadeTheMarket
+from bots.updown.archived.always_buy_up import AlwaysBuyUp
+from bots.updown.archived.always_buy_down import AlwaysBuyDown
+from bots.updown.late_sniper import LateSniper
+from bots.updown.fade_the_market import FadeTheMarket
 from tests.conftest import make_tick_ctx
 
 
@@ -149,7 +149,7 @@ class TestLateSniper:
 
 class TestFadeTheMarket:
     def test_fades_high_up(self):
-        from core.strategies.fade_the_market import FadeTheMarket
+        from bots.updown.fade_the_market import FadeTheMarket
         s = FadeTheMarket(overreaction_threshold=0.70, persist_ticks=3)
         s.on_session_start({})
         sample = {
@@ -165,7 +165,7 @@ class TestFadeTheMarket:
         assert action.side == "buy_down"
 
     def test_fades_high_down(self):
-        from core.strategies.fade_the_market import FadeTheMarket
+        from bots.updown.fade_the_market import FadeTheMarket
         s = FadeTheMarket(overreaction_threshold=0.70, persist_ticks=3)
         s.on_session_start({})
         sample = {

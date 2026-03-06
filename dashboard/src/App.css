@@ -721,6 +721,12 @@ h2 {
   color: var(--text-dim);
 }
 
+.resolution-time {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 .resolution-strategy {
   color: var(--text-secondary);
   font-weight: 500;

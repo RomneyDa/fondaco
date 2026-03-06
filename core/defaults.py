@@ -24,12 +24,7 @@ TARGET_SESSIONS = 100
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data", "sessions")
-LIVE_DIR = os.path.join(BASE_DIR, "data", "live")
-LOG_FILE = os.path.join(BASE_DIR, "data", "collection_log.jsonl")
-COLLECTOR_LOG_FILE = os.path.join(BASE_DIR, "data", "collector.log")
 API_RAW_DIR = os.path.join(BASE_DIR, "data", "api_raw")
-BACKTEST_LOG_FILE = os.path.join(BASE_DIR, "data", "backtest_log.jsonl")
 
 # Trading guardrails (shared by simulator and bot)
 CLOB_MIN_ORDER_TOKENS = 5          # Min order size in tokens (CLOB rejects below this)
@@ -37,8 +32,61 @@ CLOB_MIN_ORDER_TOKENS = 5          # Min order size in tokens (CLOB rejects belo
 # Balance cache
 BALANCE_CACHE_FILE = os.path.join(BASE_DIR, ".cache", "balance.json")
 
-# App (unified process)
+# App (central process)
 APP_STATE_FILE = os.path.join(BASE_DIR, "data", "app.json")
 APP_LOG_FILE = os.path.join(BASE_DIR, "data", "app.log")
-STRATEGIES_CONFIG_FILE = os.path.join(BASE_DIR, "data", "strategies.json")
 DEFAULT_CONTROL_PORT = 8420
+
+# Multi-market data layout: data/markets/{slug_key}/...
+MARKETS_DIR = os.path.join(BASE_DIR, "data", "markets")
+
+
+def _slug_key(slug_prefix):
+    # type: (str) -> str
+    """Normalize slug prefix to directory key (strip trailing dash)."""
+    return slug_prefix.rstrip("-")
+
+
+def market_data_dir(slug_key):
+    # type: (str) -> str
+    return os.path.join(MARKETS_DIR, slug_key)
+
+
+def market_sessions_dir(slug_key):
+    # type: (str) -> str
+    return os.path.join(MARKETS_DIR, slug_key, "sessions")
+
+
+def market_live_dir(slug_key):
+    # type: (str) -> str
+    return os.path.join(MARKETS_DIR, slug_key, "live")
+
+
+def market_socket_path(slug_key):
+    # type: (str) -> str
+    return os.path.join(MARKETS_DIR, slug_key, "ticks.sock")
+
+
+def market_workers_dir(slug_key):
+    # type: (str) -> str
+    return os.path.join(MARKETS_DIR, slug_key, "workers")
+
+
+def market_strategies_file(slug_key):
+    # type: (str) -> str
+    return os.path.join(MARKETS_DIR, slug_key, "strategies.json")
+
+
+def market_trades_file(slug_key):
+    # type: (str) -> str
+    return os.path.join(MARKETS_DIR, slug_key, "bot_trades.jsonl")
+
+
+def market_session_log(slug_key):
+    # type: (str) -> str
+    return os.path.join(MARKETS_DIR, slug_key, "bot_log.jsonl")
+
+
+def market_backtest_log(slug_key):
+    # type: (str) -> str
+    return os.path.join(MARKETS_DIR, slug_key, "backtest_log.jsonl")
