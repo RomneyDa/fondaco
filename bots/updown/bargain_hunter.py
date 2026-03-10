@@ -26,13 +26,14 @@ class BargainHunter(Strategy):
         "Posts one cheap GTD limit buy early in the session. "
         "If midpoint dips to order price, fills and holds to resolution."
     )
+    version = "2"
 
     def __init__(
         self,
-        buy_price=0.57,
-        expiration_frac=0.30,
-        side_mode="pricier",
-        btc_cancel_bps=2.0,
+        buy_price=0.32,
+        expiration_frac=0.35,
+        side_mode="cheaper",
+        btc_cancel_bps=8.0,
     ):
         self.buy_price = buy_price
         self.expiration_frac = expiration_frac
@@ -127,10 +128,10 @@ class BargainHunter(Strategy):
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]
-        # 5 * 5 * 2 * 4 = 200 combos
+        # 6 * 5 * 2 * 5 = 300 combos
         return {
-            "buy_price": [0.47, 0.52, 0.57, 0.62, 0.67],
-            "expiration_frac": [0.25, 0.30, 0.35, 0.40, 0.45],
+            "buy_price": [0.25, 0.30, 0.32, 0.35, 0.40, 0.45],
+            "expiration_frac": [0.25, 0.30, 0.35, 0.40, 0.50],
             "side_mode": ["cheaper", "pricier"],
-            "btc_cancel_bps": [2.0, 3.0, 5.0, 7.0],
+            "btc_cancel_bps": [5.0, 7.0, 8.0, 10.0, 15.0],
         }

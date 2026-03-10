@@ -36,6 +36,8 @@ class CheapShot(Strategy):
         "Buys cheap tokens early when BTC is near the opening price, "
         "using slight momentum to pick the winning direction at favorable odds."
     )
+    version = "1"
+    requires_full_session = True
 
     def __init__(
         self,

@@ -15,33 +15,27 @@ export function Sidebar({ prefixes, livePrefixes, botStatus, pings }: Props) {
   const isRunning = botStatus?.running ?? false;
   const markets = botStatus?.markets ?? [];
 
-  // Live prefixes not covered by a market (e.g. data-only streams)
   const marketSlugs = new Set(markets.map((m) => m.slug_key));
   const extraLive = livePrefixes.filter((p) => !marketSlugs.has(p));
 
   return (
-    <nav className="sidebar">
-      <div className="sidebar-header">
-        <h1>eros-pm</h1>
+    <nav className="w-full h-full bg-sidebar border-r border-border flex flex-col overflow-y-auto">
+      <div className="px-5 py-4 border-b border-border">
+        <h1 className="text-lg font-semibold text-accent">eros-pm</h1>
       </div>
 
-      <div className="nav-section">
-        <div className="nav-section-header">Trading</div>
+      <div className="py-3 border-b border-border">
+        <div className="px-5 pb-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-dim">Trading</div>
         <NavLink
           to="/bot"
           className={({ isActive }) =>
-            `nav-item live-item${isActive ? " active" : ""}`
+            `flex items-center gap-2 px-5 py-1.5 text-sm cursor-pointer transition-colors ${isActive ? "bg-accent/15 text-accent" : "text-txt hover:bg-accent/10"}`
           }
         >
           {isRunning ? (
             <>
               <span
-                className="live-dot"
-                style={
-                  markets.length === 0
-                    ? { background: "var(--text-dim)", animation: "none" }
-                    : undefined
-                }
+                className={`w-2 h-2 rounded-full shrink-0 ${markets.length === 0 ? "bg-dim" : "bg-up animate-pulse-dot"}`}
               />
               {markets.length === 0
                 ? "Idle"
@@ -49,13 +43,26 @@ export function Sidebar({ prefixes, livePrefixes, botStatus, pings }: Props) {
             </>
           ) : (
             <>
-              <span
-                className="live-dot"
-                style={{ background: "var(--red)", animation: "none" }}
-              />
+              <span className="w-2 h-2 rounded-full shrink-0 bg-down" />
               Offline
             </>
           )}
+        </NavLink>
+
+        <NavLink
+          to="/optimizer"
+          className={({ isActive }) =>
+            `block px-5 py-1.5 text-sm cursor-pointer transition-colors ${isActive ? "bg-accent/15 text-accent" : "text-txt hover:bg-accent/10"}`
+          }
+        >
+          <span className="inline-flex items-center gap-1">
+            <span
+              className={`inline-block w-[7px] h-[7px] rounded-full shrink-0 ${
+                botStatus?.optimizer?.running ? "bg-up" : "bg-dim"
+              } ${botStatus?.optimizer?.state === "optimizing" ? "animate-pulse-dot" : ""}`}
+            />
+            Optimizer
+          </span>
         </NavLink>
 
         {markets.map((m) => (
@@ -71,40 +78,39 @@ export function Sidebar({ prefixes, livePrefixes, botStatus, pings }: Props) {
             key={p}
             to={`/live/${p}`}
             className={({ isActive }) =>
-              `nav-item live-item${isActive ? " active" : ""}`
+              `flex items-center gap-2 pl-5 py-1.5 text-sm cursor-pointer transition-colors ${isActive ? "bg-accent/15 text-accent" : "text-txt hover:bg-accent/10"}`
             }
-            style={{ paddingLeft: 20 }}
           >
-            <span className="live-dot" />
+            <span className="w-2 h-2 rounded-full bg-up animate-pulse-dot shrink-0" />
             {p}
           </NavLink>
         ))}
       </div>
 
-      <div className="nav-section">
-        <div className="nav-section-header">Sessions</div>
+      <div className="py-3 border-b border-border">
+        <div className="px-5 pb-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-dim">Sessions</div>
         {prefixes.map((p) => (
           <div key={p.name}>
             <NavLink
               to={`/sessions/${p.name}`}
               className={({ isActive }) =>
-                `nav-item nav-prefix${isActive ? " active" : ""}`
+                `block px-5 py-1.5 text-[13px] font-semibold cursor-pointer transition-colors ${isActive ? "bg-accent/15 text-accent" : "text-txt hover:bg-accent/10"}`
               }
             >
               {p.name}
-              <span className="count">({p.count})</span>
+              <span className="text-dim text-xs ml-1">({p.count})</span>
             </NavLink>
             {p.recentSessions.map((s) => (
               <NavLink
                 key={s.file}
                 to={`/sessions/${p.name}/${s.file}`}
                 className={({ isActive }) =>
-                  `nav-item nav-session${isActive ? " active" : ""}`
+                  `flex justify-between items-center py-[3px] pl-8 pr-5 text-xs font-mono cursor-pointer transition-colors ${isActive ? "text-accent" : "text-dim hover:text-txt"}`
                 }
               >
                 <span>{fmtSessionName(s.file)}</span>
                 {s.outcome && (
-                  <span className={`session-outcome ${s.outcome.toLowerCase()}`}>
+                  <span className={`text-[10px] font-semibold shrink-0 ml-1.5 ${s.outcome.toLowerCase() === "up" ? "text-up" : "text-down"}`}>
                     {s.outcome}
                   </span>
                 )}
@@ -124,65 +130,44 @@ function PingIndicator({ pings }: { pings: PingEntry[] }) {
   const last = pings[0];
 
   const dotColor = !last
-    ? "var(--text-dim)"
+    ? "bg-dim"
     : last.status === "ok"
-      ? "var(--green)"
+      ? "bg-up"
       : last.status === "offline"
-        ? "var(--btc)"
-        : "var(--red)";
+        ? "bg-btc"
+        : "bg-down";
 
   return (
-    <div className="ping-indicator">
+    <div className="mt-auto border-t border-border">
       <button
-        className="ping-summary"
+        className="flex items-center gap-1.5 w-full px-3 py-2 bg-transparent border-none text-dim text-[11px] font-inherit cursor-pointer text-left hover:bg-accent/5"
         onClick={() => setExpanded((v) => !v)}
         title="Status pings"
       >
-        <span
-          style={{
-            display: "inline-block",
-            width: 6,
-            height: 6,
-            borderRadius: "50%",
-            background: dotColor,
-            flexShrink: 0,
-          }}
-        />
-        <span className="ping-label">
+        <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
+        <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
           {last
             ? `${last.latencyMs}ms · ${last.detail ?? last.status}`
             : "no pings"}
         </span>
-        <span style={{ opacity: 0.4, fontSize: 10 }}>{expanded ? "▼" : "▶"}</span>
+        <span className="opacity-40 text-[10px]">{expanded ? "▼" : "▶"}</span>
       </button>
       {expanded && (
-        <div className="ping-log">
+        <div className="max-h-[200px] overflow-y-auto border-t border-border">
           {pings.map((p, i) => (
-            <div key={i} className={`ping-entry ping-${p.status}`}>
-              <span className="ping-time">
+            <div key={i} className={`flex items-center gap-1.5 px-3 py-0.5 text-[10px] font-mono text-dim ${p.status === "error" ? "!text-down" : p.status === "offline" ? "!text-btc" : ""}`}>
+              <span className="opacity-50 min-w-[56px]">
                 {p.time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
               </span>
-              <span
-                style={{
-                  display: "inline-block",
-                  width: 5,
-                  height: 5,
-                  borderRadius: "50%",
-                  background:
-                    p.status === "ok"
-                      ? "var(--green)"
-                      : p.status === "offline"
-                        ? "var(--btc)"
-                        : "var(--red)",
-                  flexShrink: 0,
-                }}
-              />
-              <span className="ping-detail">{p.latencyMs}ms</span>
-              <span className="ping-detail" style={{ opacity: 0.7 }}>{p.detail}</span>
+              <span className={`inline-block w-[5px] h-[5px] rounded-full shrink-0 ${
+                p.status === "ok" ? "bg-up" : p.status === "offline" ? "bg-btc" : "bg-down"
+              }`} />
+              <span className="whitespace-nowrap">{p.latencyMs}ms</span>
+              <span className="whitespace-nowrap opacity-70">{p.detail}</span>
             </div>
           ))}
           {pings.length === 0 && (
-            <div className="ping-entry" style={{ opacity: 0.5 }}>No pings yet</div>
+            <div className="flex items-center gap-1.5 px-3 py-0.5 text-[10px] font-mono text-dim opacity-50">No pings yet</div>
           )}
         </div>
       )}
@@ -197,61 +182,52 @@ function MarketSidebarItem({ market, hasLiveData }: { market: MarketStatus; hasL
   const allDryRun = strategies.length > 0 && strategies.every((s) => s.dry_run);
 
   const dotColor = anyDead
-    ? "var(--red)"
+    ? "bg-down"
     : isTrading
-      ? allDryRun ? "var(--accent)" : "var(--green)"
+      ? allDryRun ? "bg-accent" : "bg-up"
       : hasLiveData
-        ? "var(--green)"
-        : "var(--text-dim)";
+        ? "bg-up"
+        : "bg-dim";
+
+  const shouldPulse = (isTrading && !anyDead) || hasLiveData;
 
   return (
     <>
       <NavLink
         to={`/live/${market.slug_key}`}
         className={({ isActive }) =>
-          `nav-item${isActive ? " active" : ""}`
+          `block pl-5 pr-5 py-1.5 text-sm cursor-pointer transition-colors ${isActive ? "bg-accent/15 text-accent" : "text-txt hover:bg-accent/10"}`
         }
-        style={{ paddingLeft: 20 }}
       >
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-          <span
-            style={{
-              display: "inline-block",
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              background: dotColor,
-              animation: (isTrading && !anyDead) || hasLiveData ? "pulse 2s infinite" : "none",
-              flexShrink: 0,
-            }}
-          />
+        <span className="inline-flex items-center gap-1">
+          <span className={`inline-block w-[7px] h-[7px] rounded-full shrink-0 ${dotColor} ${shouldPulse ? "animate-pulse-dot" : ""}`} />
           {market.slug_key}
         </span>
         {market.stop_after_session && (
-          <span className="dry-run-tag" style={{ background: "var(--red)", marginLeft: 4, fontSize: 9 }}>STOPPING</span>
+          <span className="ml-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-down text-white">STOPPING</span>
         )}
       </NavLink>
       {strategies.map((s) => (
-        <div key={s.name} className="nav-item nav-session" style={{ paddingLeft: 36 }}>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <span
-              style={{
-                display: "inline-block",
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                background: s.alive === false ? "var(--red)" : "var(--green)",
-                flexShrink: 0,
-              }}
-            />
+        <NavLink
+          key={s.name}
+          to={`/strategy/${market.slug_key}/${s.name}`}
+          className="flex justify-between items-center py-0.5 pl-9 pr-5 text-xs font-mono text-dim no-underline hover:text-txt"
+        >
+          <span className="inline-flex items-center gap-1">
+            <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${s.alive === false ? "bg-down" : "bg-up"}`} />
             {s.name}
           </span>
-          <span className="count">
+          <span className="text-dim text-xs">
             ${(s.bankroll ?? s.cash).toFixed(0)}
-            {s.session_cap != null && <span style={{ opacity: 0.6 }}> (${s.session_cap}/s)</span>}
+            {s.session_cash_ratio != null && (
+              <span className="opacity-60"> ({Math.round(s.session_cash_ratio.ratio * 100)}%:${s.session_cash_ratio.max})</span>
+            )}
+            {s.session_cash_ratio == null && s.session_cap != null && (
+              <span className="opacity-60"> (${s.session_cap}/s)</span>
+            )}
           </span>
-          {s.dry_run && <span className="dry-run-tag" style={{ fontSize: 9, marginLeft: 4 }}>DRY</span>}
-        </div>
+          {s.dry_run && <span className="inline-block px-2 py-0.5 rounded text-[9px] font-semibold bg-accent/15 text-accent ml-1">DRY</span>}
+        </NavLink>
       ))}
     </>
   );

@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { fetchLiveSession, archiveSession, fetchSessionList } from "../api";
+import { fetchLiveSession, archiveSession, fetchSessionList, fetchMarketPnl } from "../api";
+import type { MarketPnl } from "../api";
 import type { LivePayload } from "../types";
 import { isLiveStatus, isSessionData } from "../types";
-import { MetaGrid } from "./MetaGrid";
+import { PnlCard } from "./PnlCard";
 import { SessionCharts } from "./SessionCharts";
 import { TradeTable } from "./TradeTable";
+import { StrategyTable } from "./StrategyTable";
+import type { StrategyRow } from "./StrategyTable";
 import { fmtTimeOnly } from "../utils/formatTime";
 
 interface Props {
@@ -31,8 +34,8 @@ export function LiveView({ liveData }: Props) {
   const stickyTradesRef = useRef<any[]>([]);
   const [archiving, setArchiving] = useState(false);
   const [archived, setArchived] = useState(false);
+  const [pnl, setPnl] = useState<MarketPnl | null>(null);
 
-  // Initial fetch
   useEffect(() => {
     if (prefix) {
       let cancelled = false;
@@ -47,22 +50,33 @@ export function LiveView({ liveData }: Props) {
     }
   }, [prefix]);
 
-  // SSE updates
+  useEffect(() => {
+    if (!prefix) return;
+    let cancelled = false;
+    const load = () => {
+      fetchMarketPnl(prefix).then((data) => {
+        if (!cancelled && data) setPnl(data);
+      });
+    };
+    load();
+    const id = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [prefix]);
+
   useEffect(() => {
     if (prefix && liveData[prefix]) {
       setPayload(liveData[prefix]);
       setHadSSE(true);
+      setEnded(false);
     }
   }, [prefix, liveData]);
 
-  // Detect live-end (only after we've received at least one SSE update)
   useEffect(() => {
     if (prefix && hadSSE && payload && !liveData[prefix]) {
       setEnded(true);
     }
   }, [prefix, hadSSE, payload, liveData]);
 
-  // Tick the countdown every second when waiting
   const isWaiting = payload && isLiveStatus(payload) && payload.status === "waiting";
   useEffect(() => {
     if (isWaiting) {
@@ -81,21 +95,15 @@ export function LiveView({ liveData }: Props) {
         ? "Collecting"
         : "Connecting...";
 
-  const statusClass = ended
-    ? "ended"
+  const badgeClass = ended
+    ? "bg-dim/15 text-dim"
     : payload && isSessionData(payload)
-      ? "collecting"
-      : "waiting";
+      ? "bg-up/15 text-up"
+      : "bg-accent/15 text-accent";
 
-  // Extract trading info from payload
   const trading =
     payload && "trading" in payload ? (payload as any).trading : undefined;
 
-  // Collect all trades across strategies, tagged with strategy name.
-  // Persist trades — some live updates may omit trading data
-  // (race between session file and sidecar writes), so never shrink the list
-  // within the same session. Reset when a new session starts (status goes
-  // to waiting/resolving, or elapsed_seconds drops).
   const currentTrades: any[] = [];
   if (trading?.strategies && Array.isArray(trading.strategies)) {
     for (const s of trading.strategies) {
@@ -111,8 +119,6 @@ export function LiveView({ liveData }: Props) {
     }
   }
 
-  // Detect new session: if payload is a status (waiting/resolving) or
-  // the latest elapsed_seconds is less than what we had, clear stale trades
   const isStatus = payload && isLiveStatus(payload);
   if (isStatus) {
     stickyTradesRef.current = [];
@@ -120,7 +126,6 @@ export function LiveView({ liveData }: Props) {
     currentTrades.sort((a: any, b: any) => (a.elapsed_seconds ?? 0) - (b.elapsed_seconds ?? 0));
     stickyTradesRef.current = currentTrades;
   } else if (currentTrades.length === 0 && payload && isSessionData(payload)) {
-    // New session with no trades yet — check if elapsed is early
     const elapsed = payload.samples?.length
       ? payload.samples[payload.samples.length - 1].elapsed_seconds
       : 0;
@@ -144,7 +149,7 @@ export function LiveView({ liveData }: Props) {
         setArchiving(false);
         return;
       }
-      const latest = sessions[0]; // sorted newest-first by the API
+      const latest = sessions[0];
       const result = await archiveSession(prefix, latest);
       if (result.ok) {
         setArchived(true);
@@ -159,93 +164,148 @@ export function LiveView({ liveData }: Props) {
 
   return (
     <div>
-      <h2>
-        Live: {prefix}
-        <a
-          href={
-            payload && isSessionData(payload) && payload.metadata?.event_slug
-              ? `https://polymarket.com/event/${payload.metadata.event_slug}`
-              : `https://polymarket.com/event/${prefix}`
-          }
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ fontSize: 13, marginLeft: 8, fontWeight: 400 }}
-        >
-          polymarket
-        </a>
-      </h2>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div className={`status-badge ${statusClass}`}>
+      <div className="flex items-center gap-3 mb-6">
+        <h2 className="text-xl font-semibold">
+          Live: {prefix}
+          <a
+            href={
+              payload && isSessionData(payload) && payload.metadata?.event_slug
+                ? `https://polymarket.com/event/${payload.metadata.event_slug}`
+                : `https://polymarket.com/event/${prefix}`
+            }
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-2 text-dim align-middle"
+            title="Open on Polymarket"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          </a>
+        </h2>
+        <span className={`inline-block px-3 py-1 rounded-xl text-xs font-semibold ${badgeClass}`}>
           {statusLabel}
-          {payload &&
-            isLiveStatus(payload) &&
-            payload.status === "waiting" &&
-            payload.next_window_utc && (
-              <span> ({formatCountdown(payload.next_window_utc)})</span>
-            )}
-        </div>
-        <div style={{ flex: 1 }} />
+        </span>
+        <div className="flex-1" />
         {(ended || (payload && isSessionData(payload))) && !archived && (
           <button
-            className="archive-btn"
+            className="!p-2 bg-card border border-border text-dim inline-flex items-center justify-center leading-none hover:border-down hover:text-down"
             onClick={handleArchive}
             disabled={archiving}
+            title="Archive"
           >
-            {archiving ? "Archiving..." : "Archive"}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           </button>
         )}
-        {archived && <span className="subtitle">Archived</span>}
+        {archived && <span className="text-dim text-sm">Archived</span>}
       </div>
 
-      {trading && (
-        <div className="trading-badge-row" style={{ flexWrap: "wrap", gap: 6 }}>
-          {trading.strategies && trading.strategies.length > 0
-            ? trading.strategies.map((s: any) => {
-                const trades = Array.isArray(s.trades) ? s.trades.length : (s.trades ?? 0);
-                return (
-                  <span key={s.name} className="status-badge collecting" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
-                    {s.name}
-                    {s.dry_run && <span className="dry-run-tag">DRY</span>}
-                    {trades > 0 && (
-                      <span className="trade-count-badge">{trades} trade{trades !== 1 ? "s" : ""}</span>
-                    )}
-                    {s.cash != null && (
-                      <span className="trade-count-badge">${s.cash.toFixed(2)}</span>
-                    )}
-                  </span>
-                );
-              })
-            : (
-              <>
-                <span className="status-badge collecting">
-                  {trading.strategy || "Trading"}
-                </span>
-                {trading.dry_run && (
-                  <span className="dry-run-tag">DRY RUN</span>
-                )}
-              </>
-            )}
-        </div>
+      {pnl && (pnl.overall !== 0 || pnl.last_24h !== 0 || pnl.last_1h !== 0) && (
+        <PnlCard overall={pnl.overall} last24h={pnl.last_24h} last1h={pnl.last_1h ?? 0} />
       )}
 
-      {payload && isSessionData(payload) ? (
-        <>
-          <MetaGrid session={payload} />
-          <SessionCharts
-            session={payload}
-            trades={allTrades.length > 0 ? allTrades : undefined}
-            isDryRun={trading?.dry_run}
-          />
-          <TradeTable trades={allTrades} />
-        </>
-      ) : payload && isLiveStatus(payload) ? (
-        <p className="subtitle">
-          {payload.status === "waiting"
-            ? `Next window starts at ${fmtTimeOnly(payload.next_window_utc)}`
-            : "Window ended, waiting for market to resolve..."}
-        </p>
-      ) : (
-        <p className="subtitle">Waiting for data...</p>
+      {payload && isSessionData(payload) && payload.samples?.length > 0 && (() => {
+        const s = payload.samples[payload.samples.length - 1];
+        const upMid = s.up_token_midpoint;
+        const downMid = s.down_token_midpoint;
+        const initBtc = payload.initial_btc_price_usd;
+        const curBtc = s.btc_price_usd;
+        const btcChange = initBtc != null && curBtc != null ? curBtc - initBtc : null;
+        return (
+          <div className="flex gap-2.5 mb-4">
+            {upMid != null && (
+              <span className="text-[13px] font-semibold tabular-nums font-mono px-3 py-1 rounded-md bg-up/[0.12] text-up">Up {upMid.toFixed(2)}</span>
+            )}
+            {downMid != null && (
+              <span className="text-[13px] font-semibold tabular-nums font-mono px-3 py-1 rounded-md bg-down/[0.12] text-down">Down {downMid.toFixed(2)}</span>
+            )}
+            {btcChange != null && (
+              <span className={`text-[13px] font-semibold tabular-nums font-mono px-3 py-1 rounded-md ${btcChange >= 0 ? "bg-up/[0.12] text-up" : "bg-down/[0.12] text-down"}`}>
+                BTC {btcChange >= 0 ? "+" : ""}{btcChange.toFixed(2)}
+              </span>
+            )}
+            {(payload.error_count ?? 0) > 0 && (
+              <span className="ml-auto text-xs text-dim opacity-60">
+                <span className="text-down opacity-80 ml-1.5">{payload.error_count} err</span>
+              </span>
+            )}
+          </div>
+        );
+      })()}
+
+      {payload && isSessionData(payload) && (
+        <SessionCharts
+          session={payload}
+          trades={allTrades.length > 0 ? allTrades : undefined}
+          isDryRun={trading?.dry_run}
+        />
+      )}
+
+      {trading && (() => {
+        const strategies: any[] = trading.strategies && trading.strategies.length > 0
+          ? trading.strategies
+          : trading.strategy
+            ? [{ name: trading.strategy, dry_run: trading.dry_run, cash: trading.cash, trades: trading.trades }]
+            : [];
+        if (strategies.length === 0) return null;
+
+        const lastSample = payload && isSessionData(payload)
+          ? payload.samples?.[payload.samples.length - 1]
+          : null;
+        const upMid = lastSample?.up_token_midpoint ?? 0.5;
+        const downMid = lastSample?.down_token_midpoint ?? 0.5;
+        const hasSession = lastSample != null;
+
+        const rows: StrategyRow[] = strategies.map((s: any) => {
+          const tradeList = Array.isArray(s.trades) ? s.trades : [];
+          const trades = tradeList.length || (s.trades ?? 0);
+          const fees = tradeList.reduce((sum: number, t: any) => sum + (t.fee ?? 0), 0);
+          const up = s.up_tokens ?? 0;
+          const down = s.down_tokens ?? 0;
+          const posValue = up * upMid + down * downMid;
+          const currentCash = s.cash ?? 0;
+          const startCash = s.starting_cash ?? s.bankroll ?? currentCash;
+          const sessionPnl = hasSession && trades > 0 ? (currentCash + posValue - startCash) : 0;
+          return { name: s.name, dry_run: s.dry_run, bankroll: s.bankroll ?? s.cash, session_cash_ratio: s.session_cash_ratio, session_cap: s.session_cap, trades, fees, up, down, posValue, pnl: sessionPnl, hasPnl: hasSession && trades > 0 };
+        });
+
+        return <StrategyTable rows={rows} showBankroll showPosition />;
+      })()}
+
+      {payload && isSessionData(payload) && (
+        <TradeTable trades={allTrades} />
+      )}
+
+      {!(payload && isSessionData(payload)) && (
+        <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
+          <div className="mb-4 opacity-80 animate-pulse-dot">
+            {payload && isLiveStatus(payload) && payload.status === "waiting" ? (
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            ) : payload && isLiveStatus(payload) && payload.status === "resolving" ? (
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--color-btc)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48-8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83"/></svg>
+            ) : (
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--color-dim)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            )}
+          </div>
+          <div>
+            {payload && isLiveStatus(payload) ? (
+              payload.status === "waiting" ? (
+                <>
+                  <div className="text-lg font-semibold text-txt mb-1">Waiting for next window</div>
+                  {payload.next_window_utc && (
+                    <div className="text-[40px] font-bold tabular-nums font-mono text-accent my-2">{formatCountdown(payload.next_window_utc)}</div>
+                  )}
+                  <div className="text-[13px] text-dim">{fmtTimeOnly(payload.next_window_utc)}</div>
+                </>
+              ) : (
+                <>
+                  <div className="text-lg font-semibold text-txt mb-1">Resolving</div>
+                  <div className="text-[13px] text-dim">Waiting for market resolution...</div>
+                </>
+              )
+            ) : (
+              <div className="text-lg font-semibold text-txt mb-1">Connecting...</div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

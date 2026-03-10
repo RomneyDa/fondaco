@@ -14,21 +14,23 @@ export function SessionList() {
 
   return (
     <div>
-      <h2>{prefix}</h2>
+      <h2 className="text-xl font-semibold mb-6">{prefix}</h2>
       {sessions.length === 0 ? (
-        <p className="subtitle">No sessions collected yet.</p>
+        <p className="text-dim text-sm">No sessions collected yet.</p>
       ) : (
-        <div className="session-list">
+        <div className="flex flex-col gap-1.5">
           {sessions.map((s) => (
             <Link
               key={s.file}
               to={`/sessions/${prefix}/${s.file}`}
-              className="session-list-item"
+              className="flex justify-between items-center px-4 py-2.5 bg-card border border-border rounded-md cursor-pointer transition-colors hover:border-accent no-underline text-inherit"
             >
-              <span className="name">{s.file.replace(".json", "")}</span>
+              <span className="text-sm font-mono">{s.file.replace(".json", "")}</span>
               <span
-                className={`outcome ${
-                  s.outcome ? s.outcome.toLowerCase() : "unresolved"
+                className={`text-[13px] font-semibold ${
+                  s.outcome
+                    ? s.outcome.toLowerCase() === "up" ? "text-up" : s.outcome.toLowerCase() === "down" ? "text-down" : "text-dim"
+                    : "text-dim"
                 }`}
               >
                 {s.outcome || "Unresolved"}

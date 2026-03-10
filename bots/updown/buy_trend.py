@@ -91,6 +91,7 @@ class BuyTrend(Strategy):
         "If enough sessions confirm a directional move exceeding a threshold, "
         "buys in that direction at the start of the session."
     )
+    version = "1"
 
     def __init__(self, min_sessions=5, lookback_minutes=60,
                  min_change_bps=5.0, min_direction_pct=0.75,

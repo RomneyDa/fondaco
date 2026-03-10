@@ -28,6 +28,7 @@ class BrendaFlipper(Strategy):
         "Buys a cheap token early, holds briefly, then flips on a gain target "
         "or cuts on a stop-loss. A BTC gap override lets big movers ride."
     )
+    version = "1"
 
     def __init__(
         self,

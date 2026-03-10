@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Routes, Route } from "react-router-dom";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import { fetchBotStatus, fetchLivePrefixes, fetchPrefixes } from "./api";
 import { useSSE } from "./hooks/useSSE";
 import type { BotStatus, LivePayload, PrefixInfo } from "./types";
@@ -9,6 +10,8 @@ import { SessionList } from "./components/SessionList";
 import { SessionDetail } from "./components/SessionDetail";
 import { LiveView } from "./components/LiveView";
 import { BotPanel } from "./components/BotPanel";
+import { StrategyDetail } from "./components/StrategyDetail";
+import { OptimizerPanel } from "./components/OptimizerPanel";
 
 export interface PingEntry {
   time: Date;
@@ -77,11 +80,9 @@ export function App() {
 
   useEffect(() => {
     fetchLivePrefixes().then(setLivePrefixes);
-    // On initial load, treat null (unreachable) as offline
     doPing().then((s) => setBotStatus(s ?? { running: false }));
   }, []);
 
-  // Poll bot status every 5s to catch external changes
   useEffect(() => {
     const interval = setInterval(() => {
       doPing().then((s) => { if (s) setBotStatus(s); });
@@ -112,36 +113,49 @@ export function App() {
   });
 
   return (
-    <div className="app">
-      <Sidebar
-        prefixes={prefixes}
-        livePrefixes={livePrefixes}
-        botStatus={botStatus}
-        pings={pings}
-      />
-      <main className="content">
-        <Routes>
-          <Route path="/" element={<Home prefixes={prefixes} />} />
-          <Route
-            path="/sessions/:prefix"
-            element={<SessionList key={navVersion} />}
-          />
-          <Route
-            path="/sessions/:prefix/:file"
-            element={<SessionDetail />}
-          />
-          <Route
-            path="/live/:prefix"
-            element={<LiveView liveData={liveData} />}
-          />
-          <Route
-            path="/bot"
-            element={
-              <BotPanel botStatus={botStatus} onRefresh={refreshBotStatus} tradeRefresh={tradeRefresh} />
-            }
-          />
-        </Routes>
-      </main>
-    </div>
+    <Group direction="horizontal" autoSaveId="app-layout-v4" style={{ height: "100vh" }}>
+      <Panel defaultSize="330px" min="180px" max="500px" className="min-w-0">
+        <Sidebar
+          prefixes={prefixes}
+          livePrefixes={livePrefixes}
+          botStatus={botStatus}
+          pings={pings}
+        />
+      </Panel>
+      <Separator className="resize-handle" />
+      <Panel min="400px" className="min-w-0">
+        <main className="h-full overflow-y-auto px-8 py-6">
+          <Routes>
+            <Route path="/" element={<Home prefixes={prefixes} />} />
+            <Route
+              path="/sessions/:prefix"
+              element={<SessionList key={navVersion} />}
+            />
+            <Route
+              path="/sessions/:prefix/:file"
+              element={<SessionDetail />}
+            />
+            <Route
+              path="/live/:prefix"
+              element={<LiveView liveData={liveData} />}
+            />
+            <Route
+              path="/bot"
+              element={
+                <BotPanel botStatus={botStatus} onRefresh={refreshBotStatus} tradeRefresh={tradeRefresh} />
+              }
+            />
+            <Route
+              path="/strategy/:market/:strategy"
+              element={<StrategyDetail />}
+            />
+            <Route
+              path="/optimizer"
+              element={<OptimizerPanel />}
+            />
+          </Routes>
+        </main>
+      </Panel>
+    </Group>
   );
 }

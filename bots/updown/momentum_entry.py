@@ -15,6 +15,7 @@ class MomentumEntry(Strategy):
 
     name = "MomentumEntry"
     description = "Watches BTC price early in the window. If BTC moves more than a threshold and the token midpoint confirms, buys in that direction. Exits on stop-loss."
+    version = "1"
 
     def __init__(self, entry_window=0.2, price_threshold_bps=35.0,
                  midpoint_confirm=0.52, stop_loss_pct=0.15, bet_fraction=1.0):

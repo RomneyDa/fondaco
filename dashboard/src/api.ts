@@ -271,6 +271,57 @@ export async function fetchStrategies(): Promise<string[]> {
   }
 }
 
+export interface VersionSummary {
+  sessions: number;
+  traded: number;
+  pnl: number;
+  wins: number;
+  losses: number;
+  first: string;
+  last: string;
+}
+
+export interface StrategyStats {
+  strategy: string;
+  market: string;
+  stats: {
+    total_sessions: number;
+    traded_sessions: number;
+    total_pnl: number;
+    wins: number;
+    losses: number;
+    win_rate: number;
+    sharpe: number;
+    current_cash: number | null;
+    current_version: string | null;
+    total_fees: number;
+  };
+  sessions: Array<{
+    timestamp: string;
+    strategy: string;
+    strategy_version?: string;
+    outcome: string;
+    trades: number;
+    cash: number;
+    pnl: number;
+    credit: number;
+    session_number: number;
+  }>;
+  trades: TradeLogEntry[];
+  resolutions: TradeLogEntry[];
+  version_summary: Record<string, VersionSummary>;
+}
+
+export async function fetchStrategyStats(market: string, strategy: string): Promise<StrategyStats | null> {
+  try {
+    const res = await fetch(`/api/strategy/${market}/${strategy}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchTrades(limit: number = 100): Promise<TradeLogEntry[]> {
   try {
     const res = await fetch(`/api/bot/trades?limit=${limit}`);
@@ -279,6 +330,23 @@ export async function fetchTrades(limit: number = 100): Promise<TradeLogEntry[]>
     return trades;
   } catch {
     return [];
+  }
+}
+
+export interface MarketPnl {
+  overall: number;
+  last_24h: number;
+  last_1h: number;
+  by_strategy: Record<string, { overall: number; last_24h: number; last_1h: number }>;
+}
+
+export async function fetchMarketPnl(prefix: string): Promise<MarketPnl | null> {
+  try {
+    const res = await fetch(`/api/market/${prefix}/pnl`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
   }
 }
 
@@ -306,5 +374,144 @@ export async function fetchSessionTrading(
     return res.json();
   } catch {
     return null;
+  }
+}
+
+// --- Optimizer ---
+
+export interface OptimizerStatus {
+  running: boolean;
+  pid: number | null;
+  state?: string;
+  interval_minutes?: number;
+  lookback?: number;
+  min_sharpe?: number;
+  current_strategy?: string;
+  current_market?: string;
+  last_run?: string;
+  next_run?: string;
+  last_duration_seconds?: number;
+  last_results?: OptimizerResult[];
+  strategies_optimized?: number;
+  error?: string;
+}
+
+export interface OptimizerResult {
+  strategy: string;
+  market: string;
+  action: string;
+  reason?: string;
+  new_sharpe?: number;
+  best_sharpe?: number;
+  sharpe?: number;
+  baseline_sharpe?: number;
+  new_pnl?: number;
+  baseline_pnl?: number;
+  best_pnl?: number;
+  new_params?: Record<string, any>;
+  best_params?: Record<string, any>;
+  baseline_params?: Record<string, any>;
+  new_ratio?: { ratio: number; max: number };
+  new_win_rate?: number;
+  new_geo_return?: number;
+  variants_tested?: number;
+  sessions_used?: number;
+}
+
+export interface OptimizerEvent {
+  timestamp: string;
+  type: string;
+  strategy?: string;
+  market?: string;
+  action?: string;
+  success?: boolean;
+  new_sharpe?: number;
+  baseline_sharpe?: number;
+  new_params?: Record<string, any>;
+  reason?: string;
+  [key: string]: any;
+}
+
+export interface OptimizerConfig {
+  interval_minutes?: number;
+  lookback?: number;
+  min_sharpe?: number;
+  starting_cash?: number;
+}
+
+export async function fetchOptimizerConfig(): Promise<OptimizerConfig> {
+  try {
+    const res = await fetch("/api/bot/optimizer-config");
+    if (!res.ok) return {};
+    const { config } = await res.json();
+    return config ?? {};
+  } catch {
+    return {};
+  }
+}
+
+export async function fetchOptimizerStatus(): Promise<OptimizerStatus | null> {
+  try {
+    const res = await fetch("/api/bot/optimizer-status");
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchOptimizerEvents(): Promise<OptimizerEvent[]> {
+  try {
+    const res = await fetch("/api/bot/optimizer-events");
+    if (!res.ok) return [];
+    const { events } = (await res.json()) as { events: OptimizerEvent[] };
+    return events;
+  } catch {
+    return [];
+  }
+}
+
+export async function startOptimizer(body: {
+  interval?: number;
+  lookback?: number;
+  min_sharpe?: number;
+  starting_cash?: number;
+}): Promise<{ ok: boolean; error?: string; pid?: number }> {
+  try {
+    const res = await fetch("/api/bot/optimizer-on", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+export async function stopOptimizer(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/bot/optimizer-off", { method: "POST" });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+export async function updateOptimizerConfig(body: {
+  interval_minutes?: number;
+  lookback?: number;
+  min_sharpe?: number;
+  starting_cash?: number;
+}): Promise<{ ok: boolean; error?: string; config?: Record<string, any> }> {
+  try {
+    const res = await fetch("/api/bot/optimizer-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
   }
 }

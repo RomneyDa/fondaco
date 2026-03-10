@@ -17,7 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.defaults import (
     CLOB_MIN_ORDER_TOKENS,
+    TAKER_FEE_BASE_BPS,
     TRADE_CUTOFF_SECONDS,
+    compute_taker_fee,
 )
 
 logger = logging.getLogger(__name__)
@@ -228,6 +230,8 @@ class Trade:
     requested_tokens: Optional[float] = None  # original requested amount (for partial fill audit)
     elapsed_seconds: Optional[float] = None   # seconds into the window when trade occurred
     order_type: Optional[str] = None  # "FAK", "GTC", or None (backward compat)
+    strategy_version: Optional[str] = None  # strategy version at time of trade
+    fee: Optional[float] = None  # taker fee in dollars (None = pre-fee-tracking)
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +291,11 @@ class Executor(ABC):
 class SimExecutor(Executor):
     """Executes trades against historical sample data for backtesting."""
 
-    def __init__(self, execution_mode="book", slippage=0.02):
-        # type: (str, float) -> None
+    def __init__(self, execution_mode="book", slippage=0.02, fee_bps=TAKER_FEE_BASE_BPS):
+        # type: (str, float, int) -> None
         self.execution_mode = execution_mode
         self.slippage = slippage
+        self.fee_bps = fee_bps
         self._sim_order_counter = 0
 
     def execute_trade(self, action, tick_index, metadata, sample, position):
@@ -310,6 +315,8 @@ class SimExecutor(Executor):
             return None
 
         position.apply_trade(action.side, price, tokens)
+        fee = compute_taker_fee(price, tokens, self.fee_bps)
+        position.cash -= fee
         return Trade(
             tick_index=tick_index,
             side=action.side,
@@ -317,6 +324,7 @@ class SimExecutor(Executor):
             amount=dollars,
             tokens=tokens,
             elapsed_seconds=sample.get("elapsed_seconds"),
+            fee=fee,
         )
 
     def _get_execution_price(self, side, sample):
@@ -450,6 +458,9 @@ class SimExecutor(Executor):
                 else:
                     position.cash += order.tokens * order.price
 
+                fee = compute_taker_fee(order.price, order.tokens, self.fee_bps)
+                position.cash -= fee
+
                 fills.append(Trade(
                     tick_index=0,  # will be set by caller
                     side=order.side,
@@ -459,6 +470,7 @@ class SimExecutor(Executor):
                     order_id=order.order_id,
                     order_type="GTD" if order.expiration is not None else "GTC",
                     elapsed_seconds=sample.get("elapsed_seconds"),
+                    fee=fee,
                 ))
             else:
                 remaining.append(order)
@@ -750,6 +762,9 @@ class ClobExecutor(Executor):
 
             # Update position only on success (shared with simulator)
             position.apply_trade(action.side, price, actual_tokens)
+            # Deduct estimated taker fee to keep cash in sync with on-chain
+            fee = compute_taker_fee(price, actual_tokens)
+            position.cash -= fee
             if order_side == "SELL":
                 self._clear_sell_cooldown(token_id)
             trade = Trade(
@@ -758,6 +773,7 @@ class ClobExecutor(Executor):
                 token_id=token_id, success=True, error=None, timestamp=now,
                 requested_tokens=requested_tokens if actual_tokens != requested_tokens else None,
                 elapsed_seconds=sample.get("elapsed_seconds"),
+                fee=fee,
             )
         except Exception as e:
             if order_side == "SELL":
@@ -976,7 +992,11 @@ class ClobExecutor(Executor):
                     else:
                         position.cash += filled_tokens * order.price
 
-                    fills.append(Trade(
+                    # Deduct estimated taker fee
+                    fill_fee = compute_taker_fee(order.price, filled_tokens)
+                    position.cash -= fill_fee
+
+                    fill_trade = Trade(
                         tick_index=0,
                         side=order.side,
                         price=order.price,
@@ -986,9 +1006,12 @@ class ClobExecutor(Executor):
                         token_id=order.token_id,
                         success=True,
                         order_type="GTC",
+                        fee=fill_fee,
                         timestamp=datetime.now(timezone.utc).isoformat(),
                         elapsed_seconds=sample.get("elapsed_seconds"),
-                    ))
+                    )
+                    self._log_trade(fill_trade)
+                    fills.append(fill_trade)
                     logger.info(
                         "GTC order filled: %s %.4f tokens @ %.2f (order_id=%s)",
                         order.side, filled_tokens, order.price, order.order_id,
@@ -1036,27 +1059,98 @@ class ClobExecutor(Executor):
 
     def cancel_all_orders(self, open_orders, position):
         # type: (List[OpenOrder], Position) -> int
-        """Cancel all pending orders via CLOB bulk cancel."""
+        """Cancel all tracked pending orders, reconciling any last-moment fills.
+
+        Checks each order's status before cancelling to avoid unreserving
+        funds for orders that already filled (which would create phantom cash).
+        Uses scoped cancel_orders(ids) instead of cancel_all() to avoid
+        cancelling other workers' orders on the same CLOB account.
+        """
         if not open_orders:
             return 0
-        try:
-            self.client.cancel_all()
-            for order in open_orders:
+
+        cancelled = 0
+        to_cancel = []  # type: List[OpenOrder]
+
+        for order in open_orders:
+            try:
+                resp = self.client.get_order(order.order_id)
+                status = resp.get("status", "").upper() if isinstance(resp, dict) else ""
+
+                if status == "MATCHED":
+                    # Order filled between last check_fills and now — apply fill
+                    filled_tokens = order.tokens
+                    if order.side in ("buy_up", "buy_down"):
+                        if order.side == "buy_up":
+                            position.up_tokens += filled_tokens
+                        else:
+                            position.down_tokens += filled_tokens
+                        self._refresh_balance_allowance(order.token_id)
+                    else:
+                        position.cash += filled_tokens * order.price
+
+                    fill_fee = compute_taker_fee(order.price, filled_tokens)
+                    position.cash -= fill_fee
+
+                    fill_trade = Trade(
+                        tick_index=0, side=order.side, price=order.price,
+                        amount=filled_tokens * order.price, tokens=filled_tokens,
+                        order_id=order.order_id, token_id=order.token_id,
+                        success=True, order_type="GTC",
+                        fee=fill_fee,
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                    )
+                    self._log_trade(fill_trade)
+                    logger.info(
+                        "Order filled before cancel: %s %.4f @ %.2f (order_id=%s)",
+                        order.side, filled_tokens, order.price, order.order_id,
+                    )
+
+                elif status in ("CANCELLED", "EXPIRED"):
+                    # Already gone — just unreserve
+                    position.unreserve_for_order(
+                        order.side, order.dollars_reserved, order.tokens_reserved,
+                    )
+                    cancelled += 1
+
+                else:
+                    # LIVE — needs cancelling
+                    to_cancel.append(order)
+
+            except Exception as e:
+                logger.warning(
+                    "Failed to check order %s before cancel: %s",
+                    order.order_id, e,
+                )
+                to_cancel.append(order)
+
+        # Batch-cancel remaining live orders (scoped to our order IDs)
+        if to_cancel:
+            cancel_ids = [o.order_id for o in to_cancel]
+            try:
+                self.client.cancel_orders(cancel_ids)
+            except Exception as e:
+                logger.error(
+                    "Batch cancel failed: %s. Falling back to individual.", e,
+                )
+                for order in to_cancel:
+                    try:
+                        self.client.cancel(order.order_id)
+                    except Exception as e2:
+                        logger.error(
+                            "Individual cancel %s failed: %s",
+                            order.order_id, e2,
+                        )
+            for order in to_cancel:
                 position.unreserve_for_order(
                     order.side, order.dollars_reserved, order.tokens_reserved,
                 )
-            cancelled = len(open_orders)
-            open_orders.clear()
-            logger.info("Cancelled all %d pending GTC orders", cancelled)
-            return cancelled
-        except Exception as e:
-            logger.error("Bulk cancel failed: %s. Falling back to individual cancels.", e)
-            cancelled = 0
-            for order in list(open_orders):
-                if self.cancel_order(order, position):
-                    cancelled += 1
-            open_orders.clear()
-            return cancelled
+                cancelled += 1
+
+        open_orders.clear()
+        if cancelled > 0:
+            logger.info("Cancelled %d pending GTC orders (by ID)", cancelled)
+        return cancelled
 
 
 # ---------------------------------------------------------------------------
@@ -1174,6 +1268,7 @@ class Trader:
                 )
                 for fill in fills:
                     fill.tick_index = self._tick_index
+                    fill.strategy_version = getattr(self.strategy, "version", None)
                     self._trades.append(fill)
                 self._last_tick_fills = fills
             except NotImplementedError:
@@ -1259,6 +1354,10 @@ class Trader:
             trade = self.executor.execute_trade(
                 action, self._tick_index, self._metadata, sample, self._position,
             )
+
+        # Stamp strategy version on the trade
+        if trade is not None:
+            trade.strategy_version = getattr(self.strategy, "version", None)
 
         # Track successful trades (success is None for sim, True for live)
         if trade is not None and trade.success is not False:

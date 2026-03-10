@@ -40,6 +40,7 @@ class TickBroadcaster:
         self._lock = threading.Lock()
         self._thread = None  # type: Optional[threading.Thread]
         self._running = False
+        self._last_session_start = None  # type: Optional[Dict[str, Any]]
 
     def start(self):
         # type: () -> None
@@ -86,6 +87,11 @@ class TickBroadcaster:
         """Send a message dict to all connected clients as a JSON line."""
         line = json.dumps(message, separators=(',', ':')) + "\n"
         data = line.encode(_ENCODING)
+        msg_type = message.get("type")
+        if msg_type == "session_start":
+            self._last_session_start = message
+        elif msg_type == "session_end":
+            self._last_session_start = None
         with self._lock:
             dead = []
             for c in self._clients:
@@ -112,11 +118,25 @@ class TickBroadcaster:
                 readable, _, _ = select.select([self._server], [], [], 1.0)
                 if readable:
                     conn, _ = self._server.accept()
+                    # Replay session_start so mid-session joiners can trade
+                    replay = self._last_session_start
+                    if replay is not None:
+                        replayed_msg = dict(replay, replayed=True)
+                        replay_data = (json.dumps(replayed_msg, separators=(',', ':')) + "\n").encode(_ENCODING)
+                        try:
+                            conn.sendall(replay_data)
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            try:
+                                conn.close()
+                            except Exception:
+                                pass
+                            continue
                     with self._lock:
                         self._clients.append(conn)
                     logger.info(
-                        "TickBroadcaster: client connected (%d total)",
+                        "TickBroadcaster: client connected (%d total%s)",
                         len(self._clients),
+                        ", replayed session_start" if replay else "",
                     )
             except Exception:
                 if self._running:

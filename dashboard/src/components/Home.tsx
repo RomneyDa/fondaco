@@ -9,23 +9,23 @@ export function Home({ prefixes }: Props) {
 
   return (
     <div>
-      <h2>Dashboard</h2>
-      <p className="subtitle">
+      <h2 className="text-xl font-semibold mb-2">Dashboard</h2>
+      <p className="text-dim text-sm mb-6">
         Select a session from the sidebar, or watch live data as it streams in.
       </p>
-      <div className="stats-grid">
-        <div className="stat-card">
-          <div className="label">Total Sessions</div>
-          <div className="value">{total}</div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3">
+        <div className="bg-card border border-border rounded-lg px-5 py-4">
+          <div className="text-[13px] text-dim mb-1.5">Total Sessions</div>
+          <div className="text-2xl font-semibold">{total}</div>
         </div>
-        <div className="stat-card">
-          <div className="label">Prefixes</div>
-          <div className="value">{prefixes.length}</div>
+        <div className="bg-card border border-border rounded-lg px-5 py-4">
+          <div className="text-[13px] text-dim mb-1.5">Prefixes</div>
+          <div className="text-2xl font-semibold">{prefixes.length}</div>
         </div>
         {prefixes.map((p) => (
-          <div key={p.name} className="stat-card">
-            <div className="label">{p.name}</div>
-            <div className="value">{p.count}</div>
+          <div key={p.name} className="bg-card border border-border rounded-lg px-5 py-4">
+            <div className="text-[13px] text-dim mb-1.5">{p.name}</div>
+            <div className="text-2xl font-semibold">{p.count}</div>
           </div>
         ))}
       </div>

@@ -16,6 +16,7 @@ wait for stop-loss? Sell immediately and possibly re-enter the other side.
 import math
 from typing import Any, Dict, List, Optional
 
+from core.defaults import CLOB_MIN_ORDER_TOKENS
 from core.trader import HOLD, TradeAction, TickContext
 from core.strategies.base import Strategy
 
@@ -46,6 +47,8 @@ class PoissonKellyActive(Strategy):
         "Actively managed Poisson jump model. Enters, exits, and re-enters "
         "multiple times per session based on evolving probability estimates."
     )
+    version = "1"
+    requires_full_session = True
 
     def __init__(
         self,
@@ -255,6 +258,10 @@ class PoissonKellyActive(Strategy):
         self._entry_midpoint = midpoint
 
         dollars = ctx.max_buy_amount * kelly
+        # Ensure at least minimum order size (5 tokens * price), capped at available cash
+        min_dollars = CLOB_MIN_ORDER_TOKENS * midpoint
+        if dollars < min_dollars:
+            dollars = min(min_dollars, ctx.max_buy_amount)
 
         self.log("ENTRY {}: p={:.3f} mid={:.3f} edge={:.3f} kelly={:.3f} ${:.2f} | "
                  "jumps={}/{} at {:.0f}%".format(

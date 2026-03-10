@@ -490,6 +490,92 @@ def cmd_claim(args):
         print("Redeemed ~${:.2f} USDC.e".format(total_value))
 
 
+def cmd_optimizer_on(args):
+    """Start the live optimizer."""
+    body = {}  # type: Dict[str, Any]
+    if getattr(args, "interval", None) is not None:
+        body["interval"] = args.interval
+    if getattr(args, "lookback", None) is not None:
+        body["lookback"] = args.lookback
+    if getattr(args, "min_sharpe", None) is not None:
+        body["min_sharpe"] = args.min_sharpe
+    if getattr(args, "cash", None) is not None:
+        body["starting_cash"] = float(args.cash)
+    if getattr(args, "max_edge_iters", None) is not None:
+        body["max_edge_iters"] = args.max_edge_iters
+
+    resp = _http_request("POST", "/api/control/optimizer-on", body)
+    if resp.get("ok"):
+        print("Optimizer started (PID {})".format(resp.get("pid")))
+    else:
+        print("Error: {}".format(resp.get("error", "unknown")))
+        sys.exit(1)
+
+
+def cmd_optimizer_off(args):
+    """Stop the live optimizer."""
+    resp = _http_request("POST", "/api/control/optimizer-off")
+    if resp.get("ok"):
+        print("Optimizer stopped.")
+    else:
+        print("Error: {}".format(resp.get("error", "unknown")))
+        sys.exit(1)
+
+
+def cmd_optimizer_config(args):
+    """View or update optimizer config."""
+    body = {}  # type: Dict[str, Any]
+    if getattr(args, "interval", None) is not None:
+        body["interval_minutes"] = args.interval
+    if getattr(args, "lookback", None) is not None:
+        body["lookback"] = args.lookback
+    if getattr(args, "min_sharpe", None) is not None:
+        body["min_sharpe"] = args.min_sharpe
+    if getattr(args, "cash", None) is not None:
+        body["starting_cash"] = float(args.cash)
+    if getattr(args, "max_edge_iters", None) is not None:
+        body["max_edge_iters"] = args.max_edge_iters
+
+    if body:
+        resp = _http_request("POST", "/api/control/optimizer-config", body)
+        if resp.get("ok"):
+            config = resp.get("config", {})
+            print("Optimizer config updated:")
+            for k, v in sorted(config.items()):
+                print("  {}: {}".format(k, v))
+        else:
+            print("Error: {}".format(resp.get("error", "unknown")))
+            sys.exit(1)
+    else:
+        # Just show status
+        resp = _http_request("GET", "/api/control/optimizer-status")
+        print("Optimizer Status:")
+        print("  Running: {}".format(resp.get("running", False)))
+        if resp.get("pid"):
+            print("  PID: {}".format(resp["pid"]))
+        if resp.get("state"):
+            print("  State: {}".format(resp["state"]))
+        if resp.get("interval_minutes"):
+            print("  Interval: {}m".format(resp["interval_minutes"]))
+        if resp.get("lookback"):
+            print("  Lookback: {} sessions".format(resp["lookback"]))
+        if resp.get("min_sharpe") is not None:
+            print("  Min Sharpe: {}".format(resp["min_sharpe"]))
+        if resp.get("last_run"):
+            print("  Last run: {}".format(resp["last_run"]))
+        if resp.get("next_run"):
+            print("  Next run: {}".format(resp["next_run"]))
+        if resp.get("last_results"):
+            print("  Last results:")
+            for r in resp["last_results"]:
+                action_str = r.get("action", "?")
+                sharpe_val = r.get("new_sharpe") or r.get("best_sharpe") or r.get("sharpe") or 0
+                print("    {} / {} -> {} (sharpe={:.3f})".format(
+                    r.get("market", "?"), r.get("strategy", "?"),
+                    action_str, sharpe_val,
+                ))
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -631,6 +717,35 @@ def main():
         help="Submit without waiting for on-chain confirmation",
     )
 
+    # optimizer-on
+    opt_on_parser = subparsers.add_parser("optimizer-on", help="Start the live optimizer")
+    opt_on_parser.add_argument("--interval", type=int, default=30,
+                               help="Minutes between optimization cycles (default: 30)")
+    opt_on_parser.add_argument("--lookback", type=int, default=30,
+                               help="Number of recent sessions to use (default: 30)")
+    opt_on_parser.add_argument("--min-sharpe", type=float, default=0.2,
+                               help="Min Sharpe to keep a strategy (default: 0.2)")
+    opt_on_parser.add_argument("--cash", type=float, default=100.0,
+                               help="Starting cash for backtests (default: 100)")
+    opt_on_parser.add_argument("--max-edge-iters", type=int, default=2,
+                               help="Max edge refinement iterations (default: 2)")
+
+    # optimizer-off
+    subparsers.add_parser("optimizer-off", help="Stop the live optimizer")
+
+    # optimizer-config
+    opt_cfg_parser = subparsers.add_parser("optimizer-config", help="View/update optimizer config")
+    opt_cfg_parser.add_argument("--interval", type=int, default=None,
+                                help="Update interval (minutes)")
+    opt_cfg_parser.add_argument("--lookback", type=int, default=None,
+                                help="Update lookback (sessions)")
+    opt_cfg_parser.add_argument("--min-sharpe", type=float, default=None,
+                                help="Update min Sharpe threshold")
+    opt_cfg_parser.add_argument("--cash", type=float, default=None,
+                                help="Update starting cash")
+    opt_cfg_parser.add_argument("--max-edge-iters", type=int, default=None,
+                                help="Update max edge refinement iterations")
+
     args = parser.parse_args()
 
     commands = {
@@ -645,6 +760,9 @@ def main():
         "status": cmd_status,
         "stop": cmd_stop,
         "claim": cmd_claim,
+        "optimizer-on": cmd_optimizer_on,
+        "optimizer-off": cmd_optimizer_off,
+        "optimizer-config": cmd_optimizer_config,
     }
 
     handler = commands.get(args.command)

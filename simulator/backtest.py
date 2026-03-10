@@ -18,7 +18,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 
 from simulator.engine import Simulator, BacktestResult, load_sessions
-from core.defaults import BALANCE_CACHE_FILE, MARKETS_DIR, market_backtest_log, market_sessions_dir
+from core.defaults import BALANCE_CACHE_FILE, DEFAULT_RATIO_MAX, MARKETS_DIR, TAKER_FEE_BASE_BPS, market_backtest_log, market_sessions_dir
 from bots import ALL_STRATEGIES
 
 
@@ -27,8 +27,8 @@ _worker_sim = None   # type: Optional[Simulator]
 _worker_sessions = None  # type: Optional[list]
 
 
-def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions, compound):
-    # type: (float, str, float, list, list, bool) -> None
+def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions, compound, fee_bps):
+    # type: (float, str, float, list, list, bool, int) -> None
     """Initializer for each worker process — sets up Simulator and sessions once."""
     global _worker_sim, _worker_sessions
     _worker_sim = Simulator(
@@ -37,6 +37,7 @@ def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions
         slippage=slippage,
         all_sessions=all_sessions,
         compound=compound,
+        fee_bps=fee_bps,
     )
     _worker_sessions = sessions
 
@@ -138,33 +139,35 @@ def print_leaderboard(results, top_n, optimize, compound=False):
 
     if compound:
         # Kelly-aware header with geometric growth metrics
-        print("\n{:<20} {:>8} {:>8} {:>8} {:>10} {:>8} {:>6}  {}".format(
-            "Strategy", "GeoRet%", "Kelly_f", "MaxDD%", "Final$", "Win%", "N", "Params"
+        print("\n{:<20} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8} {:>6}  {}".format(
+            "Strategy", "GeoRet%", "Kelly_f", "MaxDD%", "Final$", "Fees", "Win%", "N", "Params"
         ))
-        print("-" * 105)
+        print("-" * 115)
         for r in shown:
-            print("{:<20} {:>8.3f} {:>8.3f} {:>8.1f} {:>10.2f} {:>7.1f}% {:>6}  {}".format(
+            print("{:<20} {:>8.3f} {:>8.3f} {:>8.1f} {:>10.2f} {:>8.2f} {:>7.1f}% {:>6}  {}".format(
                 r.strategy_name,
                 r.geo_mean_return * 100,
                 r.kelly_fraction,
                 r.max_drawdown * 100,
                 r.final_bankroll,
+                r.total_fees,
                 r.win_rate * 100,
                 r.num_sessions,
                 format_params(r.params),
             ))
     else:
         # Standard header + Kelly columns
-        print("\n{:<20} {:>8} {:>10} {:>10} {:>8} {:>8} {:>6}  {}".format(
-            "Strategy", "Sharpe", "Total PnL", "Mean PnL", "GeoRet%", "Win%", "N", "Params"
+        print("\n{:<20} {:>8} {:>10} {:>10} {:>8} {:>8} {:>8} {:>6}  {}".format(
+            "Strategy", "Sharpe", "Total PnL", "Mean PnL", "Fees", "GeoRet%", "Win%", "N", "Params"
         ))
-        print("-" * 105)
+        print("-" * 115)
         for r in shown:
-            print("{:<20} {:>8.3f} {:>10.2f} {:>10.2f} {:>8.3f} {:>7.1f}% {:>6}  {}".format(
+            print("{:<20} {:>8.3f} {:>10.2f} {:>10.2f} {:>8.2f} {:>8.3f} {:>7.1f}% {:>6}  {}".format(
                 r.strategy_name,
                 r.sharpe,
                 r.total_pnl,
                 r.mean_pnl,
+                r.total_fees,
                 r.geo_mean_return * 100,
                 r.win_rate * 100,
                 r.num_sessions,
@@ -174,8 +177,8 @@ def print_leaderboard(results, top_n, optimize, compound=False):
     print()
 
 
-def print_strategy_summary(results, optimize, compound=False):
-    # type: (list, str, bool) -> None
+def print_strategy_summary(results, optimize, compound=False, starting_cash=100.0):
+    # type: (list, str, bool, float) -> None
     """Print best params per strategy."""
     sort_key = {
         "sharpe": lambda r: r.sharpe,
@@ -198,13 +201,24 @@ def print_strategy_summary(results, optimize, compound=False):
         variants = by_strategy[name]
         best = max(variants, key=sort_key)
         print("\n  {} ({} variants tested)".format(name, len(variants)))
-        print("    Best:  Sharpe={:.3f}  PnL={:.2f}  Win={:.1f}%  GeoRet={:.3f}%  MaxDD={:.1f}%".format(
-            best.sharpe, best.total_pnl, best.win_rate * 100,
+        print("    Best:  Sharpe={:.3f}  PnL={:.2f}  Fees={:.2f}  Win={:.1f}%  GeoRet={:.3f}%  MaxDD={:.1f}%".format(
+            best.sharpe, best.total_pnl, best.total_fees, best.win_rate * 100,
             best.geo_mean_return * 100, best.max_drawdown * 100,
         ))
         if compound:
             print("    Kelly: f*={:.3f}  Final=${:.2f}  LogGrowth={:.3f}".format(
                 best.kelly_fraction, best.final_bankroll, best.log_growth,
+            ))
+        # Recommended session-cash-ratio
+        if best.dd_ratio > 0:
+            r = best.dd_ratio
+            print("    Recommended: --session-cash-ratio {:.2f}:{}  (keeps drawdown <25%, Kelly f*={:.2f})".format(
+                r, DEFAULT_RATIO_MAX, best.kelly_fraction,
+            ))
+        elif best.kelly_fraction > 0:
+            half_kelly = best.kelly_fraction / 2.0
+            print("    Recommended: --session-cash-ratio {:.2f}:{}  (half-Kelly)".format(
+                half_kelly, DEFAULT_RATIO_MAX,
             ))
         print("    Params: {}".format(format_params(best.params)))
 
@@ -218,12 +232,15 @@ def print_verbose(result):
     for sr in result.sessions:
         trade_parts = []
         for t in sr.trades:
-            trade_parts.append("{}@{:.3f}".format(t.side, t.price))
+            fee_str = " fee={:.2f}".format(t.fee) if t.fee else ""
+            trade_parts.append("{}@{:.3f}{}".format(t.side, t.price, fee_str))
         trade_str = " | " + ", ".join(trade_parts) if trade_parts else ""
-        print("  {} outcome={:<4} pnl={:>+7.2f} trades={:<2}{}".format(
+        fee_str = " fees={:.2f}".format(sr.total_fees) if sr.total_fees > 0 else ""
+        print("  {} outcome={:<4} pnl={:>+7.2f}{} trades={:<2}{}".format(
             sr.session_file.split("/")[-1] if sr.session_file else "?",
             sr.outcome,
             sr.pnl,
+            fee_str,
             len(sr.trades),
             trade_str,
         ))
@@ -292,8 +309,10 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
             "num_sessions": best.num_sessions,
             "geo_mean_return": round(best.geo_mean_return, 6),
             "kelly_fraction": round(best.kelly_fraction, 4),
+            "dd_ratio": round(best.dd_ratio, 4),
             "max_drawdown": round(best.max_drawdown, 4),
             "final_bankroll": round(best.final_bankroll, 4),
+            "total_fees": round(best.total_fees, 4),
         })
 
     entry = {
@@ -306,6 +325,7 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
             "starting_cash": args.cash,
             "compound": getattr(args, "compound", False),
             "optimize": optimize,
+            "fee_bps": getattr(args, "fee_bps", TAKER_FEE_BASE_BPS),
             "num_sessions": len(sessions),
             "total_variants": len(all_results),
         },
@@ -386,6 +406,12 @@ def main():
         metavar="KEY=v1,v2,...",
         help="Override param grid values (repeatable). e.g. --param min_elapsed=0.4,0.5,0.6",
     )
+    parser.add_argument(
+        "--fee-bps",
+        type=int,
+        default=TAKER_FEE_BASE_BPS,
+        help="CLOB taker fee base rate in bps (default: {}). 0 to disable.".format(TAKER_FEE_BASE_BPS),
+    )
     args = parser.parse_args()
 
     # Resolve starting cash
@@ -420,10 +446,12 @@ def main():
     else:
         sessions = all_sessions
 
+    fee_bps = args.fee_bps
     print("Loaded {} resolved sessions from {}".format(len(sessions), args.data_dir))
-    print("Execution: {} (slippage={})  Starting cash: ${}{}".format(
+    print("Execution: {} (slippage={})  Starting cash: ${}{}  Fee: {} bps".format(
         args.execution, args.slippage, starting_cash,
         "  [COMPOUND]" if args.compound else "",
+        fee_bps,
     ))
 
     # Select strategies
@@ -443,6 +471,7 @@ def main():
         slippage=args.slippage,
         all_sessions=all_sessions,
         compound=args.compound,
+        fee_bps=fee_bps,
     )
 
     # Parse --param overrides
@@ -468,7 +497,7 @@ def main():
             max_workers=num_workers,
             initializer=_init_worker,
             initargs=(starting_cash, args.execution, args.slippage,
-                      all_sessions, sessions, args.compound),
+                      all_sessions, sessions, args.compound, fee_bps),
         ) as pool:
             all_results = list(pool.map(_run_one, all_variants))
 
@@ -478,7 +507,7 @@ def main():
 
     # Output
     print_leaderboard(all_results, args.top, args.optimize, compound=args.compound)
-    print_strategy_summary(all_results, args.optimize, compound=args.compound)
+    print_strategy_summary(all_results, args.optimize, compound=args.compound, starting_cash=starting_cash)
 
     if args.verbose:
         # Show per-session breakdown for the best overall result

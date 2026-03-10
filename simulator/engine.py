@@ -18,6 +18,7 @@ from core.trader import (
     SimExecutor,
     Trader,
 )
+from core.defaults import TAKER_FEE_BASE_BPS
 
 
 def _parse_utc(s):
@@ -66,6 +67,7 @@ class SessionResult:
     final_position: Position
     num_samples: int
     starting_cash: float = 0.0  # bankroll at session start (for compounding)
+    total_fees: float = 0.0    # total taker fees paid this session
 
 
 @dataclass
@@ -81,10 +83,12 @@ class BacktestResult:
     num_sessions: int
     # Kelly / geometric growth metrics
     geo_mean_return: float = 0.0    # geometric mean per-session return (Kelly maximizes this)
-    kelly_fraction: float = 0.0     # estimated optimal Kelly fraction from observed outcomes
+    kelly_fraction: float = 0.0     # optimal Kelly fraction (maximizes log growth)
+    dd_ratio: float = 0.0           # max fraction keeping drawdown <= 25%
     log_growth: float = 0.0         # total log-wealth growth (sum of log(1+r_i))
     final_bankroll: float = 0.0     # ending bankroll in compound mode (0 = non-compound)
     max_drawdown: float = 0.0       # worst peak-to-trough drawdown fraction
+    total_fees: float = 0.0          # total taker fees paid across all sessions
 
 
 def load_sessions(data_dir):
@@ -164,22 +168,72 @@ def _compute_kelly_metrics(results, starting_cash, compound):
     for ret in returns:
         final_bankroll *= (1.0 + ret)
 
-    # Estimate Kelly fraction from observed win/loss distribution
-    # For variable-size bets: f* = mean(r) / mean(r^2)  (continuous Kelly)
-    win_returns = [r for r in returns if r > 0]
-    loss_returns = [r for r in returns if r < 0]
-    if win_returns and loss_returns:
-        mean_r = sum(returns) / n
-        mean_r2 = sum(r * r for r in returns) / n
-        kelly_f = mean_r / mean_r2 if mean_r2 > 0 else 0.0
-    elif win_returns:
-        kelly_f = 1.0  # all wins, but capped at 1
+    # Estimate optimal Kelly fraction numerically.
+    # Scan f from 0.01 to 1.0, find f that maximizes E[log(1 + f*r)].
+    # This is exact for the empirical distribution — no small-bet approximation.
+    best_f = 0.0
+    best_growth = 0.0
+    for f_int in range(1, 101):  # 0.01 to 1.00 in steps of 0.01
+        f = f_int / 100.0
+        g = 0.0
+        valid = True
+        for ret in returns:
+            v = 1.0 + f * ret
+            if v <= 0:
+                valid = False
+                break
+            g += math.log(v)
+        if valid and g > best_growth:
+            best_growth = g
+            best_f = f
+    kelly_f = best_f
+
+    # Recommended session-cash-ratio: what fraction f of bankroll to deploy
+    # per session, where the strategy receives f*bankroll as its cash.
+    #
+    # The strategy internally sizes its bets, so the average loss per session
+    # (as fraction of cash given to the strategy) tells us the real risk.
+    # avg_loss_frac = mean(|pnl|/cash) for losing sessions — this is what
+    # you actually lose per dollar deployed when the strategy loses.
+    #
+    # To survive k consecutive average losses within a target drawdown:
+    #   (1 - f * avg_loss_frac)^k >= (1 - target)
+    #   f <= (1 - (1-target)^(1/k)) / avg_loss_frac
+    target_max_dd = 0.25
+    # Expected longest losing streak over ~1 month of 5-min sessions.
+    # Formula: E[max_streak] ≈ log(N) / log(1/loss_rate)
+    # With ~288 traded sessions/day × 30 days ≈ 8640 opportunities.
+    win_count = sum(1 for r in returns if r > 0)
+    traded_count = sum(1 for r in returns if r != 0)
+    loss_rate = 1.0 - (win_count / traded_count) if traded_count > 0 else 0.5
+    sessions_per_month = 8640  # ~288/day × 30 days
+    if loss_rate > 0 and loss_rate < 1:
+        consec_losses = max(5, int(math.ceil(
+            math.log(sessions_per_month) / math.log(1.0 / loss_rate)
+        )))
     else:
-        kelly_f = 0.0  # no wins
+        consec_losses = 10
+    # Compute average loss as fraction of cash *deployed to the strategy*
+    loss_fracs = []  # type: List[float]
+    for r in results:
+        if r.pnl < 0:
+            base = r.starting_cash if compound else starting_cash
+            if base > 0:
+                loss_fracs.append(abs(r.pnl) / base)
+    if loss_fracs:
+        avg_loss_frac = sum(loss_fracs) / len(loss_fracs)
+        if avg_loss_frac > 0:
+            max_per_session_loss = 1.0 - (1.0 - target_max_dd) ** (1.0 / consec_losses)
+            dd_ratio = round(min(max_per_session_loss / avg_loss_frac, 1.0), 2)
+        else:
+            dd_ratio = 1.0
+    else:
+        dd_ratio = 1.0  # no losses observed
 
     return {
         "geo_mean_return": geo_mean_return,
-        "kelly_fraction": max(0.0, min(kelly_f, 2.0)),  # cap at 2x Kelly
+        "kelly_fraction": max(0.0, min(kelly_f, 1.0)),
+        "dd_ratio": dd_ratio,
         "log_growth": log_growth if math.isfinite(log_growth) else -999.0,
         "final_bankroll": max(0.0, final_bankroll),
         "max_drawdown": max_dd,
@@ -194,11 +248,13 @@ class Simulator:
         slippage=0.02,
         all_sessions=None,
         compound=False,
+        fee_bps=TAKER_FEE_BASE_BPS,
     ):
         self.starting_cash = starting_cash
         self.execution_mode = execution_mode
         self.slippage = slippage
         self.compound = compound
+        self.fee_bps = fee_bps
         # Pre-build sorted session summaries for strategies that need lookback
         self._session_summaries = (
             _build_session_summaries(all_sessions) if all_sessions else None
@@ -237,7 +293,7 @@ class Simulator:
             window_duration = 300.0
 
         position = Position(cash=cash)
-        executor = SimExecutor(self.execution_mode, self.slippage)
+        executor = SimExecutor(self.execution_mode, self.slippage, fee_bps=self.fee_bps)
         trader = Trader(strategy, executor)
         trader.start_session(metadata, position, initial_btc, window_duration,
                              reference_balance=cash)
@@ -249,6 +305,7 @@ class Simulator:
 
         pnl = position.cash - cash
         pnl_pct = (pnl / cash) * 100.0 if cash > 0 else 0.0
+        total_fees = sum(t.fee or 0.0 for t in trades)
 
         return SessionResult(
             session_file=source_file,
@@ -259,6 +316,7 @@ class Simulator:
             final_position=position,
             num_samples=len(samples),
             starting_cash=cash,
+            total_fees=total_fees,
         )
 
     def run_backtest(self, strategy, sessions):
@@ -278,6 +336,7 @@ class Simulator:
             results.append(result)
 
         total_pnl = sum(r.pnl for r in results)
+        total_fees = sum(r.total_fees for r in results)
         n = len(results)
         mean_pnl = total_pnl / n if n > 0 else 0.0
         wins = sum(1 for r in results if r.pnl > 0)
@@ -307,7 +366,9 @@ class Simulator:
             num_sessions=n,
             geo_mean_return=kelly["geo_mean_return"],
             kelly_fraction=kelly["kelly_fraction"],
+            dd_ratio=kelly["dd_ratio"],
             log_growth=kelly["log_growth"],
             final_bankroll=kelly["final_bankroll"],
             max_drawdown=kelly["max_drawdown"],
+            total_fees=total_fees,
         )

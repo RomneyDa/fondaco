@@ -13,17 +13,17 @@ const LAYOUT_BASE = {
   paper_bgcolor: "transparent",
   plot_bgcolor: "transparent",
   font: { color: "#e6edf3", size: 12 },
-  margin: { l: 60, r: 60, t: 40, b: 50 },
+  margin: { l: 60, r: 80, t: 30, b: 30 },
   xaxis: {
-    title: "Elapsed (s)",
     gridcolor: "#30363d",
     zerolinecolor: "#30363d",
+    ticksuffix: "s",
   },
   yaxis: {
     gridcolor: "#30363d",
     zerolinecolor: "#30363d",
   },
-  legend: { orientation: "h" as const, y: -0.2 },
+  legend: { orientation: "h" as const, x: 0, y: 1.12 },
 };
 
 const PLOT_CFG = { responsive: true, displayModeBar: false };
@@ -80,8 +80,6 @@ export function SessionCharts({ session, trades, isDryRun }: Props) {
     [samples]
   );
 
-  // BTC price only changes ~1/sec (Chainlink) vs ~18/sec (CLOB), so deduplicate
-  // to reduce render cost while keeping the same visual shape.
   const btcDeduped = useMemo(() => {
     const x: number[] = [];
     const y: (number | null)[] = [];
@@ -103,13 +101,13 @@ export function SessionCharts({ session, trades, isDryRun }: Props) {
   );
 
   if (samples.length === 0) {
-    return <p className="subtitle">No samples yet</p>;
+    return <p className="text-dim text-sm">No samples yet</p>;
   }
 
   return (
-    <>
+    <div className="relative mb-4">
       <Plot
-        className="chart"
+        className="chart-wrap"
         data={[
           {
             x: btcDeduped.x,
@@ -140,17 +138,13 @@ export function SessionCharts({ session, trades, isDryRun }: Props) {
         ]}
         layout={{
           ...LAYOUT_BASE,
-          title: {
-            text: "BTC Price vs Token Midpoints",
-            font: { size: 14 },
-          },
           yaxis: {
             ...LAYOUT_BASE.yaxis,
-            title: "Token Price",
+            title: { text: "Token", standoff: 8 },
             side: "left",
           },
           yaxis2: {
-            title: "BTC (USD)",
+            title: { text: "BTC", standoff: 8 },
             overlaying: "y",
             side: "right",
             gridcolor: "transparent",
@@ -159,6 +153,7 @@ export function SessionCharts({ session, trades, isDryRun }: Props) {
         }}
         config={PLOT_CFG}
       />
-    </>
+      <div className="absolute bottom-2.5 right-4 text-[11px] text-dim opacity-40">{samples.length} samples</div>
+    </div>
   );
 }

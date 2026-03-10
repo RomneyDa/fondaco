@@ -49,6 +49,7 @@ export interface TradeLogEntry {
   timestamp?: string | null;
   requested_tokens?: number | null;
   elapsed_seconds: number;
+  fee?: number | null;
   session_start?: string;
   strategy?: string;
   market?: string;
@@ -68,7 +69,9 @@ export interface BotTrade {
   price: number;
   amount: number;
   tokens: number;
+  requested_tokens?: number | null;
   success: boolean | null;
+  fee?: number | null;
   _strategy?: string;
 }
 
@@ -127,6 +130,11 @@ export interface BotStatus {
   stop_after_session?: boolean;
   // Multi-market
   markets?: MarketStatus[];
+  optimizer?: {
+    running: boolean;
+    pid?: number | null;
+    state?: string;
+  };
 }
 
 export interface SessionSummary {

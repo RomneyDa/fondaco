@@ -34,13 +34,14 @@ export function TradingLog({ refreshTrigger }: Props) {
   const formatDate = fmtDateOnly;
 
   return (
-    <div className="trade-log">
-      <div className="trade-log-header">
-        <h3>Trade Log</h3>
-        <div className="trade-log-controls">
+    <div className="mt-8 bg-card border border-border rounded-lg overflow-hidden">
+      <div className="flex justify-between items-center px-4 py-3.5 border-b border-border">
+        <h3 className="text-sm font-semibold">Trade Log</h3>
+        <div className="flex gap-2">
           <select
             value={filter}
             onChange={(e) => setFilter(e.target.value as Filter)}
+            className="!py-1 !px-2 !pr-6 !text-xs"
           >
             <option value="all">All</option>
             <option value="success">Successes</option>
@@ -50,6 +51,7 @@ export function TradingLog({ refreshTrigger }: Props) {
           <select
             value={limit}
             onChange={(e) => setLimit(parseInt(e.target.value))}
+            className="!py-1 !px-2 !pr-6 !text-xs"
           >
             <option value="50">50</option>
             <option value="100">100</option>
@@ -60,14 +62,14 @@ export function TradingLog({ refreshTrigger }: Props) {
       </div>
 
       {loading && trades.length === 0 ? (
-        <p className="subtitle" style={{ padding: 16 }}>Loading...</p>
+        <p className="text-dim text-sm p-4">Loading...</p>
       ) : filtered.length === 0 ? (
-        <p className="subtitle" style={{ padding: 16 }}>
+        <p className="text-dim text-sm p-4">
           {trades.length === 0 ? "No trades recorded yet." : "No matching trades."}
         </p>
       ) : (
-        <div className="trade-log-table-wrap">
-          <table className="trade-log-table">
+        <div className="overflow-x-auto max-h-[480px] overflow-y-auto">
+          <table className="data-table">
             <thead>
               <tr>
                 <th>Time</th>
@@ -84,46 +86,46 @@ export function TradingLog({ refreshTrigger }: Props) {
             <tbody>
               {filtered.map((t, i) =>
                 t._type === "resolution" ? (
-                  <tr key={`res-${i}`} className="trade-row-resolution">
+                  <tr key={`res-${i}`} className="bg-[rgba(136,132,216,0.06)] border-y border-border">
                     <td colSpan={filtered.some((tr) => tr.strategy) ? 9 : 8}>
-                      <div className="resolution-cell">
-                        <span className="resolution-time">
+                      <div className="flex items-center gap-2.5 text-xs">
+                        <span className="font-mono text-xs text-dim">
                           {t.timestamp ? (
                             <>
-                              <span className="trade-date">{formatDate(t.timestamp)}</span>
+                              <span className="text-dim mr-1.5 text-[11px]">{formatDate(t.timestamp)}</span>
                               {formatTime(t.timestamp)}
                             </>
                           ) : "\u2014"}
                         </span>
-                        <span className={`trade-status-pill ${
-                          t.pnl != null && t.pnl > 0 ? "status-win" : t.pnl != null && t.pnl < 0 ? "status-loss" : "status-neutral"
+                        <span className={`inline-block px-2 py-0.5 rounded-[10px] text-[11px] font-semibold ${
+                          t.pnl != null && t.pnl > 0 ? "bg-up/15 text-up" : t.pnl != null && t.pnl < 0 ? "bg-down/15 text-down" : "bg-[rgba(136,132,216,0.15)] text-dim"
                         }`}>
                           {t.outcome}
                         </span>
-                        {t.strategy && <span className="resolution-strategy">{t.strategy}</span>}
-                        {t.trades != null && <span className="resolution-detail">{t.trades} trade{t.trades !== 1 ? "s" : ""}</span>}
+                        {t.strategy && <span className="font-medium">{t.strategy}</span>}
+                        {t.trades != null && <span className="text-dim">{t.trades} trade{t.trades !== 1 ? "s" : ""}</span>}
                         {t.pnl != null && (
-                          <span className={`resolution-pnl ${t.pnl > 0 ? "pnl-positive" : t.pnl < 0 ? "pnl-negative" : ""}`}>
+                          <span className={`font-semibold font-mono ${t.pnl > 0 ? "text-up" : t.pnl < 0 ? "text-down" : ""}`}>
                             {t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)}
                           </span>
                         )}
                         {t.final_cash != null && (
-                          <span className="resolution-detail">${t.final_cash.toFixed(2)}</span>
+                          <span className="text-dim">${t.final_cash.toFixed(2)}</span>
                         )}
                       </div>
                     </td>
                   </tr>
                 ) : (
-                  <tr key={i} className={t.success === false ? "trade-row-fail" : ""}>
-                    <td className="trade-time">
+                  <tr key={i} className={t.success === false ? "bg-down/[0.04]" : ""}>
+                    <td className="font-mono text-xs">
                       {t.timestamp ? (
                         <>
-                          <span className="trade-date">{formatDate(t.timestamp)}</span>
+                          <span className="text-dim mr-1.5 text-[11px]">{formatDate(t.timestamp)}</span>
                           {formatTime(t.timestamp)}
                         </>
                       ) : t.session_start ? (
                         <>
-                          <span className="trade-date">{formatDate(t.session_start)}</span>
+                          <span className="text-dim mr-1.5 text-[11px]">{formatDate(t.session_start)}</span>
                           {formatTime(t.session_start)}
                         </>
                       ) : (
@@ -132,7 +134,7 @@ export function TradingLog({ refreshTrigger }: Props) {
                     </td>
                     <td>{t.elapsed_seconds != null ? `${t.elapsed_seconds.toFixed(1)}s` : "\u2014"}</td>
                     <td>
-                      <span className={`trade-side ${t.side.includes("up") ? "side-up" : "side-down"}`}>
+                      <span className={`font-semibold text-xs ${t.side.includes("up") ? "text-up" : "text-down"}`}>
                         {t.side === "buy_up" ? "Buy Up" : t.side === "buy_down" ? "Buy Down" : t.side}
                       </span>
                     </td>
@@ -140,14 +142,16 @@ export function TradingLog({ refreshTrigger }: Props) {
                     <td>{t.tokens}</td>
                     <td>${t.amount.toFixed(2)}</td>
                     <td>
-                      <span className={`trade-status-pill ${t.success === false ? "status-fail" : "status-ok"}`}>
+                      <span className={`inline-block px-2 py-0.5 rounded-[10px] text-[11px] font-semibold ${
+                        t.success === false ? "bg-down/15 text-down" : "bg-up/15 text-up"
+                      }`}>
                         {t.success === false ? "FAIL" : t.success === true ? "OK" : "SIM"}
                       </span>
                     </td>
                     {filtered.some((tr) => tr.strategy) && (
                       <td>{t.strategy || "\u2014"}</td>
                     )}
-                    <td className="trade-error-cell" title={t.error || ""}>
+                    <td className="max-w-[240px] overflow-hidden text-ellipsis whitespace-nowrap text-dim text-xs cursor-default" title={t.error || ""}>
                       {t.error || "\u2014"}
                     </td>
                   </tr>

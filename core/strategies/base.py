@@ -11,6 +11,8 @@ class Strategy(ABC):
 
     name = ""  # type: str
     description = ""  # type: str
+    version = "1"  # type: str
+    requires_full_session = False  # type: bool
 
     @abstractmethod
     def on_session_start(self, metadata):

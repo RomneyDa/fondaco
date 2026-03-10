@@ -17,6 +17,7 @@ Key differences from DigitalOption (Black-Scholes):
 import math
 from typing import Any, Dict, List, Optional
 
+from core.defaults import CLOB_MIN_ORDER_TOKENS
 from core.trader import HOLD, TradeAction, TickContext
 from core.strategies.base import Strategy
 
@@ -46,17 +47,19 @@ class PoissonKelly(Strategy):
         "Models BTC price as a Poisson jump process, estimates win probability "
         "via Skellam distribution, and sizes bets using the Kelly criterion."
     )
+    version = "4"
+    requires_full_session = True
 
     def __init__(
         self,
-        jump_bps=0.38,
+        jump_bps=0.20,
         min_jumps=8,
-        min_elapsed=0.22,
+        min_elapsed=0.15,
         no_new_after=0.60,
-        min_kelly=0.10,
-        max_kelly=1.0,
-        edge_min=0.15,
-        stop_loss_pct=0.035,
+        min_kelly=0.03,
+        max_kelly=0.35,
+        edge_min=0.02,
+        stop_loss_pct=0.07,
     ):
         self.jump_bps = jump_bps
         self.min_jumps = min_jumps
@@ -85,6 +88,7 @@ class PoissonKelly(Strategy):
         self._entry_midpoint = 0.0
         self._exited = False
         self._exit_sell_attempted = False
+        self._entry_count = 0
 
     def on_session_start(self, metadata):
         # type: (Dict[str, Any]) -> None
@@ -95,6 +99,7 @@ class PoissonKelly(Strategy):
         self._entry_midpoint = 0.0
         self._exited = False
         self._exit_sell_attempted = False
+        self._entry_count = 0
 
     def _held_side(self, ctx):
         # type: (TickContext) -> Optional[str]
@@ -203,7 +208,7 @@ class PoissonKelly(Strategy):
                         return TradeAction(side=sell_side, amount=tokens, price=current_mid)
                 return HOLD
             current_mid = up_mid if held == "up" else down_mid
-            if self._entry_midpoint > 0 and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
+            if self.stop_loss_pct is not None and self._entry_midpoint > 0 and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
                 self.log("stop-loss: mid={:.3f} down {:.1f}% from entry {:.3f}".format(
                     current_mid,
                     (1.0 - current_mid / self._entry_midpoint) * 100,
@@ -215,8 +220,16 @@ class PoissonKelly(Strategy):
                 return TradeAction(side=sell_side, amount=tokens, price=current_mid)
             return HOLD
 
-        # Already entered or exited — done for this session
-        if self._exited or self._entry_side is not None:
+        # If we exited (stop-loss), reset state to allow re-entry
+        if self._exited and held is None:
+            self.log("position flat after exit #{}, allowing re-entry".format(self._entry_count))
+            self._exited = False
+            self._exit_sell_attempted = False
+            self._entry_side = None
+            self._entry_midpoint = 0.0
+
+        # Still holding or already entered and haven't exited — wait
+        if self._entry_side is not None:
             return HOLD
 
         # Timing guards
@@ -262,9 +275,14 @@ class PoissonKelly(Strategy):
 
         self._entry_side = "up" if side == "buy_up" else "down"
         self._entry_midpoint = midpoint
+        self._entry_count += 1
 
         # Kelly-sized bet (respects guardrails via max_buy_amount)
         dollars = ctx.max_buy_amount * kelly
+        # Ensure at least minimum order size (5 tokens * price), capped at available cash
+        min_dollars = CLOB_MIN_ORDER_TOKENS * midpoint
+        if dollars < min_dollars:
+            dollars = min(min_dollars, ctx.max_buy_amount)
 
         self.log("ENTRY {}: p={:.3f} mid={:.3f} edge={:.3f} kelly={:.3f} ${:.2f} | "
                  "jumps={}/{} at {:.0f}%".format(
@@ -276,11 +294,11 @@ class PoissonKelly(Strategy):
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]
-        # 4 * 3 * 4 * 4 * 3 = 576 combos
+        # 4 * 4 * 3 * 3 * 4 = 576 combos
         return {
-            "jump_bps": [0.10, 0.15, 0.20, 0.30],
-            "min_elapsed": [0.15, 0.20, 0.30],
-            "no_new_after": [0.65, 0.70, 0.75, 0.80],
-            "min_kelly": [0.10, 0.15, 0.20, 0.30],
-            "edge_min": [0.05, 0.08, 0.12],
+            "jump_bps": [0.15, 0.18, 0.20, 0.25],
+            "min_elapsed": [0.15, 0.18, 0.20, 0.25],
+            "no_new_after": [0.50, 0.55, 0.60],
+            "max_kelly": [0.35, 0.45, 0.55],
+            "stop_loss_pct": [0.07, 0.09, 0.11, 0.13],
         }

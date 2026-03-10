@@ -16,7 +16,8 @@ function formatSide(side: string): string {
 
 function fmtTokens(v: number): string {
   if (v < 0.01 && v > 0) return "<0.01";
-  return v.toFixed(v === Math.floor(v) ? 0 : 1);
+  if (Number.isInteger(v) || Math.abs(v - Math.round(v)) < 0.001) return Math.round(v).toString();
+  return v.toFixed(2);
 }
 
 function fmtAmount(v: number): string {
@@ -26,15 +27,15 @@ function fmtAmount(v: number): string {
 
 export function TradeTable({ trades }: Props) {
   return (
-    <div className="trade-log">
-      <div className="trade-log-header">
-        <h3>Session Trades</h3>
+    <div className="mt-8 bg-card border border-border rounded-lg overflow-hidden">
+      <div className="flex justify-between items-center px-4 py-3.5 border-b border-border">
+        <h3 className="text-sm font-semibold">Session Trades</h3>
       </div>
       {trades.length === 0 ? (
-        <p className="subtitle" style={{ padding: "16px" }}>No trades yet</p>
+        <p className="text-dim text-sm p-4">No trades yet</p>
       ) : (
-        <div className="trade-log-table-wrap">
-          <table className="trade-log-table">
+        <div className="overflow-x-auto max-h-[480px] overflow-y-auto">
+          <table className="data-table">
             <thead>
               <tr>
                 <th>Elapsed</th>
@@ -43,24 +44,33 @@ export function TradeTable({ trades }: Props) {
                 <th>Price</th>
                 <th>Tokens</th>
                 <th>Amount</th>
+                <th>Fee</th>
                 <th>Status</th>
               </tr>
             </thead>
             <tbody>
               {trades.map((t: any, i: number) => (
-                <tr key={i} className={t.success === false ? "trade-row-fail" : ""}>
+                <tr key={i} className={t.success === false ? "bg-down/[0.04]" : ""}>
                   <td>{t.elapsed_seconds != null ? `${t.elapsed_seconds.toFixed(1)}s` : "\u2014"}</td>
                   <td>{t._strategy || "\u2014"}</td>
                   <td>
-                    <span className={`trade-side ${t.side.includes("up") ? "side-up" : "side-down"}`}>
+                    <span className={`font-semibold text-xs ${t.side.includes("up") ? "text-up" : "text-down"}`}>
                       {formatSide(t.side)}
                     </span>
                   </td>
                   <td>${t.price.toFixed(2)}</td>
-                  <td>{fmtTokens(t.tokens)}</td>
-                  <td>{fmtAmount(t.amount)}</td>
                   <td>
-                    <span className={`trade-status-pill ${t.success === false ? "status-fail" : "status-ok"}`}>
+                    {fmtTokens(t.tokens)}
+                    {t.requested_tokens != null && t.requested_tokens !== t.tokens && (
+                      <span className="text-dim text-[11px]"> / {fmtTokens(t.requested_tokens)}</span>
+                    )}
+                  </td>
+                  <td>{fmtAmount(t.amount)}</td>
+                  <td className="text-dim text-xs">{t.fee != null ? fmtAmount(t.fee) : "\u2014"}</td>
+                  <td>
+                    <span className={`inline-block px-2 py-0.5 rounded-[10px] text-[11px] font-semibold ${
+                      t.success === false ? "bg-down/15 text-down" : "bg-up/15 text-up"
+                    }`}>
                       {t.success === false ? "FAIL" : t.success === true ? "OK" : "SIM"}
                     </span>
                   </td>

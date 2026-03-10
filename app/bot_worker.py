@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 def _trade_to_dict(trade):
     # type: (Trade) -> Dict[str, Any]
-    return {
+    d = {
         "tick_index": trade.tick_index,
         "elapsed_seconds": trade.elapsed_seconds,
         "side": trade.side,
@@ -52,6 +52,11 @@ def _trade_to_dict(trade):
         "error": trade.error,
         "timestamp": trade.timestamp,
     }
+    if trade.fee is not None:
+        d["fee"] = round(trade.fee, 6)
+    if trade.requested_tokens is not None:
+        d["requested_tokens"] = round(trade.requested_tokens, 4)
+    return d
 
 
 def _save_position(position_dir, slot_name, position):
@@ -149,6 +154,7 @@ class BotWorker:
         bankroll = self.position.cash + self._session_reserve
         state = {
             "strategy": self.strategy_name,
+            "version": getattr(self.strategy, "version", None),
             "params": self.params,
             "cash": round(bankroll, 4),
             "dry_run": self.dry_run,
@@ -238,6 +244,7 @@ class BotWorker:
         trade_dicts = []  # type: List[Dict[str, Any]]
         trade_count = 0
         trader_initialized = False
+        skip_session = False
 
         for msg in subscriber.messages(is_running=lambda: self.running):
             if not self.running:
@@ -251,6 +258,20 @@ class BotWorker:
                 trader_initialized = False
                 trade_dicts = []
                 trade_count = 0
+                skip_session = False
+
+                # If this is a replayed session_start (mid-session join) and
+                # the strategy needs cumulative data from tick 0, wait for the
+                # next fresh session.
+                if msg.get("replayed") and self.strategy.requires_full_session:
+                    logger.info(
+                        "[%s] Mid-session join skipped (requires_full_session=True), "
+                        "waiting for next session",
+                        self.strategy_name,
+                    )
+                    skip_session = True
+                    metadata_dict = None
+                    continue
 
                 self._reload_session_config()
 
@@ -369,6 +390,27 @@ class BotWorker:
                 self.session_count += 1
                 self.save_state()
 
+        # Cleanup: cancel any pending GTC orders left from an interrupted session
+        if trader is not None:
+            try:
+                cancelled = trader.cancel_all_pending()
+                if cancelled > 0:
+                    logger.info(
+                        "[%s] Cancelled %d pending orders on shutdown",
+                        self.strategy_name, cancelled,
+                    )
+                    if not self.dry_run:
+                        _save_position(
+                            self._position_dir, self.strategy_name,
+                            self.position,
+                        )
+            except Exception as e:
+                logger.error(
+                    "[%s] Failed to cancel orders on shutdown: %s",
+                    self.strategy_name, e,
+                )
+            self.save_state()
+
         subscriber.close()
         logger.info("[%s] Bot worker stopped.", self.strategy_name)
 
@@ -406,9 +448,11 @@ class BotWorker:
             self.strategy_name, outcome, trade_count, self.position.cash, pnl,
         )
 
+        strategy_version = getattr(self.strategy, "version", None)
         summary = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "strategy": self.strategy_name,
+            "strategy_version": strategy_version,
             "outcome": outcome,
             "trades": trade_count,
             "cash": round(self.position.cash, 4),
@@ -426,6 +470,7 @@ class BotWorker:
             "type": "resolution",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "strategy": self.strategy_name,
+            "strategy_version": strategy_version,
             "outcome": outcome,
             "starting_cash": round(self.starting_cash, 4),
             "final_cash": round(self.position.cash, 4),
@@ -449,6 +494,7 @@ class BotWorker:
             try:
                 sidecar = {
                     "strategy": self.strategy_name,
+                    "strategy_version": strategy_version,
                     "params": self.params,
                     "dry_run": self.dry_run,
                     "starting_cash": round(self.starting_cash, 4),
@@ -465,13 +511,14 @@ class BotWorker:
             except Exception as e:
                 logger.warning("Failed to save sidecar: %s", e)
 
-        if trade_count > 0 and not self.dry_run and self._private_key:
-            try:
-                from app.claim import has_builder_creds, claim_background
-                if has_builder_creds():
-                    claim_background(self._private_key, self._safe_address)
-            except Exception:
-                pass
+        # Auto-redemption disabled — handled by separate claim server
+        # if trade_count > 0 and not self.dry_run and self._private_key:
+        #     try:
+        #         from app.claim import has_builder_creds, claim_background
+        #         if has_builder_creds():
+        #             claim_background(self._private_key, self._safe_address)
+        #     except Exception:
+        #         pass
 
         live_path = os.path.join(self.state_dir, "live_trades.json")
         try:
@@ -487,8 +534,12 @@ class BotWorker:
                 bankroll = self.position.cash + self._session_reserve
                 json.dump({
                     "strategy": self.strategy_name,
+                    "strategy_version": getattr(self.strategy, "version", None),
                     "dry_run": self.dry_run,
                     "cash": round(bankroll, 4),
+                    "up_tokens": round(self.position.up_tokens, 4),
+                    "down_tokens": round(self.position.down_tokens, 4),
+                    "starting_cash": round(self.starting_cash, 4),
                     "trade_count": trade_count,
                     "trades": trade_dicts[-50:],
                 }, f)
@@ -536,18 +587,19 @@ def main():
     log_dir = os.path.join(args.market_dir, "workers", args.strategy)
     os.makedirs(log_dir, exist_ok=True)
 
+    # Worker stdout/stderr is redirected to worker.log by the parent process,
+    # so only use the RotatingFileHandler here (no StreamHandler) to avoid
+    # every log line appearing twice in the file.
+    log_handler = logging.handlers.RotatingFileHandler(
+        os.path.join(log_dir, "worker.log"),
+        maxBytes=5 * 1024 * 1024, backupCount=2,
+    )
+    log_handler.setLevel(logging.DEBUG)
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.handlers.RotatingFileHandler(
-                os.path.join(log_dir, "worker.log"),
-                maxBytes=5 * 1024 * 1024, backupCount=2,
-            ),
-        ],
+        handlers=[log_handler],
     )
-    logging.getLogger().handlers[0].setLevel(logging.INFO)
 
     session_cash_ratio = None
     if args.session_cash_ratio:

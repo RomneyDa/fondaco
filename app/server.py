@@ -6,6 +6,7 @@ query status, manage markets, toggle trading, and trigger shutdown.
 
 import json
 import logging
+import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, Dict, Optional, TYPE_CHECKING
@@ -70,6 +71,12 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/control/status":
             self._handle_status()
+        elif self.path == "/api/control/optimizer-status":
+            self._handle_optimizer_status()
+        elif self.path == "/api/control/optimizer-events":
+            self._handle_optimizer_events()
+        elif self.path == "/api/control/optimizer-config":
+            self._handle_optimizer_config_get()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -84,6 +91,9 @@ class _Handler(BaseHTTPRequestHandler):
             "/api/control/set-auto-exit": self._handle_set_auto_exit,
             "/api/control/kill": self._handle_kill,
             "/api/control/stop": self._handle_stop,
+            "/api/control/optimizer-on": self._handle_optimizer_on,
+            "/api/control/optimizer-off": self._handle_optimizer_off,
+            "/api/control/optimizer-config": self._handle_optimizer_config,
         }
         handler = routes.get(self.path)
         if handler:
@@ -324,6 +334,117 @@ class _Handler(BaseHTTPRequestHandler):
             })
         except Exception as e:
             self._send_json({"error": str(e)}, 400)
+
+
+    # --- Optimizer endpoints ---
+
+    def _handle_optimizer_on(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        try:
+            body = self._read_json_body()
+            interval = body.get("interval", 30)
+            lookback = body.get("lookback", 30)
+            min_sharpe = body.get("min_sharpe", 0.2)
+            starting_cash = body.get("starting_cash", 100.0)
+            max_edge_iters = body.get("max_edge_iters", 2)
+            result = mgr.start_optimizer(
+                interval=int(interval),
+                lookback=int(lookback),
+                min_sharpe=float(min_sharpe),
+                starting_cash=float(starting_cash),
+                max_edge_iters=int(max_edge_iters),
+            )
+            status = 200 if result.get("ok") else 400
+            self._send_json(result, status)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
+
+    def _handle_optimizer_off(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        try:
+            result = mgr.stop_optimizer()
+            status = 200 if result.get("ok") else 400
+            self._send_json(result, status)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
+
+    def _handle_optimizer_status(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        try:
+            self._send_json(mgr.get_optimizer_status())
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _handle_optimizer_config_get(self):
+        """GET handler: return saved config (no app manager required)."""
+        try:
+            from core.defaults import OPTIMIZER_DIR
+            config_file = os.path.join(OPTIMIZER_DIR, "config.json")
+            try:
+                with open(config_file, "r") as f:
+                    config = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                config = {}
+            self._send_json({"ok": True, "config": config})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _handle_optimizer_config(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        try:
+            body = self._read_json_body()
+            from core.defaults import OPTIMIZER_DIR
+            config_file = os.path.join(OPTIMIZER_DIR, "config.json")
+            # Read existing
+            try:
+                with open(config_file, "r") as f:
+                    config = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                config = {}
+            # Update with provided fields
+            for key in ("interval_minutes", "lookback", "min_sharpe", "starting_cash"):
+                if key in body:
+                    config[key] = body[key]
+            # Save
+            os.makedirs(OPTIMIZER_DIR, exist_ok=True)
+            tmp = config_file + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(config, f, indent=2)
+            os.replace(tmp, config_file)
+            self._send_json({"ok": True, "config": config})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
+
+    def _handle_optimizer_events(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        try:
+            from core.defaults import OPTIMIZER_DIR
+            events_file = os.path.join(OPTIMIZER_DIR, "events.jsonl")
+            events = []
+            if os.path.exists(events_file):
+                with open(events_file, "r") as f:
+                    lines = f.readlines()
+                # Return last 100 events, newest first
+                for line in reversed(lines[-100:]):
+                    line = line.strip()
+                    if line:
+                        try:
+                            events.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+            self._send_json({"events": events})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
 
 
 class ControlServer:

@@ -15,6 +15,8 @@ from bots.updown.dip_sniper import DipSniper
 from bots.updown.poisson_kelly import PoissonKelly
 from bots.updown.poisson_kelly_active import PoissonKellyActive
 from bots.updown.poisson_kelly_historical import PoissonKellyHistorical
+from bots.updown.dynamic_poisson_kelly import DynamicPoissonKelly
+from bots.updown.poisson_kelly_stacked import PoissonKellyStacked
 
 STRATEGIES = {
     "MomentumEntry": MomentumEntry,
@@ -30,4 +32,6 @@ STRATEGIES = {
     "PoissonKelly": PoissonKelly,
     "PoissonKellyActive": PoissonKellyActive,
     "PoissonKellyHistorical": PoissonKellyHistorical,
+    "DynamicPoissonKelly": DynamicPoissonKelly,
+    "PoissonKellyStacked": PoissonKellyStacked,
 }  # type: Dict[str, type]

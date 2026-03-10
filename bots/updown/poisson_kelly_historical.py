@@ -27,6 +27,7 @@ import json
 import glob
 from typing import Any, Dict, List, Optional
 
+from core.defaults import CLOB_MIN_ORDER_TOKENS
 from core.trader import HOLD, TradeAction, TickContext
 from core.strategies.base import Strategy
 
@@ -60,21 +61,23 @@ class PoissonKellyHistorical(Strategy):
         "Poisson jump model with historical session priors for trend, "
         "volatility regime, and baseline jump rates. Kelly-sized bets."
     )
+    version = "3"
+    requires_full_session = True
 
     def __init__(
         self,
         lookback_sessions=50,
-        jump_bps=0.20,
-        vol_adapt=0.5,
-        trend_weight=0.10,
-        prior_strength=5.0,
+        jump_bps=0.30,
+        vol_adapt=0,
+        trend_weight=0.15,
+        prior_strength=10.0,
         min_jumps=6,
-        min_elapsed=0.20,
+        min_elapsed=0.30,
         no_new_after=0.70,
         min_kelly=0.10,
         max_kelly=1.0,
-        edge_min=0.10,
-        stop_loss_pct=0.035,
+        edge_min=0.08,
+        stop_loss_pct=0.06,
     ):
         self.lookback_sessions = lookback_sessions
         self.jump_bps = jump_bps
@@ -108,6 +111,9 @@ class PoissonKellyHistorical(Strategy):
         self._prior_up_jumps = 0.0
         self._prior_down_jumps = 0.0
         self._trend_bias = 0.0  # -0.5 to +0.5, positive = bullish
+
+        # Cache of loaded session summaries (keyed by file path)
+        self._session_cache = {}  # type: Dict[str, Dict[str, Any]]
 
         # Per-session state
         self._prev_btc = 0.0
@@ -169,24 +175,36 @@ class PoissonKellyHistorical(Strategy):
         current_window = metadata.get("window_start_utc", "")
         summaries = []
         for f in files:
+            # Use cache for previously loaded files (session data is immutable)
+            if f in self._session_cache:
+                cached = self._session_cache[f]
+                if cached is not None and cached.get("_ws", "") < current_window:
+                    summaries.append(cached)
+                continue
+
             try:
                 with open(f, "r") as fh:
                     data = json.load(fh)
                 if data.get("outcome") is None:
+                    self._session_cache[f] = None
                     continue
                 meta = data.get("metadata", {})
                 ws = meta.get("window_start_utc", "")
-                if ws >= current_window:
-                    continue  # skip current or future sessions
                 initial_btc = data.get("initial_btc_price_usd")
                 final_btc = data.get("final_btc_price_usd")
                 outcome = data.get("outcome")
                 if initial_btc and final_btc and outcome:
-                    summaries.append({
+                    entry = {
                         "initial_btc": initial_btc,
                         "final_btc": final_btc,
                         "outcome": outcome,
-                    })
+                        "_ws": ws,
+                    }
+                    self._session_cache[f] = entry
+                    if ws < current_window:
+                        summaries.append(entry)
+                else:
+                    self._session_cache[f] = None
             except (json.JSONDecodeError, OSError):
                 continue
 
@@ -447,6 +465,10 @@ class PoissonKellyHistorical(Strategy):
         self._entry_midpoint = midpoint
 
         dollars = ctx.max_buy_amount * kelly
+        # Ensure at least minimum order size (5 tokens * price), capped at available cash
+        min_dollars = CLOB_MIN_ORDER_TOKENS * midpoint
+        if dollars < min_dollars:
+            dollars = min(min_dollars, ctx.max_buy_amount)
 
         self.log("ENTRY {}: p={:.3f} mid={:.3f} edge={:.3f} kelly={:.3f} ${:.2f} | "
                  "jumps={}/{} prior={:.0f}/{:.0f} trend={:.3f} at {:.0f}%".format(

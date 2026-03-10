@@ -22,17 +22,18 @@ class DipSniper(Strategy):
         "High-conviction directional entry with limit orders and "
         "confirmation-based loss cutting."
     )
+    version = "2"
 
     def __init__(
         self,
-        signal_frac=0.30,
-        min_midpoint=0.68,
+        signal_frac=0.32,
+        min_midpoint=0.63,
         min_btc_bps=0.0,
-        limit_offset=0.025,
+        limit_offset=0.02,
         order_expiry_frac=0.12,
         confirm_secs=50.0,
         soft_threshold=0.01,
-        hard_sl=0.18,
+        hard_sl=0.13,
         bet_fraction=1.0,
     ):
         # type: (...) -> None
@@ -262,11 +263,11 @@ class DipSniper(Strategy):
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]
-        # 5 * 4 * 4 * 4 * 3 = 960 combos
+        # 5 * 4 * 5 * 4 * 4 = 1600 combos
         return {
-            "signal_frac": [0.26, 0.28, 0.30, 0.31, 0.33],
-            "min_midpoint": [0.62, 0.64, 0.65, 0.68],
-            "limit_offset": [0.015, 0.018, 0.022, 0.025],
-            "order_expiry_frac": [0.12, 0.14, 0.16, 0.18],
-            "hard_sl": [0.13, 0.15, 0.18],
+            "signal_frac": [0.28, 0.30, 0.32, 0.34, 0.36],
+            "min_midpoint": [0.61, 0.63, 0.65, 0.67],
+            "limit_offset": [0.015, 0.018, 0.020, 0.022, 0.025],
+            "order_expiry_frac": [0.10, 0.12, 0.14, 0.16],
+            "hard_sl": [0.11, 0.13, 0.15, 0.17],
         }

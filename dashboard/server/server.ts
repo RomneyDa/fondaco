@@ -397,6 +397,65 @@ app.post("/api/bot/kill", async (_req: Request, res: Response) => {
   res.status(status).json(data);
 });
 
+// --- Optimizer proxy ---
+
+app.get("/api/bot/optimizer-status", async (_req: Request, res: Response) => {
+  const { status, data } = await proxyToControl("/api/control/optimizer-status");
+  res.status(status).json(data);
+});
+
+app.get("/api/bot/optimizer-events", async (_req: Request, res: Response) => {
+  const { status, data } = await proxyToControl("/api/control/optimizer-events");
+  res.status(status).json(data);
+});
+
+app.post("/api/bot/optimizer-on", async (req: Request, res: Response) => {
+  const { status, data } = await proxyToControl(
+    "/api/control/optimizer-on",
+    "POST",
+    req.body
+  );
+  res.status(status).json(data);
+});
+
+app.post("/api/bot/optimizer-off", async (_req: Request, res: Response) => {
+  const { status, data } = await proxyToControl(
+    "/api/control/optimizer-off",
+    "POST"
+  );
+  res.status(status).json(data);
+});
+
+app.get("/api/bot/optimizer-config", async (_req: Request, res: Response) => {
+  // Try control server first, fall back to reading config file directly
+  const { status, data } = await proxyToControl("/api/control/optimizer-config");
+  if (status === 200 && data?.config) {
+    res.json({ ok: true, config: data.config });
+    return;
+  }
+  // Fallback: read config file directly
+  try {
+    const configPath = path.join(DATA_DIR, "optimizer", "config.json");
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      res.json({ ok: true, config });
+    } else {
+      res.json({ ok: true, config: {} });
+    }
+  } catch {
+    res.json({ ok: true, config: {} });
+  }
+});
+
+app.post("/api/bot/optimizer-config", async (req: Request, res: Response) => {
+  const { status, data } = await proxyToControl(
+    "/api/control/optimizer-config",
+    "POST",
+    req.body
+  );
+  res.status(status).json(data);
+});
+
 // --- Strategies ---
 
 app.get("/api/strategies", async (_req: Request, res: Response) => {
@@ -607,6 +666,232 @@ app.get("/api/bot/trades", (req: Request, res: Response) => {
   }
 });
 
+// --- Strategy stats ---
+
+app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
+  try {
+    const { market, strategy } = req.params;
+
+    // Read bot_log.jsonl for session-level PnL
+    const logFile = path.join(MARKETS_DIR, market, "bot_log.jsonl");
+    const sessions: any[] = [];
+    if (fs.existsSync(logFile)) {
+      const lines = fs.readFileSync(logFile, "utf-8").trim().split("\n");
+      for (const line of lines) {
+        if (!line) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (entry.strategy === strategy && entry.pnl !== undefined) {
+            sessions.push(entry);
+          }
+        } catch {}
+      }
+    }
+
+    // Read bot_trades.jsonl for individual trades and resolution records
+    const tradesFile = marketTradesFile(market);
+    const trades: any[] = [];
+    const resolutions: any[] = [];
+    if (fs.existsSync(tradesFile)) {
+      const lines = fs.readFileSync(tradesFile, "utf-8").trim().split("\n");
+      for (const line of lines) {
+        if (!line) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type === "resolution" && entry.strategy === strategy) {
+            resolutions.push(entry);
+          } else if (entry.strategy === strategy) {
+            trades.push(entry);
+          }
+        } catch {}
+      }
+    }
+
+    // Also pull trades from session trading sidecars
+    const sessionsDir = marketSessionsDir(market);
+    if (fs.existsSync(sessionsDir)) {
+      const files = fs.readdirSync(sessionsDir).sort().reverse().slice(0, 100);
+      for (const f of files) {
+        // Per-strategy sidecar: *.trading.StrategyName.json
+        if (f.endsWith(`.trading.${strategy}.json`)) {
+          try {
+            const data = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), "utf-8"));
+            const sessionName = f.replace(`.trading.${strategy}.json`, "");
+            const strats = data.strategies || [data];
+            for (const s of strats) {
+              if (s.name === strategy || s.strategy === strategy) {
+                for (const t of s.trades || []) {
+                  trades.push({ ...t, strategy, session_start: sessionName, market });
+                }
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+
+    // Sort trades by timestamp descending
+    trades.sort((a, b) => {
+      const ta = a.timestamp || a.session_start || "";
+      const tb = b.timestamp || b.session_start || "";
+      return tb.localeCompare(ta);
+    });
+
+    // Compute total fees from trades
+    let totalFees = 0;
+    for (const t of trades) {
+      if (typeof t.fee === "number") totalFees += t.fee;
+    }
+    for (const r of resolutions) {
+      if (typeof r.fee === "number") totalFees += r.fee;
+    }
+
+    // Compute stats from sessions
+    const pnls = sessions.map((s) => s.pnl as number);
+    const totalPnl = pnls.reduce((a, b) => a + b, 0);
+    const tradedSessions = sessions.filter((s) => s.trades > 0);
+    const tradedPnls = tradedSessions.map((s) => s.pnl as number);
+    const wins = tradedPnls.filter((p) => p > 0).length;
+    const losses = tradedPnls.filter((p) => p < 0).length;
+
+    let sharpe = 0;
+    if (tradedPnls.length >= 2) {
+      const mean = tradedPnls.reduce((a, b) => a + b, 0) / tradedPnls.length;
+      const variance = tradedPnls.reduce((a, b) => a + (b - mean) ** 2, 0) / (tradedPnls.length - 1);
+      const std = Math.sqrt(variance);
+      if (std > 0) sharpe = mean / std;
+    }
+
+    // Get current version from worker state.json
+    const stateFile = path.join(MARKETS_DIR, market, "workers", strategy, "state.json");
+    let currentVersion: string | null = null;
+    if (fs.existsSync(stateFile)) {
+      try {
+        const state = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
+        currentVersion = state.version || null;
+      } catch {}
+    }
+
+    // Build version history from session logs (group sessions by version)
+    const versionSummary: Record<string, { sessions: number; traded: number; pnl: number; wins: number; losses: number; first: string; last: string }> = {};
+    for (const s of sessions) {
+      const v = s.strategy_version || "unknown";
+      if (!versionSummary[v]) {
+        versionSummary[v] = { sessions: 0, traded: 0, pnl: 0, wins: 0, losses: 0, first: s.timestamp, last: s.timestamp };
+      }
+      const vs = versionSummary[v];
+      vs.sessions++;
+      vs.pnl += s.pnl;
+      vs.last = s.timestamp;
+      if (s.trades > 0) {
+        vs.traded++;
+        if (s.pnl > 0) vs.wins++;
+        else if (s.pnl < 0) vs.losses++;
+      }
+    }
+    // Round pnl
+    for (const v of Object.values(versionSummary)) {
+      v.pnl = Math.round(v.pnl * 100) / 100;
+    }
+
+    res.json({
+      strategy,
+      market,
+      stats: {
+        total_sessions: sessions.length,
+        traded_sessions: tradedSessions.length,
+        total_pnl: Math.round(totalPnl * 100) / 100,
+        wins,
+        losses,
+        win_rate: tradedSessions.length > 0 ? Math.round((wins / tradedSessions.length) * 1000) / 10 : 0,
+        sharpe: Math.round(sharpe * 1000) / 1000,
+        current_cash: (() => {
+          // Read live cash from worker state.json (updated immediately by set-cash)
+          const stateFile = path.join(MARKETS_DIR, market, "workers", strategy, "state.json");
+          if (fs.existsSync(stateFile)) {
+            try {
+              const state = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
+              if (state.cash != null) return state.cash;
+            } catch {}
+          }
+          return sessions.length > 0 ? sessions[sessions.length - 1].cash : null;
+        })(),
+        current_version: currentVersion,
+        total_fees: Math.round(totalFees * 100) / 100,
+      },
+      sessions: sessions.slice(-200),
+      trades: trades.slice(0, 500),
+      resolutions: resolutions.slice(-200),
+      version_summary: versionSummary,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// --- Market PnL ---
+
+app.get("/api/market/:prefix/pnl", (req: Request, res: Response) => {
+  try {
+    const { prefix } = req.params;
+    const logFile = path.join(MARKETS_DIR, prefix, "bot_log.jsonl");
+    if (!fs.existsSync(logFile)) {
+      res.json({ overall: 0, last_24h: 0, last_1h: 0, by_strategy: {} });
+      return;
+    }
+
+    const lines = fs.readFileSync(logFile, "utf-8").trim().split("\n");
+    const now = Date.now();
+    const cutoff24h = now - 24 * 60 * 60 * 1000;
+    const cutoff1h = now - 60 * 60 * 1000;
+
+    let overall = 0;
+    let last24h = 0;
+    let last1h = 0;
+    const byStrategy: Record<string, { overall: number; last_24h: number; last_1h: number }> = {};
+
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line);
+        const pnl = entry.pnl as number;
+        if (pnl === undefined || pnl === null) continue;
+
+        const strat = entry.strategy || "unknown";
+        if (!byStrategy[strat]) byStrategy[strat] = { overall: 0, last_24h: 0, last_1h: 0 };
+
+        overall += pnl;
+        byStrategy[strat].overall += pnl;
+
+        const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
+        if (ts >= cutoff24h) {
+          last24h += pnl;
+          byStrategy[strat].last_24h += pnl;
+        }
+        if (ts >= cutoff1h) {
+          last1h += pnl;
+          byStrategy[strat].last_1h += pnl;
+        }
+      } catch {}
+    }
+
+    // Round values
+    const round = (n: number) => Math.round(n * 100) / 100;
+    overall = round(overall);
+    last24h = round(last24h);
+    last1h = round(last1h);
+    for (const k of Object.keys(byStrategy)) {
+      byStrategy[k].overall = round(byStrategy[k].overall);
+      byStrategy[k].last_24h = round(byStrategy[k].last_24h);
+      byStrategy[k].last_1h = round(byStrategy[k].last_1h);
+    }
+
+    res.json({ overall, last_24h: last24h, last_1h: last1h, by_strategy: byStrategy });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // --- SSE ---
 
 app.get("/events", (_req: Request, res: Response) => {
@@ -646,6 +931,8 @@ function startWatcher() {
     path.join(MARKETS_DIR, "*/sessions/**/*.json"),
     path.join(MARKETS_DIR, "*/live/*.json"),
     path.join(MARKETS_DIR, "*/workers/*/state.json"),
+    path.join(DATA_DIR, "optimizer", "*.json"),
+    path.join(DATA_DIR, "optimizer", "*.jsonl"),
     APP_JSON,
   ];
 
@@ -674,6 +961,18 @@ function startWatcher() {
 
     const rel = path.relative(MARKETS_DIR, filepath);
     const parts = rel.split(path.sep);
+
+    if (filepath.includes("/optimizer/")) {
+      // Broadcast optimizer status update
+      try {
+        const statusPath = path.join(DATA_DIR, "optimizer", "status.json");
+        if (fs.existsSync(statusPath)) {
+          const data = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
+          broadcast("optimizer-status", data);
+        }
+      } catch {}
+      return;
+    }
 
     if (parts.length >= 4 && parts[1] === "workers" && parts[3] === "state.json") {
       proxyToControl("/api/control/status")

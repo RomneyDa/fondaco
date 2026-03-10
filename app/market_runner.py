@@ -151,6 +151,7 @@ class MarketRunner:
         # Worker processes (protected by lock)
         self._lock = threading.Lock()
         self._workers = []  # type: List[WorkerInfo]
+        self._live_trades_cache = {}  # type: Dict[str, Dict[str, Any]]
 
         # Valid strategies for this market type
         self._valid_strategies = get_strategies_for_market(market_type)
@@ -710,6 +711,7 @@ class MarketRunner:
         )
 
         self.recorder.clear_live_session()
+        self._live_trades_cache.clear()
         filepath = self.recorder.save_session(session)
         logger.info(
             "[%s] Saved: %s | Outcome: %s | Samples: %d | Errors: %d",
@@ -829,24 +831,27 @@ class MarketRunner:
         strategies_info = []
         for w in workers:
             live = self._read_worker_live_trades(w.strategy_name)
+            if live is not None:
+                self._live_trades_cache[w.strategy_name] = live
+            else:
+                live = self._live_trades_cache.get(w.strategy_name)
             state = self._read_worker_state(w.strategy_name)
             state_cash = state.get("cash", w.cash) if state else w.cash
-            if live:
-                strategies_info.append({
-                    "name": w.strategy_name,
-                    "dry_run": w.dry_run,
-                    "cash": live.get("cash", state_cash),
-                    "bankroll": state_cash,
-                    "trades": live.get("trades", []),
-                })
-            else:
-                strategies_info.append({
-                    "name": w.strategy_name,
-                    "dry_run": w.dry_run,
-                    "cash": state_cash,
-                    "bankroll": state_cash,
-                    "trades": [],
-                })
+            info = {
+                "name": w.strategy_name,
+                "dry_run": w.dry_run,
+                "cash": live.get("cash", state_cash) if live else state_cash,
+                "bankroll": state_cash,
+                "up_tokens": live.get("up_tokens", 0) if live else 0,
+                "down_tokens": live.get("down_tokens", 0) if live else 0,
+                "starting_cash": live.get("starting_cash", state_cash) if live else state_cash,
+                "trades": live.get("trades", []) if live else [],
+            }
+            if w.session_cash_ratio is not None:
+                info["session_cash_ratio"] = w.session_cash_ratio
+            if w.session_cap is not None:
+                info["session_cap"] = w.session_cap
+            strategies_info.append(info)
 
         first = strategies_info[0]
         return {

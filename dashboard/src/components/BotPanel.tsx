@@ -21,7 +21,6 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
   const markets = botStatus?.markets ?? [];
   const isRunning = botStatus?.running ?? false;
 
-  // Clear "starting" once the app reports running
   useEffect(() => {
     if (isRunning && starting) setStarting(false);
   }, [isRunning, starting]);
@@ -35,7 +34,6 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
     };
   }, []);
 
-  // --- Strategies (dynamic, retry until loaded) ---
   const [strategies, setStrategies] = useState<string[]>([]);
   useEffect(() => {
     let cancelled = false;
@@ -53,7 +51,6 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
     return () => { cancelled = true; };
   }, []);
 
-  // --- Slugs for market-on ---
   const [slugs, setSlugs] = useState<SlugInfo[]>([]);
   const [selectedSlug, setSelectedSlug] = useState("");
 
@@ -83,7 +80,6 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
       setStarting(false);
     } else {
       flashMessage(`App started (PID ${res.pid})`);
-      // Poll aggressively until the app is confirmed running
       let attempts = 0;
       const poll = setInterval(async () => {
         attempts++;
@@ -93,7 +89,6 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
           setStarting(false);
         }
       }, 1000);
-      // Clear interval once we detect running (via the useEffect above)
       refreshTimerRef.current = poll as unknown as ReturnType<typeof setTimeout>;
     }
     setLoading(false);
@@ -172,78 +167,76 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
 
   return (
     <div>
-      {/* Status header */}
-      <div className="bot-status-section">
-        <div className="meta-grid">
-          <div className="meta-card">
-            <div className="meta-label">Status</div>
-            <div className="meta-value">
-              <span className={`bot-status-dot ${isRunning ? "running" : starting ? "starting" : "stopped"}`} />
-              {botStatus === null ? "Loading..." : isRunning ? "Running" : starting ? "Starting..." : "Offline"}
+      <h2 className="text-xl font-semibold mb-6">Trading</h2>
+
+      {/* Status cards */}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 mb-6">
+        <div className="bg-card border border-border rounded-lg px-4 py-3">
+          <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">Status</div>
+          <div className="text-base font-semibold flex items-center gap-2">
+            <span className={`inline-block w-2 h-2 rounded-full ${isRunning ? "bg-up animate-pulse-dot" : starting ? "bg-btc" : "bg-down"}`} />
+            {botStatus === null ? "Loading..." : isRunning ? "Running" : starting ? "Starting..." : "Offline"}
+          </div>
+        </div>
+        {isRunning && (
+          <div className="bg-card border border-border rounded-lg px-4 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">Markets</div>
+            <div className="text-base font-semibold">
+              {markets.length > 0
+                ? `${markets.length} active`
+                : <span className="text-dim">None</span>}
             </div>
           </div>
-          {isRunning && (
-            <div className="meta-card">
-              <div className="meta-label">Markets</div>
-              <div className="meta-value">
-                {markets.length > 0
-                  ? `${markets.length} active`
-                  : <span style={{ color: "var(--text-dim)" }}>None</span>}
-              </div>
+        )}
+        {isRunning && (
+          <div className="bg-card border border-border rounded-lg px-4 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">Strategies</div>
+            <div className="text-base font-semibold">
+              {markets.reduce((n, m) => n + (m.strategies?.length ?? 0), 0)}
             </div>
-          )}
-          {isRunning && (
-            <div className="meta-card">
-              <div className="meta-label">Strategies</div>
-              <div className="meta-value">
-                {markets.reduce((n, m) => n + (m.strategies?.length ?? 0), 0)}
-              </div>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      {/* Running: show markets, controls */}
       {isRunning && (
         <>
-          {/* Per-market status */}
-          {markets.map((m) => (
-            <MarketSection
-              key={m.slug_key}
-              market={m}
-              loading={loading}
-              strategies={strategies}
-              onTradeOn={handleTradeOn}
-              onTradeOff={handleTradeOff}
-              onReload={handleReload}
-              onMarketOff={handleMarketOff}
-              onToggleAutoExit={async (slug, strat, enabled) => {
-                const res = await setAutoExit(slug, enabled, strat);
-                if (!res.ok) flashMessage(res.error || "Failed");
-                onRefresh();
-              }}
-              flashMessage={flashMessage}
-            />
-          ))}
+          <div className="space-y-4">
+            {markets.map((m) => (
+              <MarketSection
+                key={m.slug_key}
+                market={m}
+                loading={loading}
+                strategies={strategies}
+                onTradeOn={handleTradeOn}
+                onTradeOff={handleTradeOff}
+                onReload={handleReload}
+                onMarketOff={handleMarketOff}
+                onToggleAutoExit={async (slug, strat, enabled) => {
+                  const res = await setAutoExit(slug, enabled, strat);
+                  if (!res.ok) flashMessage(res.error || "Failed");
+                  onRefresh();
+                }}
+                flashMessage={flashMessage}
+              />
+            ))}
+          </div>
 
           {/* Add Market */}
-          <div style={{ marginTop: 20 }}>
-            <div className="bot-form" style={{ maxWidth: 360 }}>
-              <h3>Add Market</h3>
-              <div className="bot-form-row">
-                <label>
-                  Market
-                  <select value={selectedSlug} onChange={(e) => setSelectedSlug(e.target.value)}>
-                    {slugs.map((s) => (
-                      <option key={s.slug_prefix} value={s.slug_prefix}>
-                        {s.asset} {s.window_duration_seconds / 60}m ({s.slug_prefix})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
+          <div className="mt-6">
+            <div className="bg-card border border-border rounded-lg p-5 max-w-[360px]">
+              <h3 className="text-sm font-semibold mb-3">Add Market</h3>
+              <label className="flex flex-col gap-1.5 text-[13px] text-dim mb-4">
+                Market
+                <select value={selectedSlug} onChange={(e) => setSelectedSlug(e.target.value)}>
+                  {slugs.map((s) => (
+                    <option key={s.slug_prefix} value={s.slug_prefix}>
+                      {s.asset} {s.window_duration_seconds / 60}m ({s.slug_prefix})
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button
-                className="bot-btn bot-btn-start"
+                className="btn-primary w-full"
                 onClick={handleMarketOn}
                 disabled={loading || !selectedSlug}
               >
@@ -253,10 +246,9 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
           </div>
 
           {/* App-level actions */}
-          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+          <div className="flex gap-2.5 mt-6">
             <button
-              className="bot-btn"
-              style={{ background: "var(--btc)", color: "#fff" }}
+              className="btn-warning"
               onClick={handleKill}
               disabled={loading}
               title="Stop all markets after their current sessions finish"
@@ -264,7 +256,7 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
               Stop After Sessions
             </button>
             <button
-              className="bot-btn bot-btn-stop"
+              className="btn-danger"
               onClick={handleStop}
               disabled={loading}
               title="Immediately stop the app and all markets"
@@ -275,18 +267,21 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
         </>
       )}
 
-      {/* Offline: show start button */}
       {!isRunning && botStatus !== null && (
-        <div className="bot-controls">
-          <div className="bot-form">
+        <div>
+          <div className="bg-card border border-border rounded-lg p-5 max-w-[400px]">
             {starting ? (
-              <p className="subtitle">Starting app...</p>
+              <p className="text-dim text-sm">Starting app...</p>
             ) : (
               <>
-                <p className="subtitle" style={{ marginBottom: 12 }}>
+                <p className="text-dim text-sm mb-4">
                   Start the app and restore previous markets &amp; strategies.
                 </p>
-                <button className="bot-btn bot-btn-start" onClick={handleStartApp} disabled={loading}>
+                <button
+                  className="btn-primary w-full"
+                  onClick={handleStartApp}
+                  disabled={loading}
+                >
                   Start App
                 </button>
               </>
@@ -295,7 +290,11 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
         </div>
       )}
 
-      {message && <div className="bot-message">{message}</div>}
+      {message && (
+        <div className="mt-4 px-4 py-2.5 bg-accent/10 border border-accent/20 rounded-md text-[13px] text-accent">
+          {message}
+        </div>
+      )}
 
       <TradingLog refreshTrigger={tradeRefresh} />
     </div>
@@ -332,36 +331,23 @@ function MarketSection({
   const [sessionCap, setSessionCap] = useState("25%:3");
 
   return (
-    <div style={{ marginTop: 16, padding: 16, background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: activeStrategies.length > 0 ? 12 : 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span
-            style={{
-              display: "inline-block",
-              width: 10,
-              height: 10,
-              borderRadius: "50%",
-              background: market.running ? "var(--green)" : "var(--red)",
-              animation: market.running ? "pulse 2s infinite" : "none",
-            }}
-          />
-          <Link to={`/live/${market.slug_key}`} style={{ fontSize: 15, fontWeight: 600, color: "var(--text)", textDecoration: "none" }}>
+    <div className="p-4 bg-card border border-border rounded-lg">
+      <div className={`flex justify-between items-center ${activeStrategies.length > 0 ? "mb-3" : ""}`}>
+        <div className="flex items-center gap-2.5">
+          <span className={`inline-block w-2.5 h-2.5 rounded-full ${market.running ? "bg-up animate-pulse-dot" : "bg-down"}`} />
+          <Link to={`/live/${market.slug_key}`} className="text-[15px] font-semibold text-txt no-underline hover:text-accent transition-colors">
             {market.slug_key}
           </Link>
-          <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
+          <span className="text-dim text-xs">
             {market.session_count} sessions
             {(market.tick_clients ?? 0) > 0 && ` · ${market.tick_clients} clients`}
           </span>
           {market.stop_after_session && (
-            <span style={{
-              padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 600,
-              background: "rgba(248,81,73,0.15)", color: "var(--red)"
-            }}>STOPPING</span>
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-down/15 text-down">STOPPING</span>
           )}
         </div>
         <button
-          className="bot-btn bot-btn-stop-trading"
-          style={{ fontSize: 11, padding: "3px 10px" }}
+          className="btn-danger btn-sm"
           onClick={() => onMarketOff(market.slug_prefix)}
           disabled={loading}
         >
@@ -370,59 +356,48 @@ function MarketSection({
       </div>
 
       {activeStrategies.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div className="flex flex-col gap-2">
           {activeStrategies.map((s) => {
             const alive = s.alive !== false;
             return (
-              <div key={s.name} style={{
-                display: "flex", alignItems: "center", gap: 12, padding: "8px 12px",
-                background: "var(--bg)", borderRadius: 6, border: "1px solid var(--border)"
-              }}>
-                <span style={{
-                  width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                  background: alive ? "var(--green)" : "var(--red)",
-                }} />
-                <span style={{ fontWeight: 600, fontSize: 14, minWidth: 120 }}>{s.name}</span>
-                {s.dry_run && <span className="dry-run-tag">DRY</span>}
-                {!alive && <span style={{
-                  padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 600,
-                  background: "rgba(248,81,73,0.15)", color: "var(--red)"
-                }}>DEAD</span>}
-                <span style={{ color: "var(--text-dim)", fontSize: 13, marginLeft: "auto" }}>
+              <div key={s.name} className="flex items-center gap-3 px-3.5 py-2.5 bg-bg rounded-md border border-border">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${alive ? "bg-up" : "bg-down"}`} />
+                <span className="font-semibold text-sm min-w-[120px]">{s.name}</span>
+                {s.dry_run && <span className="inline-block px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/15 text-accent">DRY</span>}
+                {!alive && <span className="px-1.5 py-px rounded text-[10px] font-semibold bg-down/15 text-down">DEAD</span>}
+                <span className="text-dim text-[13px] ml-auto font-mono tabular-nums">
                   ${(s.bankroll ?? s.cash).toFixed(2)}
                   {s.session_cash_ratio != null && (
-                    <span style={{ opacity: 0.6 }}> ({Math.round(s.session_cash_ratio.ratio * 100)}% up to ${s.session_cash_ratio.max.toFixed(0)})</span>
+                    <span className="opacity-60"> ({Math.round(s.session_cash_ratio.ratio * 100)}% up to ${s.session_cash_ratio.max.toFixed(0)})</span>
                   )}
                   {s.session_cash_ratio == null && s.session_cap != null && (
-                    <span style={{ opacity: 0.6 }}> (${s.session_cap.toFixed(0)}/s)</span>
+                    <span className="opacity-60"> (${s.session_cap.toFixed(0)}/s)</span>
                   )}
                 </span>
                 {(market.market_type ?? "updown") === "updown" && (
-                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, cursor: "pointer", color: "var(--text-dim)" }}>
+                  <label className="flex items-center gap-1.5 text-[11px] cursor-pointer text-dim">
                     <input
                       type="checkbox"
                       checked={!!s.auto_exit}
                       onChange={(e) => onToggleAutoExit(market.slug_prefix, s.name, e.target.checked)}
-                      style={{ width: 13, height: 13, accentColor: "var(--accent)" }}
+                      className="w-[13px] h-[13px] accent-accent"
                     />
                     Auto-exit
                   </label>
                 )}
                 {s.pid != null && (
-                  <span style={{ color: "var(--text-dim)", fontSize: 11 }}>PID {s.pid}</span>
+                  <span className="text-dim text-[11px]">PID {s.pid}</span>
                 )}
-                <div style={{ display: "flex", gap: 4 }}>
+                <div className="flex gap-1.5">
                   <button
-                    className="bot-btn"
-                    style={{ fontSize: 11, padding: "2px 8px", background: "var(--accent)", color: "#fff" }}
+                    className="btn-accent btn-sm"
                     onClick={() => onReload(market.slug_prefix, s.name)}
                     disabled={loading}
                   >
                     Reload
                   </button>
                   <button
-                    className="bot-btn bot-btn-stop-trading"
-                    style={{ fontSize: 11, padding: "2px 8px" }}
+                    className="btn-danger btn-sm"
                     onClick={() => onTradeOff(market.slug_prefix, s.name)}
                     disabled={loading}
                   >
@@ -436,33 +411,35 @@ function MarketSection({
       )}
 
       {available.length > 0 && (
-        <div className="add-strategy-form">
-          <div className="add-strategy-row">
-            <label className="add-strategy-field add-strategy-field--strategy">
-              <span className="add-strategy-label">Strategy</span>
-              <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+        <div className="mt-3 p-3 bg-bg rounded-md border border-dashed border-border">
+          <div className="flex items-end gap-2.5">
+            <label className="flex flex-col gap-1 flex-1 min-w-0">
+              <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Strategy</span>
+              <select className="!text-[13px] !py-1.5 !px-2.5 w-full" value={selected} onChange={(e) => setSelected(e.target.value)}>
                 <option value="">Select...</option>
                 {available.map((s) => (
                   <option key={s} value={s}>{s}</option>
                 ))}
               </select>
             </label>
-            <label className="add-strategy-field">
-              <span className="add-strategy-label">Cash</span>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Cash</span>
               <input
                 type="number" value={cash} onChange={(e) => setCash(e.target.value)}
                 min="1" step="1"
+                className="text-[13px] w-20"
               />
             </label>
-            <label className="add-strategy-field">
-              <span className="add-strategy-label">Session limit</span>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Session limit</span>
               <input
                 type="text" value={sessionCap} onChange={(e) => setSessionCap(e.target.value)}
                 placeholder="5 or 25%:3"
+                className="text-[13px] w-24"
               />
             </label>
             <button
-              className="bot-btn add-strategy-btn"
+              className="btn-primary btn-sm shrink-0"
               disabled={loading || !selected}
               onClick={() => {
                 if (!selected) return;

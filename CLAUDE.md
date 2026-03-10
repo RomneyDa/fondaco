@@ -37,18 +37,22 @@ AppManager (one process, port 8420)
 │       └── DigitalOption (PID 1235)
 ├── MarketRunner "btc-updown-15m" (thread)
 │   └── ...
+├── Optimizer (subprocess, optional)
+│   └── Periodic backtest + param update cycle
 └── Shared: LoggingSession, RTDSClient (BTC/USD feed)
 ```
 
 **Key properties:**
 - **Data stream never dies** — killing/restarting a strategy doesn't touch the collector
 - **Per-strategy isolation** — each bot is a separate process; crash one, others keep running
-- **Hot reload** — `reload` kills and respawns a worker, picking up code changes
+- **Hot reload** — `reload` kills and respawns a worker, picking up code changes. Mid-session joins supported via session_start replay (see below)
 - **Multi-market** — one process manages all markets, shared resources (HTTP session, RTDS WebSocket)
 - **Market-on/market-off** — start/stop individual markets without affecting others
 - **A market ALWAYS has a data stream** — `market-off` kills bots + data; `trade-off` only kills bots
 
 The AppManager broadcasts ticks as JSON lines over per-market Unix sockets. Workers (`app/bot_worker.py`) connect, receive ticks, and run their strategy via `Trader.process_tick()`. Each worker has its own Position, Executor, and state file.
+
+**Mid-session join:** When a worker connects mid-session (e.g. after optimizer reload), the TickBroadcaster replays the last `session_start` with `replayed: true`. Strategies with `requires_full_session = False` (default) can trade immediately. Strategies with `requires_full_session = True` skip the partial session and wait for the next fresh one.
 
 State file at `data/app.json` tracks PID, port, and active markets. Per-market strategy configs persisted to `data/markets/{slug_key}/strategies.json` for `--restore`.
 
@@ -60,6 +64,20 @@ Strategy base class (`Strategy` ABC) lives in `core/strategies/base.py` as share
 - `bots/__init__.py` — registries: `MARKET_STRATEGIES`, `ALL_STRATEGIES`, `get_strategies_for_market()`
 - Import strategies from `bots`, not `core.strategies`: `from bots import ALL_STRATEGIES`
 - Import base class from core: `from core.strategies.base import Strategy`
+
+### Strategy Versioning
+
+Each strategy has a `version` class attribute (`"1"`, `"2"`, `"3"` — simple integers, no semver). Logged as `strategy_version` in all trade/session logs and shown in the dashboard. Bump when changing a strategy's trading logic (once per editing session, not per line).
+
+### Mid-Session Join (`requires_full_session`)
+
+Strategies have a `requires_full_session` boolean class attribute (default `False`). When a worker is spawned mid-session (optimizer reload, manual `trade-on`), the TickBroadcaster replays `session_start`. Strategies that need cumulative tick data from tick 0 (jump counts, warmup accumulators, full BTC price history) must set `requires_full_session = True` — the worker will skip the partial session and wait for the next one.
+
+| `requires_full_session = True` | `requires_full_session = False` (default) |
+|---|---|
+| CheapShot, DigitalOption, PoissonKelly, PoissonKellyActive, PoissonKellyHistorical, DynamicPoissonKelly, PoissonKellyStacked | LateSniper, BargainHunter, BrendaFlipper, BuyTrend, DipSniper, FadeTheMarket, MidpointMomentum, MomentumEntry |
+
+When creating a new strategy, set `requires_full_session = True` if it accumulates state from tick 0 that can't be reconstructed mid-session (e.g. Poisson jump counts, warmup windows, running sums).
 
 ## Usage
 
@@ -87,6 +105,14 @@ uv run python -m app trade-off btc-updown-5m-           # Kill all bots on this 
 uv run python -m app reload btc-updown-5m- --strategy LateSniper
 uv run python -m app set-cash btc-updown-5m- 50 --strategy LateSniper
 uv run python -m app set-cash btc-updown-5m- 50 --session-cash-ratio 0.25:3  # Update ratio
+
+# Optimizer lifecycle
+uv run python -m app optimizer-on                           # Start with defaults (30m interval, 30 sessions, 0.2 sharpe)
+uv run python -m app optimizer-on --interval 15 --lookback 20 --min-sharpe 0.15
+uv run python -m app optimizer-off                          # Stop optimizer
+uv run python -m app optimizer-config                       # View current config & status
+uv run python -m app optimizer-config --interval 10         # Update interval (takes effect next cycle)
+uv run python -m app optimizer-config --min-sharpe 0.25     # Update min Sharpe threshold
 
 # Standalone claim (no running app needed)
 uv run python -m app claim [--no-wait]
@@ -129,14 +155,14 @@ core/
   api_logger.py             LoggingSession — all HTTP requests go through this
   trader.py                 TradeAction, Position, TickContext, Trade, Executor ABC,
                             SimExecutor, ClobExecutor, Trader (shared tick loop)
-  tick_broadcast.py         TickBroadcaster (Unix socket server), TickSubscriber (client)
+  tick_broadcast.py         TickBroadcaster (Unix socket server, replays session_start to mid-session joiners), TickSubscriber (client)
   rtds_client.py            WebSocket client for Chainlink prices (resolution source)
   market_discovery.py       Gamma API market lookup and resolution
   price_fetcher.py          BTC price + CLOB token price polling
   window_ops.py             Window wait, metadata retry, resolution polling
   session_recorder.py       Session JSON I/O and logging (accepts per-market paths)
   strategies/
-    base.py                 Strategy ABC (on_session_start, on_tick, param_grid)
+    base.py                 Strategy ABC (on_session_start, on_tick, param_grid, requires_full_session)
 bots/
   __init__.py               MARKET_STRATEGIES, ALL_STRATEGIES, get_strategies_for_market()
   updown/
@@ -144,10 +170,11 @@ bots/
     late_sniper.py, bargain_hunter.py, ...
     archived/               Strategies that don't work with 0.01/0.99 book
 app/
-  __main__.py               CLI: start, market-on/off, trade-on/off, reload, status, stop, kill, claim
-  app_manager.py            AppManager (central manager for multiple MarketRunners)
+  __main__.py               CLI: start, market-on/off, trade-on/off, reload, status, stop, kill, claim, optimizer-on/off/config
+  app_manager.py            AppManager (central manager for multiple MarketRunners + optimizer)
   market_runner.py          MarketRunner (data collection + worker management per market)
   bot_worker.py             Bot worker process (one per strategy, connects to tick socket)
+  optimizer.py              Live optimizer subprocess (periodic backtest + param update)
   server.py                 HTTP control server (stdlib, daemon thread)
   auth.py                   CLOB auth helpers (Safe derivation, API creds, cache)
   claim.py                  Claim/redeem logic via Builder Relayer
@@ -174,6 +201,11 @@ data/
       bot_log.jsonl         Per-market session log
       strategies.json       Per-market strategy restore config
       backtest_log.jsonl    Per-market backtest results
+  optimizer/
+    status.json             Optimizer state (written by optimizer process)
+    config.json             Optimizer config (interval, lookback, min_sharpe)
+    events.jsonl            Structured event log (rotated at 1MB)
+    optimizer.log           Optimizer stdout/stderr (rotated at 2MB, 5 backups)
 ```
 
 ## HTTP Control API
@@ -190,6 +222,11 @@ POST /api/control/trade-on                       # {slug_prefix, strategy, param
 POST /api/control/trade-off                      # {slug_prefix, strategy?}
 POST /api/control/reload                         # {slug_prefix, strategy}
 POST /api/control/set-cash                       # {slug_prefix, cash, strategy?, session_cash_ratio?, session_cap?, clear_session_limit?}
+GET  /api/control/optimizer-status               # {running, state, pid, interval_minutes, ...}
+GET  /api/control/optimizer-events               # {events: [...]} (last 100 events, newest first)
+POST /api/control/optimizer-on                   # {interval?, lookback?, min_sharpe?, starting_cash?}
+POST /api/control/optimizer-off                  # Stop optimizer
+POST /api/control/optimizer-config               # {interval_minutes?, lookback?, min_sharpe?} — live update
 ```
 
 ## Tick Scale
@@ -212,6 +249,16 @@ Buy sizes floored to integer. Sell sizes `math.floor` to 4 decimals — never ro
 ## API Latency
 
 CLOB ~300ms, Gamma ~270ms, Data API ~375ms, Builder Relayer ~675ms. Network RTT ~45ms (Cloudflare, US East). Negligible for 5-minute windows.
+
+## Taker Fees
+
+Ref: https://docs.polymarket.com/trading/fees
+
+Most Polymarket markets are fee-free, but **crypto markets have taker fees** (since March 6, 2026). Fees are redistributed to market makers as rebates.
+
+**Crypto fee formula:** `fee = tokens × price × feeRate × (price × (1 - price))^exponent` where `feeRate=0.25`, `exponent=2`. Max effective fee is **1.56% at price 0.50**, dropping toward 0 at extreme prices. Constants `CRYPTO_FEE_RATE` and `CRYPTO_FEE_EXPONENT` in `core/defaults.py`, computed by `compute_taker_fee()`.
+
+Both `SimExecutor` and `ClobExecutor` deduct fees after each trade via `position.cash -= fee`. The `Trade` dataclass carries a `fee` field. FAK order responses don't report fees, so we compute them locally using the same formula. Backtest CLI supports `--fee-bps` (default 1000, use 0 to disable).
 
 ## Guardrails
 
@@ -250,6 +297,7 @@ This bot trades real money. No sandbox, no undo.
 
 ## Rules
 
+- **Bump strategy version on logic changes** — when modifying a strategy's trading logic, increment its `version` class attribute. One bump per editing session, not per line change.
 - **Always pass `--recent 30`** (or less) when running backtests.
 - **uv** for package management. `uv sync`, `uv add <pkg>`, `uv run python -m <module>`.
 - **Python >=3.10** — use `typing.Optional`/`typing.Union`, not `X | Y`.

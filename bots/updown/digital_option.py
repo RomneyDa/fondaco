@@ -32,6 +32,8 @@ class DigitalOption(Strategy):
         "Models the market as a digital option using Black-Scholes fair probability. "
         "Enters when market midpoint diverges from model price, with regime-adaptive thresholds."
     )
+    version = "1"
+    requires_full_session = True
 
     def __init__(
         self,

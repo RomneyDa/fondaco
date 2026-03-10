@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -51,6 +53,7 @@ class AppManager:
         self._save_lock = threading.Lock()
         self._markets = {}  # type: Dict[str, MarketRunner]
         self._threads = {}  # type: Dict[str, threading.Thread]
+        self._optimizer_process = None  # type: Optional[subprocess.Popen]
 
     def start_market(self, slug_prefix, window_duration=WINDOW_DURATION_SECONDS,
                      market_type="updown", max_sessions=0):
@@ -152,7 +155,81 @@ class AppManager:
         return {
             "running": self.running,
             "markets": market_statuses,
+            "optimizer": self.get_optimizer_status(),
         }
+
+    def start_optimizer(self, interval=30, lookback=30, min_sharpe=0.2, starting_cash=100.0,
+                        max_edge_iters=2):
+        # type: (int, int, float, float, int) -> Dict[str, Any]
+        """Start the optimizer subprocess."""
+        if self._optimizer_process is not None and self._optimizer_process.poll() is None:
+            return {"error": "Optimizer already running (PID {})".format(self._optimizer_process.pid)}
+
+        from core.defaults import BASE_DIR
+        optimizer_dir = os.path.join(BASE_DIR, "data", "optimizer")
+        os.makedirs(optimizer_dir, exist_ok=True)
+        log_file = os.path.join(optimizer_dir, "optimizer.log")
+        log_fh = open(log_file, "a")
+
+        cmd = [
+            sys.executable, "-m", "app.optimizer",
+            "--port", str(self.port),
+            "--interval", str(interval),
+            "--lookback", str(lookback),
+            "--min-sharpe", str(min_sharpe),
+            "--cash", str(starting_cash),
+            "--max-edge-iters", str(max_edge_iters),
+        ]
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            cwd=os.path.join(BASE_DIR),
+            start_new_session=True,
+        )
+        self._optimizer_process = process
+        logger.info("Optimizer started (PID %d)", process.pid)
+        return {"ok": True, "pid": process.pid}
+
+    def stop_optimizer(self):
+        # type: () -> Dict[str, Any]
+        """Stop the optimizer subprocess."""
+        if self._optimizer_process is None or self._optimizer_process.poll() is not None:
+            return {"error": "Optimizer not running"}
+        pid = self._optimizer_process.pid
+        try:
+            os.kill(pid, signal.SIGTERM)
+            self._optimizer_process.wait(timeout=15)
+        except Exception as e:
+            logger.warning("Failed to stop optimizer gracefully: %s", e)
+            try:
+                self._optimizer_process.kill()
+            except Exception:
+                pass
+        self._optimizer_process = None
+        logger.info("Optimizer stopped (PID %d)", pid)
+        return {"ok": True, "stopped_pid": pid}
+
+    def get_optimizer_status(self):
+        # type: () -> Dict[str, Any]
+        """Get optimizer status."""
+        alive = (self._optimizer_process is not None and
+                 self._optimizer_process.poll() is None)
+        result = {
+            "running": alive,
+            "pid": self._optimizer_process.pid if alive else None,
+        }
+        # Read status file
+        from core.defaults import OPTIMIZER_DIR
+        status_file = os.path.join(OPTIMIZER_DIR, "status.json")
+        try:
+            with open(status_file, "r") as f:
+                result.update(json.load(f))
+        except (OSError, json.JSONDecodeError):
+            pass
+        result["running"] = alive  # override with actual process status
+        return result
 
     def request_stop(self):
         # type: () -> None
@@ -206,6 +283,17 @@ class AppManager:
 
         for thread in threads:
             thread.join(timeout=30)
+
+        # Stop optimizer
+        if self._optimizer_process is not None and self._optimizer_process.poll() is None:
+            try:
+                os.kill(self._optimizer_process.pid, signal.SIGTERM)
+                self._optimizer_process.wait(timeout=10)
+            except Exception:
+                try:
+                    self._optimizer_process.kill()
+                except Exception:
+                    pass
 
         self.rtds.stop()
         self.http_session.close()

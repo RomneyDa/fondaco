@@ -15,6 +15,7 @@ class FadeTheMarket(Strategy):
 
     name = "FadeTheMarket"
     description = "Mean reversion contrarian play. If a token midpoint stays at an extreme for several ticks early in the window, bets against it. Exits on stop-loss if the trend continues."
+    version = "1"
 
     def __init__(
         self,
