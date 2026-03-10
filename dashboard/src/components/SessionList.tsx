@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useLocation } from "react-router-dom";
 import { fetchSessionSummaries } from "../api";
 import type { SessionSummary } from "../types";
 
 export function SessionList() {
   const { prefix } = useParams<{ prefix: string }>();
+  const location = useLocation();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
   useEffect(() => {
     if (!prefix) return;
     fetchSessionSummaries(prefix, 100).then(setSessions);
-  }, [prefix]);
+  }, [prefix, location.key]);
 
   return (
     <div>

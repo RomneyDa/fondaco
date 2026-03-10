@@ -233,9 +233,10 @@ class AppManager:
 
     def request_stop(self):
         # type: () -> None
-        """Stop everything — all markets and their workers."""
+        """Stop everything — all markets, workers, and optimizer."""
         logger.info("App stop requested.")
         self.running = False
+        self.stop_optimizer()
         with self._lock:
             runners = list(self._markets.values())
         for runner in runners:

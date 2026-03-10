@@ -20,8 +20,8 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from core.defaults import BASE_DIR, DEFAULT_RATIO_MAX, MARKETS_DIR, market_sessions_dir
-from simulator.engine import Simulator, BacktestResult, load_sessions
+from core.defaults import BASE_DIR, DEFAULT_RATIO_MAX, MARKETS_DIR, OPTIMIZER_MAX_RATIO, market_sessions_dir
+from simulator.engine import Simulator, BacktestResult, load_sessions, compute_kelly_sizing, KELLY_FRACTION
 from simulator.backtest import build_variants, format_params
 from bots import ALL_STRATEGIES
 
@@ -38,6 +38,7 @@ DEFAULT_LOOKBACK_SESSIONS = 30
 DEFAULT_MIN_SHARPE = 0.2
 DEFAULT_STARTING_CASH = 100.0
 DEFAULT_MAX_EDGE_ITERS = 2
+MIN_SHARPE_IMPROVEMENT = 0.05  # require 0.05 Sharpe improvement to trigger update
 
 logger = logging.getLogger("optimizer")
 
@@ -289,6 +290,7 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
         starting_cash=starting_cash,
         execution_mode="book",
         all_sessions=all_sessions,
+        compound=False,  # Phase 1: flat cash for clean per-session returns
     )
     baseline_result = sim.run_backtest(baseline_strategy, sessions)
 
@@ -297,11 +299,13 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
         "pnl": round(baseline_result.total_pnl, 2),
         "win_rate": round(baseline_result.win_rate * 100, 1),
         "geo_return": round(baseline_result.geo_mean_return * 100, 4),
+        "final_bankroll": round(baseline_result.final_bankroll, 2),
     }
-    logger.info("[%s/%s] Baseline: sharpe=%.3f pnl=%.2f win=%.1f%% geo=%.4f%%",
+    logger.info("[%s/%s] Baseline: sharpe=%.3f geo=%.4f%% pnl=%.2f win=%.1f%% final=$%.2f",
                 slug_key, strategy_name,
-                baseline_result.sharpe, baseline_result.total_pnl,
-                baseline_result.win_rate * 100, baseline_result.geo_mean_return * 100)
+                baseline_result.sharpe, baseline_result.geo_mean_return * 100,
+                baseline_result.total_pnl,
+                baseline_result.win_rate * 100, baseline_result.final_bankroll)
     _log_event("baseline", strategy=strategy_name, market=slug_key,
                params=current_params or {}, sessions_used=len(sessions),
                **baseline_info)
@@ -396,10 +400,10 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
         if best is None or iter_best.sharpe > best.sharpe:
             best = iter_best
 
-        logger.info("[%s/%s] Best (%s): sharpe=%.3f pnl=%.2f params=%s",
+        logger.info("[%s/%s] Best (%s): sharpe=%.3f geo=%.4f%% pnl=%.2f params=%s",
                     slug_key, strategy_name, iter_label,
-                    iter_best.sharpe, iter_best.total_pnl,
-                    format_params(iter_best.params))
+                    iter_best.sharpe, iter_best.geo_mean_return * 100,
+                    iter_best.total_pnl, format_params(iter_best.params))
 
         # Check for edge params — only refine if we have iterations left
         if edge_iter >= max_edge_iters:
@@ -429,25 +433,28 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
         top_variants.append({
             "params": r.params,
             "sharpe": round(r.sharpe, 3),
+            "geo_return": round(r.geo_mean_return * 100, 4),
             "pnl": round(r.total_pnl, 2),
             "win_rate": round(r.win_rate * 100, 1),
         })
 
-    logger.info("[%s/%s] Best overall: sharpe=%.3f pnl=%.2f win=%.1f%% geo=%.4f%% params=%s "
+    logger.info("[%s/%s] Best overall: sharpe=%.3f geo=%.4f%% pnl=%.2f win=%.1f%% params=%s "
                 "(tested %d variants across %d iteration(s))",
                 slug_key, strategy_name,
-                best.sharpe, best.total_pnl,
-                best.win_rate * 100, best.geo_mean_return * 100,
+                best.sharpe, best.geo_mean_return * 100, best.total_pnl,
+                best.win_rate * 100,
                 format_params(best.params),
                 total_variants_tested, min(edge_iter + 1, max_edge_iters + 1))
     _log_event("grid_result", strategy=strategy_name, market=slug_key,
                variants_tested=total_variants_tested, top_variants=top_variants,
                best_params=format_params(best.params),
                best_sharpe=round(best.sharpe, 3),
+               best_geo_return=round(best.geo_mean_return * 100, 4),
                baseline_sharpe=round(baseline_result.sharpe, 3),
                edge_iterations=min(edge_iter + 1, max_edge_iters + 1))
 
     # Step 3: Decide action
+    # Optimize for Sharpe (best risk-adjusted edge), then size with Kelly (cash_pct)
     if best.sharpe < min_sharpe:
         logger.info("[%s/%s] Best sharpe %.3f < min %.2f -> disabling",
                     slug_key, strategy_name, best.sharpe, min_sharpe)
@@ -462,20 +469,31 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
         }
 
     # Check if improvement over baseline
-    improved = best.sharpe > baseline_result.sharpe + 0.01  # require at least 0.01 improvement
-    params_changed = best.params != (current_params or {})
+    improved = best.sharpe > baseline_result.sharpe + MIN_SHARPE_IMPROVEMENT
+    # Strip cash_pct from comparison since it's not a strategy param
+    best_strategy_params = {k: v for k, v in best.params.items() if k != "cash_pct"}
+    params_changed = best_strategy_params != (current_params or {})
 
     if improved and params_changed:
-        # Compute recommended session-cash-ratio from dd_ratio
-        new_ratio = None
-        if best.dd_ratio > 0:
-            ratio_val = round(best.dd_ratio, 2)
-            new_ratio = {"ratio": ratio_val, "max": DEFAULT_RATIO_MAX}
+        # Phase 2: compute Kelly sizing from raw session returns
+        kelly = compute_kelly_sizing(best.sessions, starting_cash, kelly_multiplier=KELLY_FRACTION)
+        best_cash_pct = kelly["cash_pct"]
 
-        logger.info("[%s/%s] Improved! sharpe %.3f -> %.3f, updating params",
-                    slug_key, strategy_name, baseline_result.sharpe, best.sharpe)
+        new_ratio = None
+        if best_cash_pct > 0:
+            ratio_val = min(round(best_cash_pct, 2), OPTIMIZER_MAX_RATIO)
+            current_max = session_cash_ratio.get("max", DEFAULT_RATIO_MAX) if session_cash_ratio else DEFAULT_RATIO_MAX
+            new_ratio = {"ratio": ratio_val, "max": current_max}
+
+        strategy_params = best.params
+
+        logger.info("[%s/%s] Improved! sharpe %.3f -> %.3f, updating params (cash_pct=%.2f)",
+                    slug_key, strategy_name,
+                    baseline_result.sharpe, best.sharpe,
+                    best_cash_pct or 0)
         return "update", {
-            "new_params": best.params,
+            "new_params": strategy_params,
+            "new_cash_pct": best_cash_pct,
             "new_sharpe": best.sharpe,
             "new_pnl": best.total_pnl,
             "new_win_rate": best.win_rate,
@@ -489,7 +507,7 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
             "sessions_used": len(sessions),
         }
     else:
-        logger.info("[%s/%s] No significant improvement (%.3f vs %.3f), keeping current",
+        logger.info("[%s/%s] No significant improvement (sharpe %.3f vs %.3f), keeping current",
                     slug_key, strategy_name, best.sharpe, baseline_result.sharpe)
         return "keep", {
             "best_sharpe": best.sharpe,
@@ -504,26 +522,22 @@ def _apply_update(strategy_name, slug_key, slug_prefix, details, current_cash, p
     new_params = details["new_params"]
     new_ratio = details.get("new_ratio")
 
-    # Update cash ratio if recommended
+    # Update session-cash-ratio if recommended (never change bankroll amount)
     if new_ratio:
         logger.info("[%s/%s] Updating session-cash-ratio to %.2f:%.2f",
                     slug_key, strategy_name, new_ratio["ratio"], new_ratio["max"])
         resp = _control_request(port, "set-cash", {
             "slug_prefix": slug_prefix,
             "strategy": strategy_name,
-            "cash": current_cash,
             "session_cash_ratio": new_ratio,
         })
         if resp and not resp.get("ok"):
             logger.error("[%s/%s] set-cash failed: %s", slug_key, strategy_name, resp.get("error"))
 
-    # Reload strategy with new params by disabling and re-enabling
-    # First, we need to disable then re-enable with new params
-    # Actually, we use trade-on which kills the existing worker first
+    # Reload strategy with new params (preserve existing cash/session settings)
     logger.info("[%s/%s] Reloading with new params: %s",
                 slug_key, strategy_name, format_params(new_params))
 
-    # Read current worker config to preserve cash, session settings
     resp = _control_request(port, "trade-on", {
         "slug_prefix": slug_prefix,
         "strategy": strategy_name,
@@ -646,16 +660,23 @@ def run_optimizer(port, interval_minutes, lookback, min_sharpe, starting_cash,
                     continue  # Skip dead workers
 
                 name = strat["name"]
-                params = strat.get("params", {})
-                cash = strat.get("cash", starting_cash)
+                raw_params = strat.get("params", {})
+                params = {k: (None if v == "None" else v) for k, v in raw_params.items()}
+                cash = strat.get("starting_cash", strat.get("cash", starting_cash))
                 scr = strat.get("session_cash_ratio")
                 sc = strat.get("session_cap")
 
-                action, details = _optimize_strategy(
-                    name, slug_key, params, cash,
-                    scr, sc, lookback, min_sharpe, starting_cash, port,
-                    max_edge_iters=max_edge_iters,
-                )
+                try:
+                    action, details = _optimize_strategy(
+                        name, slug_key, params, cash,
+                        scr, sc, lookback, min_sharpe, starting_cash, port,
+                        max_edge_iters=max_edge_iters,
+                    )
+                except Exception as e:
+                    logger.exception("[%s/%s] Optimizer crashed", slug_key, name)
+                    _log_event("error", strategy=name, market=slug_key,
+                               error=str(e))
+                    continue
 
                 result_entry = {
                     "strategy": name,

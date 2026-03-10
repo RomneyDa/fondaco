@@ -169,11 +169,9 @@ export function SessionDetail() {
       })()}
 
       {/* Trades */}
-      {allTrades.length > 0 && (
-        <div className="mb-6">
-          <TradeTable trades={allTrades} />
-        </div>
-      )}
+      <div className="mb-6">
+        <TradeTable trades={allTrades} />
+      </div>
     </div>
   );
 }

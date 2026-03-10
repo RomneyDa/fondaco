@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { fetchLiveSession, archiveSession, fetchSessionList, fetchMarketPnl } from "../api";
 import type { MarketPnl } from "../api";
 import type { LivePayload } from "../types";
@@ -27,6 +27,7 @@ function formatCountdown(targetUtc: string): string {
 
 export function LiveView({ liveData }: Props) {
   const { prefix } = useParams<{ prefix: string }>();
+  const navigate = useNavigate();
   const [payload, setPayload] = useState<LivePayload | null>(null);
   const [ended, setEnded] = useState(false);
   const [hadSSE, setHadSSE] = useState(false);
@@ -105,11 +106,17 @@ export function LiveView({ liveData }: Props) {
     payload && "trading" in payload ? (payload as any).trading : undefined;
 
   const currentTrades: any[] = [];
+  const currentPending: any[] = [];
   if (trading?.strategies && Array.isArray(trading.strategies)) {
     for (const s of trading.strategies) {
       if (Array.isArray(s.trades)) {
         for (const t of s.trades) {
           currentTrades.push({ ...t, _strategy: s.name });
+        }
+      }
+      if (Array.isArray(s.pending_orders)) {
+        for (const o of s.pending_orders) {
+          currentPending.push({ ...o, _strategy: s.name });
         }
       }
     }
@@ -153,6 +160,7 @@ export function LiveView({ liveData }: Props) {
       const result = await archiveSession(prefix, latest);
       if (result.ok) {
         setArchived(true);
+        navigate(`/sessions/${prefix}`);
       } else {
         alert("Failed to archive: " + (result.error || "unknown error"));
       }
@@ -165,22 +173,20 @@ export function LiveView({ liveData }: Props) {
   return (
     <div>
       <div className="flex items-center gap-3 mb-6">
-        <h2 className="text-xl font-semibold">
-          Live: {prefix}
-          <a
-            href={
-              payload && isSessionData(payload) && payload.metadata?.event_slug
-                ? `https://polymarket.com/event/${payload.metadata.event_slug}`
-                : `https://polymarket.com/event/${prefix}`
-            }
-            target="_blank"
-            rel="noopener noreferrer"
-            className="ml-2 text-dim align-middle"
-            title="Open on Polymarket"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-          </a>
-        </h2>
+        <h2 className="text-xl font-semibold">Live: {prefix}</h2>
+        <a
+          href={
+            payload && isSessionData(payload) && payload.metadata?.event_slug
+              ? `https://polymarket.com/event/${payload.metadata.event_slug}`
+              : `https://polymarket.com/event/${prefix}`
+          }
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-dim hover:text-accent transition-colors"
+          title="Open on Polymarket"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        </a>
         <span className={`inline-block px-3 py-1 rounded-xl text-xs font-semibold ${badgeClass}`}>
           {statusLabel}
         </span>
@@ -271,7 +277,7 @@ export function LiveView({ liveData }: Props) {
       })()}
 
       {payload && isSessionData(payload) && (
-        <TradeTable trades={allTrades} />
+        <TradeTable trades={allTrades} pendingOrders={currentPending} />
       )}
 
       {!(payload && isSessionData(payload)) && (

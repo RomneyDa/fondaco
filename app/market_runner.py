@@ -257,7 +257,7 @@ class MarketRunner:
             "--restore",
         ]
         if params:
-            param_str = ",".join("{}={}".format(k, v) for k, v in params.items())
+            param_str = ",".join("{}={}".format(k, v) for k, v in params.items() if v is not None)
             cmd.extend(["--params", param_str])
         if dry_run:
             cmd.append("--dry-run")
@@ -379,9 +379,9 @@ class MarketRunner:
                 logger.info("[%s] All workers killed.", self.slug_key)
             self._save_strategies_config()
 
-    def set_cash(self, cash, strategy_name=None, session_cash_ratio=None,
+    def set_cash(self, cash=None, strategy_name=None, session_cash_ratio=None,
                  session_cap=None, clear_session_limit=False):
-        # type: (float, Optional[str], Optional[Dict[str, float]], Optional[float], bool) -> None
+        # type: (Optional[float], Optional[str], Optional[Dict[str, float]], Optional[float], bool) -> None
         with self._lock:
             if not self._workers:
                 raise RuntimeError("No active workers to update")
@@ -400,37 +400,39 @@ class MarketRunner:
                 )
 
         for w in target:
-            state_file = os.path.join(self._workers_dir, w.strategy_name, "state.json")
+            pending = {}
+            if cash is not None:
+                pending["cash"] = round(cash, 4)
+                w.cash = round(cash, 4)
+            if session_cash_ratio is not None:
+                pending["session_cash_ratio"] = session_cash_ratio
+                pending["session_cap"] = None
+                w.session_cash_ratio = session_cash_ratio
+                w.session_cap = None
+            elif session_cap is not None:
+                pending["session_cap"] = session_cap
+                pending["session_cash_ratio"] = None
+                w.session_cap = session_cap
+                w.session_cash_ratio = None
+            elif clear_session_limit:
+                pending["session_cap"] = None
+                pending["session_cash_ratio"] = None
+                w.session_cap = None
+                w.session_cash_ratio = None
             try:
-                if os.path.exists(state_file):
-                    with open(state_file, "r") as f:
-                        state = json.load(f)
-                else:
-                    state = {}
-                state["cash"] = round(cash, 4)
-                if session_cash_ratio is not None:
-                    state["session_cash_ratio"] = session_cash_ratio
-                    state["session_cap"] = None
-                    w.session_cash_ratio = session_cash_ratio
-                    w.session_cap = None
-                elif session_cap is not None:
-                    state["session_cap"] = session_cap
-                    state["session_cash_ratio"] = None
-                    w.session_cap = session_cap
-                    w.session_cash_ratio = None
-                elif clear_session_limit:
-                    state["session_cap"] = None
-                    state["session_cash_ratio"] = None
-                    w.session_cap = None
-                    w.session_cash_ratio = None
-                tmp = state_file + ".tmp"
+                pending_file = os.path.join(self._workers_dir, w.strategy_name, "pending_update.json")
+                tmp = pending_file + ".tmp"
                 with open(tmp, "w") as f:
-                    json.dump(state, f, indent=2)
-                os.replace(tmp, state_file)
-                logger.info("[%s/%s] Cash updated in state file: $%.4f",
-                            self.slug_key, w.strategy_name, cash)
+                    json.dump(pending, f, indent=2)
+                os.replace(tmp, pending_file)
+                if cash is not None:
+                    logger.info("[%s/%s] Pending cash update: $%.4f",
+                                self.slug_key, w.strategy_name, cash)
+                else:
+                    logger.info("[%s/%s] Pending session limits update",
+                                self.slug_key, w.strategy_name)
             except Exception as e:
-                logger.warning("Failed to update cash for %s: %s", w.strategy_name, e)
+                logger.warning("Failed to write pending update for %s: %s", w.strategy_name, e)
         self._save_strategies_config()
 
     def set_auto_exit(self, enabled, strategy_name=None):
@@ -469,14 +471,13 @@ class MarketRunner:
 
     def _save_strategies_config(self):
         # type: () -> None
+        """Save configured strategy settings (not live state) for restore."""
         configs = []
         for w in self._workers:
-            state = self._read_worker_state(w.strategy_name)
-            cash = state.get("cash", w.cash) if state else w.cash
             configs.append({
                 "name": w.strategy_name,
                 "params": w.params,
-                "cash": cash,
+                "cash": w.cash,
                 "dry_run": w.dry_run,
                 "per_session": w.per_session,
                 "session_cap": w.session_cap,
@@ -511,9 +512,12 @@ class MarketRunner:
             if not name:
                 continue
             try:
+                # Sanitize params: convert string "None" to actual None
+                raw_params = entry.get("params", {})
+                clean_params = {k: (None if v == "None" else v) for k, v in raw_params.items()}
                 self.enable_trading(
                     strategy_name=name,
-                    params=entry.get("params", {}),
+                    params=clean_params,
                     cash=entry.get("cash"),
                     dry_run=entry.get("dry_run", False),
                     per_session=entry.get("per_session", False),
@@ -531,13 +535,28 @@ class MarketRunner:
             for w in self._workers:
                 alive = w.process is not None and w.process.poll() is None
                 state = self._read_worker_state(w.strategy_name)
-                cash = state.get("cash", w.cash) if state else w.cash
+                live_cash = state.get("live_cash", state.get("cash", w.cash)) if state else w.cash
+                # Check for pending cash update (set-cash not yet picked up by worker)
+                pending_file = os.path.join(self._workers_dir, w.strategy_name, "pending_update.json")
+                pending_cash = None
+                try:
+                    if os.path.exists(pending_file):
+                        with open(pending_file, "r") as f:
+                            pending = json.load(f)
+                        pending_cash = pending.get("cash")
+                except (OSError, json.JSONDecodeError):
+                    pass
+                # When a pending cash reset exists, use it for both cash and bankroll
+                # so the dashboard reflects the reset immediately
+                if pending_cash is not None:
+                    live_cash = pending_cash
+                bankroll = pending_cash if pending_cash is not None else w.cash
                 info = {
                     "name": w.strategy_name,
                     "params": w.params,
                     "dry_run": w.dry_run,
-                    "cash": round(cash, 4),
-                    "bankroll": round(cash, 4),
+                    "cash": round(live_cash, 4),
+                    "bankroll": round(bankroll, 4),
                     "starting_cash": round(w.cash, 4),
                     "pid": w.process.pid if w.process else None,
                     "alive": alive,
@@ -836,7 +855,7 @@ class MarketRunner:
             else:
                 live = self._live_trades_cache.get(w.strategy_name)
             state = self._read_worker_state(w.strategy_name)
-            state_cash = state.get("cash", w.cash) if state else w.cash
+            state_cash = state.get("live_cash", state.get("cash", w.cash)) if state else w.cash
             info = {
                 "name": w.strategy_name,
                 "dry_run": w.dry_run,
@@ -846,6 +865,7 @@ class MarketRunner:
                 "down_tokens": live.get("down_tokens", 0) if live else 0,
                 "starting_cash": live.get("starting_cash", state_cash) if live else state_cash,
                 "trades": live.get("trades", []) if live else [],
+                "pending_orders": live.get("pending_orders", []) if live else [],
             }
             if w.session_cash_ratio is not None:
                 info["session_cash_ratio"] = w.session_cash_ratio

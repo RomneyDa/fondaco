@@ -125,6 +125,10 @@ def _parse_params(params_str):
         return params
     for pair in params_str.split(","):
         k, v = pair.split("=", 1)
+        v = v.strip()
+        if v == "None":
+            params[k.strip()] = None
+            continue
         try:
             v = int(v)
         except ValueError:

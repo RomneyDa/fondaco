@@ -146,7 +146,7 @@ class BotWorker:
         client = build_clob_client(private_key, auth)
         self._private_key = private_key
         self._safe_address = auth["safe_address"]
-        self.executor = ClobExecutor(client, trade_log_file=self._bot_trades_file)
+        self.executor = ClobExecutor(client, trade_log_file=self._bot_trades_file, strategy_name=self.strategy_name)
 
     def save_state(self):
         # type: () -> None
@@ -156,7 +156,8 @@ class BotWorker:
             "strategy": self.strategy_name,
             "version": getattr(self.strategy, "version", None),
             "params": self.params,
-            "cash": round(bankroll, 4),
+            "cash": round(self.cash, 4),
+            "live_cash": round(bankroll, 4),
             "dry_run": self.dry_run,
             "session_cap": self.session_cap,
             "session_cash_ratio": self.session_cash_ratio,
@@ -173,38 +174,40 @@ class BotWorker:
 
     def _reload_session_config(self):
         # type: () -> None
-        """Re-read cash, session_cash_ratio, and session_cap from state.json.
+        """Read pending updates from pending_update.json written by set-cash.
 
-        This allows set-cash to update these values while the worker is running.
+        Uses a separate file from state.json to avoid race conditions —
+        save_state() never touches pending_update.json.
         """
-        filepath = os.path.join(self.state_dir, "state.json")
+        pending_file = os.path.join(self.state_dir, "pending_update.json")
+        if not os.path.exists(pending_file):
+            return
         try:
-            with open(filepath, "r") as f:
-                state = json.load(f)
-            new_cash = state.get("cash")
-            new_ratio = state.get("session_cash_ratio")
-            new_cap = state.get("session_cap")
-            changed = False
-            if new_cash is not None:
-                bankroll = self.position.cash + self._session_reserve
-                if abs(new_cash - bankroll) > 0.001:
-                    self.position.cash = new_cash
-                    self._session_reserve = 0.0
-                    logger.info(
-                        "[%s] Reloaded cash: $%.2f -> $%.2f",
-                        self.strategy_name, bankroll, new_cash,
-                    )
-                    changed = True
-            if new_ratio != self.session_cash_ratio or new_cap != self.session_cap:
-                self.session_cash_ratio = new_ratio
-                self.session_cap = new_cap
-                logger.info(
-                    "[%s] Reloaded session config: ratio=%s cap=%s",
-                    self.strategy_name, self.session_cash_ratio, self.session_cap,
-                )
-                changed = True
+            with open(pending_file, "r") as f:
+                pending = json.load(f)
+            os.remove(pending_file)
         except (OSError, json.JSONDecodeError):
-            pass
+            return
+
+        new_cash = pending.get("cash")
+        if new_cash is not None:
+            bankroll = self.position.cash + self._session_reserve
+            self.cash = new_cash
+            self.position.cash = new_cash
+            self._session_reserve = 0.0
+            logger.info(
+                "[%s] Reloaded cash: $%.2f -> $%.2f",
+                self.strategy_name, bankroll, new_cash,
+            )
+        new_ratio = pending.get("session_cash_ratio")
+        new_cap = pending.get("session_cap")
+        if "session_cash_ratio" in pending or "session_cap" in pending:
+            self.session_cash_ratio = new_ratio
+            self.session_cap = new_cap
+            logger.info(
+                "[%s] Reloaded session config: ratio=%s cap=%s",
+                self.strategy_name, self.session_cash_ratio, self.session_cap,
+            )
 
     def restore_state(self):
         # type: () -> None
@@ -259,6 +262,19 @@ class BotWorker:
                 trade_dicts = []
                 trade_count = 0
                 skip_session = False
+
+                # On mid-session rejoin, restore trade state from previous
+                # live_trades.json so sidecars and trade counts stay accurate.
+                if msg.get("replayed"):
+                    restored = self._restore_live_trades()
+                    if restored is not None:
+                        trade_dicts = restored
+                        trade_count = len(trade_dicts)
+                        if trade_count > 0:
+                            logger.info(
+                                "[%s] Restored %d trades from previous live_trades.json",
+                                self.strategy_name, trade_count,
+                            )
 
                 # If this is a replayed session_start (mid-session join) and
                 # the strategy needs cumulative data from tick 0, wait for the
@@ -366,7 +382,7 @@ class BotWorker:
                             "[%s] Trade failed: %s", self.strategy_name, trade.error,
                         )
 
-                self._write_live_trades(trade_dicts, trade_count)
+                self._write_live_trades(trade_dicts, trade_count, trader=trader)
 
             elif msg_type == "session_end":
                 if trader is not None:
@@ -441,6 +457,9 @@ class BotWorker:
                 "[%s] Resolution credit: $%.4f -> $%.4f (+$%.4f) [%s]",
                 self.strategy_name, old, self.position.cash, credit, outcome,
             )
+
+        # Update bankroll to reflect post-resolution cash
+        self.cash = self.position.cash
 
         pnl = self.position.cash - self.starting_cash
         logger.info(
@@ -526,10 +545,34 @@ class BotWorker:
         except OSError:
             pass
 
-    def _write_live_trades(self, trade_dicts, trade_count):
-        # type: (List[Dict[str, Any]], int) -> None
+    def _restore_live_trades(self):
+        # type: () -> Optional[List[Dict[str, Any]]]
+        """Restore trade_dicts from live_trades.json written by previous worker instance."""
         filepath = os.path.join(self.state_dir, "live_trades.json")
         try:
+            with open(filepath, "r") as f:
+                data = json.load(f)
+            trades = data.get("trades", [])
+            if trades:
+                return trades
+        except (OSError, json.JSONDecodeError, KeyError):
+            pass
+        return None
+
+    def _write_live_trades(self, trade_dicts, trade_count, trader=None):
+        # type: (List[Dict[str, Any]], int, Optional[Any]) -> None
+        filepath = os.path.join(self.state_dir, "live_trades.json")
+        try:
+            pending = []
+            if trader is not None:
+                for o in trader.open_orders:
+                    pending.append({
+                        "order_id": o.order_id,
+                        "side": o.side,
+                        "token": o.token,
+                        "price": o.price,
+                        "tokens": o.tokens,
+                    })
             with open(filepath, "w") as f:
                 bankroll = self.position.cash + self._session_reserve
                 json.dump({
@@ -542,6 +585,7 @@ class BotWorker:
                     "starting_cash": round(self.starting_cash, 4),
                     "trade_count": trade_count,
                     "trades": trade_dicts[-50:],
+                    "pending_orders": pending,
                 }, f)
         except Exception:
             pass
@@ -554,6 +598,10 @@ def _parse_params(params_str):
         return params
     for pair in params_str.split(","):
         k, v = pair.split("=", 1)
+        v = v.strip()
+        if v == "None":
+            params[k.strip()] = None
+            continue
         try:
             v = int(v)
         except ValueError:

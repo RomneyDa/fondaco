@@ -1,7 +1,17 @@
 import type { BotTrade } from "../types";
 
+interface PendingOrder {
+  order_id?: string;
+  side: string;
+  token: string;
+  price: number;
+  tokens: number;
+  _strategy?: string;
+}
+
 interface Props {
   trades: BotTrade[];
+  pendingOrders?: PendingOrder[];
 }
 
 function formatSide(side: string): string {
@@ -25,14 +35,17 @@ function fmtAmount(v: number): string {
   return "$" + v.toFixed(2);
 }
 
-export function TradeTable({ trades }: Props) {
+export function TradeTable({ trades, pendingOrders }: Props) {
+  const hasPending = pendingOrders && pendingOrders.length > 0;
+  const isEmpty = trades.length === 0 && !hasPending;
+
   return (
     <div className="mt-8 bg-card border border-border rounded-lg overflow-hidden">
       <div className="flex justify-between items-center px-4 py-3.5 border-b border-border">
         <h3 className="text-sm font-semibold">Session Trades</h3>
       </div>
-      {trades.length === 0 ? (
-        <p className="text-dim text-sm p-4">No trades yet</p>
+      {isEmpty ? (
+        <p className="text-dim text-sm p-4">No trades this session.</p>
       ) : (
         <div className="overflow-x-auto max-h-[480px] overflow-y-auto">
           <table className="data-table">
@@ -49,10 +62,30 @@ export function TradeTable({ trades }: Props) {
               </tr>
             </thead>
             <tbody>
+              {hasPending && pendingOrders.map((o, i) => (
+                <tr key={`pending-${i}`} className="bg-accent/[0.04]">
+                  <td className="text-dim text-xs">—</td>
+                  <td>{o._strategy || "—"}</td>
+                  <td>
+                    <span className={`font-semibold text-xs ${o.side.includes("up") ? "text-up" : "text-down"}`}>
+                      {formatSide(o.side)}
+                    </span>
+                  </td>
+                  <td>${o.price.toFixed(2)}</td>
+                  <td>{fmtTokens(o.tokens)}</td>
+                  <td>{fmtAmount(o.tokens * o.price)}</td>
+                  <td className="text-dim text-xs">—</td>
+                  <td>
+                    <span className="inline-block px-2 py-0.5 rounded-[10px] text-[11px] font-semibold bg-accent/15 text-accent animate-pulse">
+                      PENDING
+                    </span>
+                  </td>
+                </tr>
+              ))}
               {trades.map((t: any, i: number) => (
                 <tr key={i} className={t.success === false ? "bg-down/[0.04]" : ""}>
-                  <td>{t.elapsed_seconds != null ? `${t.elapsed_seconds.toFixed(1)}s` : "\u2014"}</td>
-                  <td>{t._strategy || "\u2014"}</td>
+                  <td>{t.elapsed_seconds != null ? `${t.elapsed_seconds.toFixed(1)}s` : "—"}</td>
+                  <td>{t._strategy || "—"}</td>
                   <td>
                     <span className={`font-semibold text-xs ${t.side.includes("up") ? "text-up" : "text-down"}`}>
                       {formatSide(t.side)}
@@ -66,7 +99,7 @@ export function TradeTable({ trades }: Props) {
                     )}
                   </td>
                   <td>{fmtAmount(t.amount)}</td>
-                  <td className="text-dim text-xs">{t.fee != null ? fmtAmount(t.fee) : "\u2014"}</td>
+                  <td className="text-dim text-xs">{t.fee != null ? fmtAmount(t.fee) : "—"}</td>
                   <td>
                     <span className={`inline-block px-2 py-0.5 rounded-[10px] text-[11px] font-semibold ${
                       t.success === false ? "bg-down/15 text-down" : "bg-up/15 text-up"

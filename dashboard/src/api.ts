@@ -302,10 +302,11 @@ export interface StrategyStats {
     strategy_version?: string;
     outcome: string;
     trades: number;
-    cash: number;
+    cash: number | null;
     pnl: number;
     credit: number;
-    session_number: number;
+    session_number: number | null;
+    _active?: boolean;
   }>;
   trades: TradeLogEntry[];
   resolutions: TradeLogEntry[];

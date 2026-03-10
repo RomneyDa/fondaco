@@ -217,6 +217,113 @@ app.get(
         : [];
 
       if (workerSidecars.length === 0) {
+        // Fallback: reconstruct trading data from bot_trades.jsonl
+        const sessionName = req.params.file.replace(".json", "");
+        const tradesFile = marketTradesFile(req.params.prefix);
+        if (fs.existsSync(tradesFile)) {
+          try {
+            const lines = fs.readFileSync(tradesFile, "utf-8").trim().split("\n");
+            // Parse session time window (5-minute windows)
+            const sessionTs = sessionName.replace(/T(\d{2})-(\d{2})-(\d{2})Z?$/, "T$1:$2:$3Z");
+            const windowStart = new Date(sessionTs);
+            const windowEnd = new Date(windowStart.getTime() + 5 * 60 * 1000);
+            const byStrategy: Record<string, any[]> = {};
+
+            for (const line of lines) {
+              if (!line) continue;
+              try {
+                const entry = JSON.parse(line);
+                if (entry.type === "resolution" || !entry.timestamp || !entry.strategy) continue;
+                // Skip unfilled GTC/GTD placements (fee is null for placements,
+                // non-null for actual fills). Including these creates phantom
+                // trades that never executed. But keep successful trades even
+                // if fee is null (some strategies don't log fees).
+                if (entry.order_type && entry.fee == null && entry.success !== true) continue;
+                const ts = new Date(entry.timestamp);
+                if (ts >= windowStart && ts < windowEnd) {
+                  if (!byStrategy[entry.strategy]) byStrategy[entry.strategy] = [];
+                  byStrategy[entry.strategy].push(entry);
+                }
+              } catch {}
+            }
+
+            const strategyNames = Object.keys(byStrategy);
+            if (strategyNames.length > 0) {
+              // Enrich with PnL data from bot_log.jsonl
+              const logFile = path.join(MARKETS_DIR, req.params.prefix, "bot_log.jsonl");
+              const logByStrategy: Record<string, any> = {};
+              if (fs.existsSync(logFile)) {
+                const logLines = fs.readFileSync(logFile, "utf-8").trim().split("\n");
+                // Match by timestamp (resolution time = window end)
+                const resolutionTs = windowEnd.toISOString();
+                for (const ll of logLines) {
+                  if (!ll) continue;
+                  try {
+                    const le = JSON.parse(ll);
+                    if (le.strategy && le.timestamp) {
+                      const leTs = new Date(le.timestamp);
+                      // Resolution timestamp should be close to window end
+                      if (Math.abs(leTs.getTime() - windowEnd.getTime()) < 60000) {
+                        logByStrategy[le.strategy] = le;
+                      }
+                    }
+                  } catch {}
+                }
+              }
+
+              // Get session outcome from session file
+              let outcome: string | null = null;
+              const sessionFile = path.join(dir, req.params.file);
+              if (fs.existsSync(sessionFile)) {
+                try {
+                  const sd = JSON.parse(fs.readFileSync(sessionFile, "utf-8"));
+                  outcome = sd.outcome || null;
+                } catch {}
+              }
+
+              const strategies = strategyNames.map((name) => {
+                const logEntry = logByStrategy[name];
+                const stratTrades = byStrategy[name];
+                // Compute PnL from trades when bot_log is unreliable (optimizer reload)
+                let tradePnl: number | null = null;
+                if (logEntry?.pnl != null && logEntry.trades > 0) {
+                  tradePnl = logEntry.pnl;
+                } else if (stratTrades.length > 0) {
+                  // Estimate PnL from trades, accounting for resolution
+                  let spent = 0, received = 0, fees = 0;
+                  let upTokens = 0, downTokens = 0;
+                  for (const t of stratTrades) {
+                    if (t.success === false) continue;
+                    const amt = t.amount ?? 0;
+                    const tokens = t.tokens ?? 0;
+                    const fee = t.fee ?? 0;
+                    if (t.side === "buy_up") { spent += amt; fees += fee; upTokens += tokens; }
+                    else if (t.side === "buy_down") { spent += amt; fees += fee; downTokens += tokens; }
+                    else if (t.side === "sell_up") { received += amt; fees += fee; upTokens -= tokens; }
+                    else if (t.side === "sell_down") { received += amt; fees += fee; downTokens -= tokens; }
+                  }
+                  // Winning tokens pay $1 each at resolution, losing tokens pay $0
+                  let resolutionCredit = 0;
+                  if (outcome === "Up") resolutionCredit = Math.max(0, upTokens);
+                  else if (outcome === "Down") resolutionCredit = Math.max(0, downTokens);
+                  tradePnl = Math.round((received - spent - fees + resolutionCredit) * 10000) / 10000;
+                }
+                return {
+                  strategy: name,
+                  name,
+                  trades: stratTrades,
+                  pnl: tradePnl,
+                  starting_cash: logEntry ? (logEntry.cash - (logEntry.pnl ?? 0)) : null,
+                  final_cash: logEntry?.cash ?? null,
+                  outcome: outcome ?? logEntry?.outcome ?? null,
+                  dry_run: false,
+                };
+              });
+              res.json({ strategies });
+              return;
+            }
+          } catch {}
+        }
         res.status(404).json({ error: "No trading data" });
         return;
       }
@@ -630,7 +737,7 @@ app.get("/api/bot/trades", (req: Request, res: Response) => {
         } catch {}
       }
 
-      // 3. bot_trades.jsonl
+      // 3. bot_trades.jsonl — resolutions + individual trades
       if (fs.existsSync(tradesFile)) {
         try {
           const lines = fs.readFileSync(tradesFile, "utf-8").trim().split("\n");
@@ -646,6 +753,8 @@ app.get("/api/bot/trades", (req: Request, res: Response) => {
                   session_start: entry.timestamp,
                   market: prefix,
                 });
+              } else if (entry.strategy) {
+                allTrades.push({ ...entry, market: prefix });
               }
             } catch {}
           }
@@ -653,14 +762,29 @@ app.get("/api/bot/trades", (req: Request, res: Response) => {
       }
     }
 
+    // Deduplicate by order_id (trades may appear in both sidecars and bot_trades.jsonl)
+    const seen = new Set<string>();
+    const deduped: any[] = [];
+    for (const t of allTrades) {
+      if (t._type === "resolution") {
+        deduped.push(t);
+        continue;
+      }
+      const key = t.order_id || `${t.timestamp}-${t.side}-${t.strategy}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(t);
+      }
+    }
+
     // Sort newest-first
-    allTrades.sort((a, b) => {
+    deduped.sort((a, b) => {
       const ta = a.timestamp || a.session_start || "";
       const tb = b.timestamp || b.session_start || "";
       return tb.localeCompare(ta);
     });
 
-    res.json({ trades: allTrades.slice(0, limit) });
+    res.json({ trades: deduped.slice(0, limit) });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -730,8 +854,63 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
       }
     }
 
+    // Build in-progress sessions from trades after the last resolution
+    // Group unresolved trades into sessions by 5-minute windows
+    const lastResolutionTime = resolutions.length > 0
+      ? resolutions[resolutions.length - 1].timestamp
+      : null;
+    const unresolvedTrades = trades.filter((t) => {
+      if (!t.timestamp) return false;
+      if (lastResolutionTime && t.timestamp <= lastResolutionTime) return false;
+      return true;
+    });
+    if (unresolvedTrades.length > 0) {
+      // Group by ~5 min windows (use first trade as anchor, 6 min gap = new session)
+      const windows: any[][] = [];
+      let currentWindow: any[] = [unresolvedTrades[0]];
+      for (let i = 1; i < unresolvedTrades.length; i++) {
+        const prev = new Date(unresolvedTrades[i - 1].timestamp).getTime();
+        const curr = new Date(unresolvedTrades[i].timestamp).getTime();
+        if (curr - prev > 6 * 60 * 1000) {
+          windows.push(currentWindow);
+          currentWindow = [unresolvedTrades[i]];
+        } else {
+          currentWindow.push(unresolvedTrades[i]);
+        }
+      }
+      windows.push(currentWindow);
+
+      for (const windowTrades of windows) {
+        const successfulTrades = windowTrades.filter((t) => t.success !== false);
+        const totalSpent = successfulTrades.reduce((sum, t) => sum + (t.amount || 0), 0);
+        sessions.push({
+          timestamp: windowTrades[0].timestamp,
+          strategy,
+          strategy_version: windowTrades[0].strategy_version || null,
+          outcome: "active",
+          trades: successfulTrades.length,
+          pnl: -totalSpent,
+          credit: 0,
+          cash: null,
+          session_number: null,
+          _active: true,
+        });
+      }
+    }
+
+    // Deduplicate by order_id (trades may appear in both sidecars and bot_trades.jsonl)
+    const seenOids = new Set<string>();
+    const dedupedTrades: any[] = [];
+    for (const t of trades) {
+      const key = t.order_id || `${t.timestamp}-${t.side}`;
+      if (!seenOids.has(key)) {
+        seenOids.add(key);
+        dedupedTrades.push(t);
+      }
+    }
+
     // Sort trades by timestamp descending
-    trades.sort((a, b) => {
+    dedupedTrades.sort((a, b) => {
       const ta = a.timestamp || a.session_start || "";
       const tb = b.timestamp || b.session_start || "";
       return tb.localeCompare(ta);
@@ -739,7 +918,7 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
 
     // Compute total fees from trades
     let totalFees = 0;
-    for (const t of trades) {
+    for (const t of dedupedTrades) {
       if (typeof t.fee === "number") totalFees += t.fee;
     }
     for (const r of resolutions) {
@@ -811,6 +990,7 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
           if (fs.existsSync(stateFile)) {
             try {
               const state = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
+              if (state.live_cash != null) return state.live_cash;
               if (state.cash != null) return state.cash;
             } catch {}
           }
@@ -820,7 +1000,7 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
         total_fees: Math.round(totalFees * 100) / 100,
       },
       sessions: sessions.slice(-200),
-      trades: trades.slice(0, 500),
+      trades: dedupedTrades.slice(0, 500),
       resolutions: resolutions.slice(-200),
       version_summary: versionSummary,
     });

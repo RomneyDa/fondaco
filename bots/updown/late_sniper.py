@@ -18,15 +18,15 @@ class LateSniper(Strategy):
 
     name = "LateSniper"
     description = "Waits until late in the window when the outcome is more predictable, then buys the likely winner."
-    version = "4"
+    version = "5"
 
     def __init__(
         self,
-        min_elapsed=0.45,
-        confidence_threshold=0.71,
-        max_price=0.94,
-        stop_loss_pct=0.05,  # type: Optional[float]
-        take_profit_pct=None,  # type: Optional[float]
+        min_elapsed=0.57,
+        confidence_threshold=0.80,
+        max_price=0.99,
+        stop_loss_pct=0.10,  # type: Optional[float]
+        take_profit_pct=0.15,  # type: Optional[float]
         bet_fraction=1.0,
     ):
         self.min_elapsed = min_elapsed

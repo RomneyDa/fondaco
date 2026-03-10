@@ -240,6 +240,108 @@ def _compute_kelly_metrics(results, starting_cash, compound):
     }
 
 
+# Default fractional Kelly multiplier (half-Kelly).
+# Full Kelly is usually too aggressive due to estimation error and regime shifts.
+# Half-Kelly gives ~75% of the growth rate with much less variance.
+KELLY_FRACTION = 0.5
+
+
+def compute_kelly_sizing(results, starting_cash, kelly_multiplier=KELLY_FRACTION):
+    # type: (List[SessionResult], float, float) -> Dict[str, float]
+    """Compute optimal position sizing from raw (unscaled) session returns.
+
+    Phase 2 of the two-phase backtest: given a strategy's per-session return
+    series from flat-cash backtesting (Phase 1), compute the Kelly-optimal
+    fraction of bankroll to deploy per session.
+
+    Returns include full Kelly f*, the recommended fractional Kelly cash_pct,
+    and projected compound growth at that sizing.
+
+    The return series includes zeros for no-trade sessions — this is correct
+    because the decision not to trade is part of the strategy and represents
+    a real deployment opportunity.
+
+    Laplace smoothing: when few or no losses are observed, the empirical
+    distribution underestimates tail risk. We inject a synthetic worst-case
+    loss (-100% of deployed capital) to ensure Kelly accounts for the
+    asymmetry between small wins and total loss. This prevents Kelly from
+    recommending dangerously large positions when the sample happens to
+    contain no losses.
+    """
+    # Extract per-session return fractions (on deployed capital)
+    returns = []  # type: List[float]
+    for r in results:
+        if r.starting_cash > 0:
+            returns.append(r.pnl / r.starting_cash)
+        else:
+            returns.append(0.0)
+
+    n = len(returns)
+    if n == 0:
+        return {"kelly_f": 0.0, "cash_pct": 0.0, "projected_geo_return": 0.0,
+                "projected_final": starting_cash, "projected_max_dd": 0.0}
+
+    # Laplace smoothing: inject a synthetic total-loss event.
+    # With binary-outcome markets (token → $0 or $1), a loss is -100%.
+    # We add 1 worst-case loss per N traded sessions to prevent Kelly
+    # from treating zero observed losses as zero loss probability.
+    traded_returns = [r for r in returns if r != 0.0]
+    loss_count = sum(1 for r in traded_returns if r < 0)
+    if loss_count == 0 and len(traded_returns) > 0:
+        # Add 1 synthetic total loss: -1.0 (lost everything deployed)
+        smoothed_returns = returns + [-1.0]
+    else:
+        smoothed_returns = returns
+
+    # Numerical Kelly: find f* that maximizes E[log(1 + f * r_i)]
+    # Fine-grained scan: 0.001 to 1.0 in steps of 0.001
+    best_f = 0.0
+    best_growth = 0.0
+    for f_int in range(1, 1001):
+        f = f_int / 1000.0
+        g = 0.0
+        valid = True
+        for ret in smoothed_returns:
+            v = 1.0 + f * ret
+            if v <= 0:
+                valid = False
+                break
+            g += math.log(v)
+        if valid and g > best_growth:
+            best_growth = g
+            best_f = f
+
+    kelly_f = best_f
+    cash_pct = round(kelly_f * kelly_multiplier, 4)
+
+    # Project compound growth at recommended cash_pct
+    bankroll = starting_cash
+    peak = starting_cash
+    max_dd = 0.0
+    for ret in returns:
+        session_cash = bankroll * cash_pct
+        pnl = session_cash * ret
+        bankroll += pnl
+        if bankroll > peak:
+            peak = bankroll
+        dd = (peak - bankroll) / peak if peak > 0 else 0.0
+        if dd > max_dd:
+            max_dd = dd
+
+    geo_return = 0.0
+    if bankroll > 0 and starting_cash > 0 and n > 0:
+        geo_return = math.exp(math.log(bankroll / starting_cash) / n) - 1.0
+
+    return {
+        "kelly_f": kelly_f,
+        "cash_pct": cash_pct,
+        "kelly_multiplier": kelly_multiplier,
+        "projected_geo_return": geo_return,
+        "projected_final": bankroll,
+        "projected_max_dd": max_dd,
+    }
+
+
 class Simulator:
     def __init__(
         self,
@@ -249,12 +351,14 @@ class Simulator:
         all_sessions=None,
         compound=False,
         fee_bps=TAKER_FEE_BASE_BPS,
+        session_cash_ratio=None,
     ):
         self.starting_cash = starting_cash
         self.execution_mode = execution_mode
         self.slippage = slippage
         self.compound = compound
         self.fee_bps = fee_bps
+        self.session_cash_ratio = session_cash_ratio  # (ratio, max) or None
         # Pre-build sorted session summaries for strategies that need lookback
         self._session_summaries = (
             _build_session_summaries(all_sessions) if all_sessions else None
@@ -321,7 +425,12 @@ class Simulator:
 
     def run_backtest(self, strategy, sessions):
         # type: (Any, List[Dict[str, Any]]) -> BacktestResult
-        """Run a strategy across all sessions and aggregate stats."""
+        """Run a strategy across all sessions and aggregate stats.
+
+        With compound=False (Phase 1): flat cash per session for clean returns.
+        With compound=True: full bankroll carried forward (rarely used directly;
+        Phase 2 sizing is done by compute_kelly_sizing instead).
+        """
         results = []
         bankroll = self.starting_cash
 
@@ -329,8 +438,13 @@ class Simulator:
             if self.compound:
                 if bankroll < 0.01:
                     break  # ruin — stop
-                result = self.run_session(strategy, s, session_cash=bankroll)
-                bankroll = result.final_position.cash
+                if self.session_cash_ratio is not None:
+                    ratio, cap = self.session_cash_ratio
+                    session_cash = min(bankroll * ratio, cap)
+                else:
+                    session_cash = bankroll
+                result = self.run_session(strategy, s, session_cash=session_cash)
+                bankroll = (bankroll - session_cash) + result.final_position.cash
             else:
                 result = self.run_session(strategy, s)
             results.append(result)
@@ -342,7 +456,7 @@ class Simulator:
         wins = sum(1 for r in results if r.pnl > 0)
         win_rate = wins / n if n > 0 else 0.0
 
-        # Sharpe: mean / std of per-session PnL percentage
+        # Sharpe: mean / std of per-session PnL
         if n > 1:
             pnls = [r.pnl for r in results]
             mean = mean_pnl

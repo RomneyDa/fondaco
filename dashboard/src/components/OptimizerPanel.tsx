@@ -360,6 +360,7 @@ function EventRow({ event }: { event: OptimizerEvent }) {
     disable: "text-down",
     keep: "text-dim",
     skip: "text-btc",
+    error: "text-down",
   };
 
   const color = typeColors[event.type] ?? "text-txt";
@@ -415,6 +416,8 @@ function EventRow({ event }: { event: OptimizerEvent }) {
     detail = `${strat} (sharpe=${fmtNum(event.best_sharpe ?? event.baseline_sharpe ?? 0)})`;
   } else if (event.type === "skip") {
     detail = `${strat} (${event.reason ?? "skipped"})`;
+  } else if (event.type === "error") {
+    detail = `${strat} | ${event.error ?? "unknown error"}`;
   } else if (strat) {
     detail = strat;
   }

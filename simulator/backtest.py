@@ -17,7 +17,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from simulator.engine import Simulator, BacktestResult, load_sessions
+from simulator.engine import Simulator, BacktestResult, load_sessions, compute_kelly_sizing, KELLY_FRACTION
 from core.defaults import BALANCE_CACHE_FILE, DEFAULT_RATIO_MAX, MARKETS_DIR, TAKER_FEE_BASE_BPS, market_backtest_log, market_sessions_dir
 from bots import ALL_STRATEGIES
 
@@ -27,16 +27,19 @@ _worker_sim = None   # type: Optional[Simulator]
 _worker_sessions = None  # type: Optional[list]
 
 
-def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions, compound, fee_bps):
-    # type: (float, str, float, list, list, bool, int) -> None
-    """Initializer for each worker process — sets up Simulator and sessions once."""
+def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions, fee_bps):
+    # type: (float, str, float, list, list, int) -> None
+    """Initializer for each worker process — sets up Simulator and sessions once.
+
+    Phase 1 always runs with compound=False to get clean per-session returns.
+    """
     global _worker_sim, _worker_sessions
     _worker_sim = Simulator(
         starting_cash=starting_cash,
         execution_mode=execution_mode,
         slippage=slippage,
         all_sessions=all_sessions,
-        compound=compound,
+        compound=False,  # Phase 1: flat cash for clean returns
         fee_bps=fee_bps,
     )
     _worker_sessions = sessions
@@ -298,7 +301,9 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
     best_per_strategy = []
     for name in sorted(by_strategy.keys()):
         best = max(by_strategy[name], key=sort_key)
-        best_per_strategy.append({
+        # Include Kelly sizing if computed
+        kelly_sizing = getattr(best, "_kelly_sizing", None)
+        entry = {
             "strategy": best.strategy_name,
             "params": best.params,
             "variants_tested": len(by_strategy[name]),
@@ -307,15 +312,18 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
             "mean_pnl": round(best.mean_pnl, 4),
             "win_rate": round(best.win_rate, 4),
             "num_sessions": best.num_sessions,
-            "geo_mean_return": round(best.geo_mean_return, 6),
-            "kelly_fraction": round(best.kelly_fraction, 4),
-            "dd_ratio": round(best.dd_ratio, 4),
-            "max_drawdown": round(best.max_drawdown, 4),
-            "final_bankroll": round(best.final_bankroll, 4),
             "total_fees": round(best.total_fees, 4),
-        })
+        }
+        if kelly_sizing:
+            entry["kelly_f"] = round(kelly_sizing["kelly_f"], 4)
+            entry["cash_pct"] = round(kelly_sizing["cash_pct"], 4)
+            entry["kelly_multiplier"] = kelly_sizing["kelly_multiplier"]
+            entry["projected_final"] = round(kelly_sizing["projected_final"], 2)
+            entry["projected_max_dd"] = round(kelly_sizing["projected_max_dd"], 4)
+            entry["projected_geo_return"] = round(kelly_sizing["projected_geo_return"], 6)
+        best_per_strategy.append(entry)
 
-    entry = {
+    log_entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "inputs": {
             "data_dir": args.data_dir,
@@ -323,7 +331,7 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
             "execution": args.execution,
             "slippage": args.slippage,
             "starting_cash": args.cash,
-            "compound": getattr(args, "compound", False),
+            "kelly_fraction": getattr(args, "kelly_fraction", KELLY_FRACTION),
             "optimize": optimize,
             "fee_bps": getattr(args, "fee_bps", TAKER_FEE_BASE_BPS),
             "num_sessions": len(sessions),
@@ -335,7 +343,7 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
     os.makedirs(os.path.dirname(backtest_log_file), exist_ok=True)
     try:
         with open(backtest_log_file, "a") as f:
-            f.write(json.dumps(entry, default=str) + "\n")
+            f.write(json.dumps(log_entry, default=str) + "\n")
     except Exception as e:
         print("Warning: failed to write backtest log: {}".format(e))
 
@@ -357,12 +365,14 @@ def main():
         "--optimize",
         default="sharpe",
         choices=["sharpe", "total_pnl", "win_rate", "kelly_growth"],
-        help="Metric to optimize (default: sharpe). kelly_growth = geometric mean return",
+        help="Metric to optimize (default: sharpe). Optimize Sharpe for edge, then size with Kelly (cash_pct).",
     )
     parser.add_argument(
-        "--compound",
-        action="store_true",
-        help="Compound bankroll across sessions (Kelly-realistic). PnL carries forward.",
+        "--kelly-fraction",
+        type=float,
+        default=KELLY_FRACTION,
+        help="Fractional Kelly multiplier for sizing (default: {:.2f} = half-Kelly). "
+             "1.0 = full Kelly (aggressive), 0.25 = quarter-Kelly (conservative).".format(KELLY_FRACTION),
     )
     parser.add_argument(
         "--execution",
@@ -447,11 +457,10 @@ def main():
         sessions = all_sessions
 
     fee_bps = args.fee_bps
+    kelly_mult = args.kelly_fraction
     print("Loaded {} resolved sessions from {}".format(len(sessions), args.data_dir))
-    print("Execution: {} (slippage={})  Starting cash: ${}{}  Fee: {} bps".format(
-        args.execution, args.slippage, starting_cash,
-        "  [COMPOUND]" if args.compound else "",
-        fee_bps,
+    print("Execution: {} (slippage={})  Starting cash: ${}  Fee: {} bps".format(
+        args.execution, args.slippage, starting_cash, fee_bps,
     ))
 
     # Select strategies
@@ -465,12 +474,17 @@ def main():
             sys.exit(1)
         strategy_names = [args.strategy]
 
+    # ── Phase 1: Strategy Selection ──────────────────────────────────────
+    # Flat cash per session (compound=False) to get clean per-session returns.
+    # Rank by Sharpe to find the best risk-adjusted edge.
+    print("\n── Phase 1: Strategy Selection (Sharpe on flat cash) ──")
+
     sim = Simulator(
         starting_cash=starting_cash,
         execution_mode=args.execution,
         slippage=args.slippage,
         all_sessions=all_sessions,
-        compound=args.compound,
+        compound=False,  # flat cash for clean returns
         fee_bps=fee_bps,
     )
 
@@ -497,7 +511,7 @@ def main():
             max_workers=num_workers,
             initializer=_init_worker,
             initargs=(starting_cash, args.execution, args.slippage,
-                      all_sessions, sessions, args.compound, fee_bps),
+                      all_sessions, sessions, fee_bps),
         ) as pool:
             all_results = list(pool.map(_run_one, all_variants))
 
@@ -505,19 +519,62 @@ def main():
         total_variants, len(strategy_names),
     ))
 
-    # Output
-    print_leaderboard(all_results, args.top, args.optimize, compound=args.compound)
-    print_strategy_summary(all_results, args.optimize, compound=args.compound, starting_cash=starting_cash)
+    # Phase 1 output: rank by Sharpe
+    print_leaderboard(all_results, args.top, args.optimize, compound=False)
+
+    # ── Phase 2: Kelly Sizing ────────────────────────────────────────────
+    # For each strategy's best params, compute Kelly-optimal cash_pct from
+    # the raw return series, then project compound growth.
+    print("── Phase 2: Kelly Sizing ({:.0f}% Kelly) ──".format(kelly_mult * 100))
+
+    # Group by strategy, find best per strategy
+    sort_key = {
+        "sharpe": lambda r: r.sharpe,
+        "total_pnl": lambda r: r.total_pnl,
+        "win_rate": lambda r: r.win_rate,
+        "kelly_growth": lambda r: r.geo_mean_return,
+    }.get(args.optimize, lambda r: r.sharpe)
+
+    by_strategy = {}  # type: dict
+    for r in all_results:
+        by_strategy.setdefault(r.strategy_name, []).append(r)
+
+    print("\n{:<20} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8} {:>8}  {}".format(
+        "Strategy", "Sharpe", "Kelly_f", "cash%", "Final$", "MaxDD%", "GeoRet%", "Win%", "Params"
+    ))
+    print("-" * 120)
+
+    for name in sorted(by_strategy.keys()):
+        variants = by_strategy[name]
+        best = max(variants, key=sort_key)
+
+        # Compute Kelly sizing from raw (unscaled) session returns
+        kelly = compute_kelly_sizing(best.sessions, starting_cash, kelly_multiplier=kelly_mult)
+
+        print("{:<20} {:>8.3f} {:>8.3f} {:>7.1f}% {:>10.2f} {:>7.1f}% {:>7.3f}% {:>7.1f}%  {}".format(
+            name,
+            best.sharpe,
+            kelly["kelly_f"],
+            kelly["cash_pct"] * 100,
+            kelly["projected_final"],
+            kelly["projected_max_dd"] * 100,
+            kelly["projected_geo_return"] * 100,
+            best.win_rate * 100,
+            format_params(best.params),
+        ))
+
+        # Store sizing info on the result for logging
+        best._kelly_sizing = kelly
+
+    print()
+    print("Kelly fraction multiplier: {:.0f}% (use --kelly-fraction to adjust)".format(kelly_mult * 100))
+    print("  cash% = Kelly_f * {:.0f}% = fraction of bankroll per session".format(kelly_mult * 100))
+    print("  Final$ = projected compound bankroll over {} sessions".format(len(sessions)))
+    print()
 
     if args.verbose:
-        # Show per-session breakdown for the best overall result
-        sort_key = {
-            "sharpe": lambda r: r.sharpe,
-            "total_pnl": lambda r: r.total_pnl,
-            "win_rate": lambda r: r.win_rate,
-        }.get(args.optimize, lambda r: r.sharpe)
-        best = max(all_results, key=sort_key)
-        print_verbose(best)
+        best_overall = max(all_results, key=sort_key)
+        print_verbose(best_overall)
 
     # Persist full run to JSONL log
     log_backtest_run(args, sessions, all_results, args.optimize, backtest_log_file)

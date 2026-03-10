@@ -41,7 +41,7 @@ export function StrategyDetail() {
     .filter((s) => new Date(s.timestamp).getTime() >= cutoff1h)
     .reduce((sum, s) => sum + s.pnl, 0);
 
-  const tradedSessions = sessions.filter((s) => s.trades > 0);
+  const tradedSessions = sessions.filter((s) => s.trades > 0 || s._active);
   let cumPnl = 0;
   const equityCurve = tradedSessions.map((s) => {
     cumPnl += s.pnl;
@@ -202,15 +202,16 @@ export function StrategyDetail() {
                       <span className="text-dim mr-1.5 text-[11px]">{fmtDateOnly(s.timestamp)}</span>
                       {fmtTimeOnly(s.timestamp)}
                     </td>
-                    <td>{s.session_number}</td>
+                    <td>{s.session_number != null ? s.session_number : "\u2014"}</td>
                     <td className="text-[11px] text-dim">
                       {s.strategy_version ? `v${s.strategy_version}` : "\u2014"}
                     </td>
                     <td>
                       <span className={`inline-block px-2 py-0.5 rounded-[10px] text-[11px] font-semibold ${
+                        s._active ? "bg-accent/20 text-accent animate-pulse" :
                         s.pnl > 0 ? "bg-up/15 text-up" : s.pnl < 0 ? "bg-down/15 text-down" : "bg-[rgba(136,132,216,0.15)] text-dim"
                       }`}>
-                        {s.outcome}
+                        {s._active ? "ACTIVE" : s.outcome}
                       </span>
                     </td>
                     <td>{s.trades}</td>
@@ -220,7 +221,7 @@ export function StrategyDetail() {
                       </span>
                     </td>
                     <td>{s.credit > 0 ? `+${s.credit.toFixed(2)}` : "\u2014"}</td>
-                    <td>${s.cash.toFixed(2)}</td>
+                    <td>{s.cash != null ? `$${s.cash.toFixed(2)}` : "\u2014"}</td>
                   </tr>
                 ))}
               </tbody>

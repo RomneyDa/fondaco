@@ -500,10 +500,11 @@ SELL_COOLDOWN_SECONDS = 5.0  # min time between sell attempts for the same token
 class ClobExecutor(Executor):
     """Executes trades via Polymarket's CLOB API."""
 
-    def __init__(self, clob_client, trade_log_file=None):
-        # type: (Any, Optional[str]) -> None
+    def __init__(self, clob_client, trade_log_file=None, strategy_name=None):
+        # type: (Any, Optional[str], Optional[str]) -> None
         self.client = clob_client
         self.trade_log_file = trade_log_file
+        self.strategy_name = strategy_name
         self._last_fill_check = 0.0  # timestamp of last check_fills poll
         self._last_sell_fail = {}  # type: Dict[str, float]  # token_id -> timestamp
 
@@ -794,8 +795,11 @@ class ClobExecutor(Executor):
         if self.trade_log_file is None:
             return
         try:
+            d = asdict(trade)
+            if self.strategy_name:
+                d["strategy"] = self.strategy_name
             with open(self.trade_log_file, "a") as f:
-                f.write(json.dumps(asdict(trade), default=str) + "\n")
+                f.write(json.dumps(d, default=str) + "\n")
         except Exception as e:
             logger.error("CRITICAL: Failed to log trade to %s: %s", self.trade_log_file, e)
 
@@ -1333,9 +1337,15 @@ class Trader:
             return None
 
         # 6. Route: limit order vs FAK
+        #    - price set → GTC/GTD limit order (placed on the book)
+        #    - no price → FAK at best_ask/best_bid (immediate fill)
         trade = None
-        if action.side != "hold" and action.price is not None:
-            # Limit order path
+        is_limit_order = (
+            action.side != "hold"
+            and action.price is not None
+        )
+        if is_limit_order:
+            # Limit order path (GTC or GTD with expiration)
             self._replace_order_on_token(action)
             try:
                 order = self.executor.place_limit_order(
@@ -1350,7 +1360,7 @@ class Trader:
                     action, self._tick_index, self._metadata, sample, self._position,
                 )
         else:
-            # FAK path (existing behavior)
+            # FAK path: immediate fill-or-cancel at best_ask/best_bid.
             trade = self.executor.execute_trade(
                 action, self._tick_index, self._metadata, sample, self._position,
             )
@@ -1401,6 +1411,12 @@ class Trader:
         # type: () -> List[Trade]
         """Limit order fills from the most recent process_tick call."""
         return self._last_tick_fills
+
+    @property
+    def open_orders(self):
+        # type: () -> List[OpenOrder]
+        """Currently pending GTC/GTD limit orders."""
+        return list(self._open_orders)
 
     @property
     def decision_log(self):

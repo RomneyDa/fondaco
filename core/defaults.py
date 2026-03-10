@@ -30,6 +30,7 @@ API_RAW_DIR = os.path.join(BASE_DIR, "data", "api_raw")
 CLOB_MIN_ORDER_TOKENS = 5          # Min order size in tokens (CLOB rejects below this)
 TRADE_CUTOFF_SECONDS = 5           # Stop all trades this many seconds before session end
 DEFAULT_RATIO_MAX = 100            # Default max $ per session in --session-cash-ratio
+OPTIMIZER_MAX_RATIO = 0.12         # Optimizer may never set session-cash-ratio above 12%
 
 # CLOB taker fee (crypto up/down markets)
 # Ref: https://docs.polymarket.com/trading/fees

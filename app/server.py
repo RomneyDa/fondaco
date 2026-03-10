@@ -240,25 +240,26 @@ class _Handler(BaseHTTPRequestHandler):
             if slug_prefix is None:
                 return
             cash = body.get("cash")
-            if cash is None:
-                self._send_json({"error": "Missing 'cash' field"}, 400)
-                return
             strategy_name = body.get("strategy")
             session_cash_ratio = body.get("session_cash_ratio")
             session_cap = body.get("session_cap")
             if session_cap is not None:
                 session_cap = float(session_cap)
             clear_session_limit = body.get("clear_session_limit", False)
+            if cash is None and session_cash_ratio is None and session_cap is None and not clear_session_limit:
+                self._send_json({"error": "Must provide 'cash', 'session_cash_ratio', 'session_cap', or 'clear_session_limit'"}, 400)
+                return
             runner = mgr.get_market(slug_prefix)
             runner.set_cash(
-                float(cash), strategy_name=strategy_name,
+                float(cash) if cash is not None else None,
+                strategy_name=strategy_name,
                 session_cash_ratio=session_cash_ratio,
                 session_cap=session_cap,
                 clear_session_limit=clear_session_limit,
             )
             self._send_json({
                 "ok": True,
-                "cash": round(float(cash), 4),
+                **({"cash": round(float(cash), 4)} if cash is not None else {}),
                 "slug_prefix": slug_prefix,
             })
         except Exception as e:
@@ -317,11 +318,8 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 return
 
-            state = runner._read_worker_state(strategy_name)
-            cash = state.get("cash", target.cash) if state else target.cash
-
             runner.enable_trading(
-                strategy_name, target.params, cash=cash,
+                strategy_name, target.params, cash=target.cash,
                 dry_run=target.dry_run, per_session=target.per_session,
                 session_cap=target.session_cap,
                 session_cash_ratio=target.session_cash_ratio,
