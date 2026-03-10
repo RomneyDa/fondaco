@@ -184,7 +184,8 @@ export function LiveView({ liveData }: Props) {
               <span> ({formatCountdown(payload.next_window_utc)})</span>
             )}
         </div>
-        {ended && !archived && (
+        <div style={{ flex: 1 }} />
+        {(ended || (payload && isSessionData(payload))) && !archived && (
           <button
             className="archive-btn"
             onClick={handleArchive}

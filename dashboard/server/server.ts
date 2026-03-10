@@ -369,6 +369,15 @@ app.post("/api/bot/set-cash", async (req: Request, res: Response) => {
   res.status(status).json(data);
 });
 
+app.post("/api/bot/set-auto-exit", async (req: Request, res: Response) => {
+  const { status, data } = await proxyToControl(
+    "/api/control/set-auto-exit",
+    "POST",
+    req.body
+  );
+  res.status(status).json(data);
+});
+
 app.post("/api/bot/stop", async (_req: Request, res: Response) => {
   const { status, data } = await proxyToControl("/api/control/stop", "POST");
   res.status(status).json(data);
@@ -391,35 +400,17 @@ app.post("/api/bot/kill", async (_req: Request, res: Response) => {
 // --- Strategies ---
 
 app.get("/api/strategies", async (_req: Request, res: Response) => {
-  // Try to get from running app, fall back to scanning bots/ dir
-  const port = getControlPort();
-  if (port) {
-    try {
-      const r = await fetch(`http://localhost:${port}/api/control/status`);
-      const data = await r.json() as any;
-      // Collect all strategy names from running markets
-      const names = new Set<string>();
-      for (const m of data.markets || []) {
-        for (const s of m.strategies || []) {
-          names.add(s.name);
-        }
-      }
-      if (names.size > 0) {
-        res.json({ strategies: [...names].sort() });
-        return;
-      }
-    } catch {}
-  }
-  // Fall back: scan bots/updown/*.py for class names
+  // Read strategy names from the canonical Python registry in bots/updown/__init__.py
   try {
-    const botsDir = path.join(PROJECT_ROOT, "bots", "updown");
-    if (fs.existsSync(botsDir)) {
-      const files = fs.readdirSync(botsDir).filter(f => f.endsWith(".py") && f !== "__init__.py");
+    const initFile = path.join(PROJECT_ROOT, "bots", "updown", "__init__.py");
+    if (fs.existsSync(initFile)) {
+      const content = fs.readFileSync(initFile, "utf-8");
+      // Match keys in STRATEGIES = { "Name": ..., }
       const names: string[] = [];
-      for (const file of files) {
-        const content = fs.readFileSync(path.join(botsDir, file), "utf-8");
-        const match = content.match(/^class\s+(\w+)\s*\(/m);
-        if (match) names.push(match[1]);
+      const re = /^\s*"(\w+)"\s*:/gm;
+      let m;
+      while ((m = re.exec(content)) !== null) {
+        names.push(m[1]);
       }
       res.json({ strategies: names.sort() });
     } else {

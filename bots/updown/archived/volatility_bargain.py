@@ -98,16 +98,15 @@ class VolatilityBargain(Strategy):
         "underpriced relative to remaining session time."
     )
 
-    # Defaults tuned on recent 50 sessions (Sharpe=0.190, PnL=$3578, win=28%).
     def __init__(
         self,
-        lookback_sessions=5,
-        min_sessions=5,
-        threshold=100.0,
-        max_token_price=0.36,
+        lookback_sessions=3,
+        min_sessions=3,
+        threshold=5.0,
+        max_token_price=0.40,
         min_elapsed=0.03,
         slope_lookback=4.5,
-        slope_threshold=0.0,
+        slope_threshold=-0.0001,
         data_dir=None,
     ):
         self.lookback_sessions = lookback_sessions
@@ -286,9 +285,9 @@ class VolatilityBargain(Strategy):
         # type: () -> Dict[str, List[Any]]
         # Centered on optimums: 3 * 5 * 5 * 3 * 2 = 450 combos
         return {
-            "lookback_sessions": [4, 5, 7],
-            "threshold": [70.0, 85.0, 100.0, 120.0, 150.0],
-            "max_token_price": [0.30, 0.34, 0.36, 0.38, 0.42],
-            "slope_lookback": [3.5, 4.5, 5.5],
-            "slope_threshold": [-0.00005, 0.0],
+            "lookback_sessions": [3, 5, 7],
+            "threshold": [3.0, 5.0, 10.0, 20.0, 40.0],
+            "max_token_price": [0.30, 0.35, 0.40, 0.45, 0.50],
+            "slope_lookback": [3.0, 4.5, 6.0],
+            "slope_threshold": [-0.0001, 0.0],
         }

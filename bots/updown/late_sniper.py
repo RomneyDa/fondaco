@@ -1,5 +1,7 @@
 """Wait until late in the window when outcome is more certain, then buy the likely winner."""
 
+from typing import Any, Dict, List, Optional
+
 from core.trader import HOLD, TradeAction
 from core.strategies.base import Strategy
 
@@ -9,39 +11,43 @@ class LateSniper(Strategy):
         min_elapsed: minimum elapsed fraction before considering entry (e.g. 0.7)
         confidence_threshold: minimum midpoint to treat as "confident" (e.g. 0.70)
         max_price: don't buy above this price (limits downside)
-        stop_loss_pct: sell if midpoint drops this fraction below entry (e.g. 0.15)
+        stop_loss_pct: sell if midpoint drops this fraction below entry (None = disabled)
+        take_profit_pct: sell if midpoint rises this fraction above entry (None = disabled)
         bet_fraction: fraction of cash to bet
     """
 
     name = "LateSniper"
-    description = "Waits until late in the window when the outcome is more predictable, then buys the likely winner. Exits on stop-loss if the market reverses."
+    description = "Waits until late in the window when the outcome is more predictable, then buys the likely winner."
 
     def __init__(
         self,
-        min_elapsed=0.53,
-        confidence_threshold=0.60,
-        max_price=0.92,
-        stop_loss_pct=0.10,
+        min_elapsed=0.51,
+        confidence_threshold=0.74,
+        max_price=0.96,
+        stop_loss_pct=0.06,  # type: Optional[float]
+        take_profit_pct=None,  # type: Optional[float]
         bet_fraction=1.0,
     ):
         self.min_elapsed = min_elapsed
         self.confidence_threshold = confidence_threshold
         self.max_price = max_price
         self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
         self.bet_fraction = bet_fraction
         self._entry_midpoint = 0.0
-        self._exited = False  # True after stop-loss sell — done for session
+        self._last_sell_tick = -999  # throttle sell retries (~2s between attempts)
         self._params = {
             "min_elapsed": min_elapsed,
             "confidence_threshold": confidence_threshold,
             "max_price": max_price,
             "stop_loss_pct": stop_loss_pct,
+            "take_profit_pct": take_profit_pct,
             "bet_fraction": bet_fraction,
         }
 
     def on_session_start(self, metadata):
         self._entry_midpoint = 0.0
-        self._exited = False
+        self._last_sell_tick = -999
 
     def _has_position(self, ctx):
         """Check if we actually hold tokens (fill succeeded)."""
@@ -61,24 +67,44 @@ class LateSniper(Strategy):
         if up_mid is None or down_mid is None:
             return HOLD
 
-        # Manage existing position — check stop-loss
+        # Manage existing position — check stop-loss and take-profit
         held = self._held_side(ctx)
         if held is not None:
             current_mid = up_mid if held == "up" else down_mid
-            if self._entry_midpoint > 0 and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
-                self.log("stop-loss: mid={:.2f} down {:.1f}% from entry {:.2f}".format(
-                    current_mid,
-                    (1.0 - current_mid / self._entry_midpoint) * 100,
-                    self._entry_midpoint,
-                ))
+            if self._entry_midpoint > 0:
                 sell_side = "sell_up" if held == "up" else "sell_down"
                 tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
-                self._exited = True
-                return TradeAction(side=sell_side, amount=tokens, price=current_mid)
+
+                # Stop-loss
+                if self.stop_loss_pct is not None and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
+                    if ctx.tick_index - self._last_sell_tick < 36:
+                        return HOLD
+                    self._last_sell_tick = ctx.tick_index
+                    self.log("stop-loss: mid={:.2f} down {:.1f}% from entry {:.2f}".format(
+                        current_mid,
+                        (1.0 - current_mid / self._entry_midpoint) * 100,
+                        self._entry_midpoint,
+                    ))
+                    self._entry_midpoint = 0.0
+                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
+
+                # Take-profit
+                if self.take_profit_pct is not None and current_mid >= self._entry_midpoint * (1.0 + self.take_profit_pct):
+                    if ctx.tick_index - self._last_sell_tick < 36:
+                        return HOLD
+                    self._last_sell_tick = ctx.tick_index
+                    self.log("take-profit: mid={:.2f} up {:.1f}% from entry {:.2f}".format(
+                        current_mid,
+                        (current_mid / self._entry_midpoint - 1.0) * 100,
+                        self._entry_midpoint,
+                    ))
+                    self._entry_midpoint = 0.0
+                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
+
             return HOLD
 
-        # Already entered (limit order pending or filled+exited)
-        if self._exited or self._entry_midpoint > 0:
+        # Already entered (limit order pending or filled)
+        if self._entry_midpoint > 0:
             return HOLD
 
         # Wait for late window
@@ -117,8 +143,9 @@ class LateSniper(Strategy):
 
     def param_grid(self):
         return {
-            "min_elapsed": [0.45, 0.50, 0.53, 0.56, 0.60],
-            "confidence_threshold": [0.55, 0.58, 0.60, 0.62, 0.65],
-            "max_price": [0.85, 0.89, 0.92, 0.95],
-            "stop_loss_pct": [0.05, 0.10, 0.15],
+            "min_elapsed": [0.45, 0.47, 0.49, 0.51, 0.53],
+            "confidence_threshold": [0.68, 0.71, 0.74],
+            "max_price": [0.94, 0.96, 0.97],
+            "stop_loss_pct": [None, 0.03, 0.05, 0.08],
+            "take_profit_pct": [None, 0.15, 0.25, 0.40],
         }

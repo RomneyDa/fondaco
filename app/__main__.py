@@ -61,9 +61,17 @@ logger = logging.getLogger(__name__)
 
 def _write_state(pid, port):
     # type: (int, int) -> None
+    # Preserve existing markets list so --restore can read it back
+    existing_markets = []
+    if os.path.exists(APP_STATE_FILE):
+        try:
+            with open(APP_STATE_FILE, "r") as f:
+                existing_markets = json.load(f).get("markets", [])
+        except (ValueError, OSError, json.JSONDecodeError):
+            pass
     os.makedirs(os.path.dirname(APP_STATE_FILE), exist_ok=True)
     with open(APP_STATE_FILE, "w") as f:
-        json.dump({"pid": pid, "port": port}, f, indent=2)
+        json.dump({"pid": pid, "port": port, "markets": existing_markets}, f, indent=2)
 
 
 def _read_state():
@@ -76,7 +84,8 @@ def _read_state():
         pid = data.get("pid")
         if pid and _pid_alive(pid):
             return data
-        os.remove(APP_STATE_FILE)
+        # PID is stale — leave the file so _write_state can preserve
+        # the markets list for --restore.
         return None
     except (ValueError, OSError, json.JSONDecodeError):
         return None
@@ -84,8 +93,18 @@ def _read_state():
 
 def _remove_state():
     # type: () -> None
+    """Clear PID/port but preserve markets list so --restore works."""
     try:
-        os.remove(APP_STATE_FILE)
+        with open(APP_STATE_FILE, "r") as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return
+    # Keep markets, clear runtime info so _read_state sees it as stale
+    state.pop("pid", None)
+    state.pop("port", None)
+    try:
+        with open(APP_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
     except OSError:
         pass
 
@@ -238,6 +257,10 @@ def cmd_trade_on(args):
     session_cap = getattr(args, "session_cap", None)
     if session_cap is not None:
         body["session_cap"] = session_cap
+    session_cash_ratio_str = getattr(args, "session_cash_ratio", None)
+    if session_cash_ratio_str is not None:
+        parts = session_cash_ratio_str.split(":")
+        body["session_cash_ratio"] = {"ratio": float(parts[0]), "max": float(parts[1])}
 
     resp = _http_request("POST", "/api/control/trade-on", body)
     if resp.get("ok"):
@@ -276,6 +299,15 @@ def cmd_set_cash(args):
     strategy = getattr(args, "strategy", None)
     if strategy:
         body["strategy"] = strategy
+    session_cash_ratio_str = getattr(args, "session_cash_ratio", None)
+    if session_cash_ratio_str is not None:
+        parts = session_cash_ratio_str.split(":")
+        body["session_cash_ratio"] = {"ratio": float(parts[0]), "max": float(parts[1])}
+    session_cap = getattr(args, "session_cap", None)
+    if session_cap is not None:
+        body["session_cap"] = session_cap
+    if getattr(args, "clear_session_limit", False):
+        body["clear_session_limit"] = True
     resp = _http_request("POST", "/api/control/set-cash", body)
     if resp.get("ok"):
         print("Cash updated: ${}".format(resp.get("cash")))
@@ -343,7 +375,12 @@ def cmd_status(args):
                     pid_tag = " PID={}".format(s["pid"]) if s.get("pid") else ""
                     bankroll = s.get("bankroll", s.get("cash", 0))
                     cap_info = ""
-                    if s.get("session_cap"):
+                    if s.get("session_cash_ratio"):
+                        r = s["session_cash_ratio"]
+                        cap_info = " ({:.0f}% up to ${:.2f})".format(
+                            r["ratio"] * 100, r["max"],
+                        )
+                    elif s.get("session_cap"):
                         cap_info = " (cap=${:.2f})".format(s["session_cap"])
                     print("    - {} | bankroll=${:.2f}{}{}{}{} | params={}".format(
                         s["name"], bankroll, cap_info, dry_tag, pid_tag, alive_tag,
@@ -530,6 +567,10 @@ def main():
         "--session-cap", type=float, default=None,
         help="Max dollars deployed per session",
     )
+    trade_on_parser.add_argument(
+        "--session-cash-ratio", default=None,
+        help="Deploy ratio:max of bankroll per session, e.g. 0.25:3",
+    )
 
     # trade-off
     trade_off_parser = subparsers.add_parser("trade-off", help="Disable trading on a market")
@@ -550,6 +591,18 @@ def main():
     set_cash_parser.add_argument(
         "--strategy", default=None,
         help="Target strategy (required when multiple active)",
+    )
+    set_cash_parser.add_argument(
+        "--session-cash-ratio", default=None,
+        help="Deploy ratio:max of bankroll per session, e.g. 0.25:3",
+    )
+    set_cash_parser.add_argument(
+        "--session-cap", type=float, default=None,
+        help="Set fixed session cap",
+    )
+    set_cash_parser.add_argument(
+        "--clear-session-limit", action="store_true",
+        help="Clear session cap / ratio",
     )
 
     # reload

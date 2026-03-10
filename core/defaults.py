@@ -28,6 +28,7 @@ API_RAW_DIR = os.path.join(BASE_DIR, "data", "api_raw")
 
 # Trading guardrails (shared by simulator and bot)
 CLOB_MIN_ORDER_TOKENS = 5          # Min order size in tokens (CLOB rejects below this)
+TRADE_CUTOFF_SECONDS = 5           # Stop all trades this many seconds before session end
 
 # Balance cache
 BALANCE_CACHE_FILE = os.path.join(BASE_DIR, ".cache", "balance.json")

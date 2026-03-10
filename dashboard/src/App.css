@@ -21,6 +21,58 @@ body {
   overflow: hidden;
 }
 
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 28px 6px 10px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8.825a.5.5 0 0 1-.354-.146l-3.5-3.5a.5.5 0 0 1 .708-.708L6 7.618l3.146-3.147a.5.5 0 0 1 .708.708l-3.5 3.5A.5.5 0 0 1 6 8.825z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+select:focus {
+  border-color: var(--accent);
+}
+
+select:hover {
+  border-color: var(--text-dim);
+}
+
+select option {
+  background: var(--card-bg);
+  color: var(--text);
+}
+
+input[type="text"],
+input[type="number"] {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus {
+  border-color: var(--accent);
+}
+
+input[type="text"]:hover,
+input[type="number"]:hover {
+  border-color: var(--text-dim);
+}
+
 .app {
   display: flex;
   height: 100vh;
@@ -401,17 +453,20 @@ h2 {
 .bot-form-row select,
 .bot-form-row input[type="text"],
 .bot-form-row input[type="number"] {
+  padding: 8px 28px 8px 10px;
+  font-size: 14px;
+}
+
+.bot-form-row input[type="text"],
+.bot-form-row input[type="number"] {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 8px 10px;
   color: var(--text);
-  font-size: 14px;
   font-family: inherit;
   outline: none;
 }
 
-.bot-form-row select:focus,
 .bot-form-row input:focus {
   border-color: var(--accent);
 }
@@ -645,17 +700,8 @@ h2 {
 }
 
 .trade-log-controls select {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 4px 8px;
-  color: var(--text);
+  padding: 4px 24px 4px 8px;
   font-size: 12px;
-  outline: none;
-}
-
-.trade-log-controls select:focus {
-  border-color: var(--accent);
 }
 
 .trade-log-table-wrap {
@@ -796,6 +842,61 @@ h2 {
 
 .pnl-positive { color: var(--green); }
 .pnl-negative { color: var(--red); }
+
+/* ---- Add Strategy Form ---- */
+
+.add-strategy-form {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border-radius: 6px;
+  border: 1px dashed var(--border);
+}
+
+.add-strategy-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.add-strategy-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.add-strategy-field--strategy {
+  flex: 1;
+  min-width: 0;
+}
+
+.add-strategy-field select,
+.add-strategy-field input {
+  font-size: 13px;
+  padding: 5px 8px;
+  width: 100%;
+}
+
+.add-strategy-field input[type="number"],
+.add-strategy-field input[type="text"] {
+  width: 80px;
+}
+
+.add-strategy-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-dim);
+}
+
+.add-strategy-btn {
+  font-size: 11px;
+  padding: 5px 14px;
+  background: var(--green);
+  color: #fff;
+  flex-shrink: 0;
+}
 
 /* ---- Archive button ---- */
 

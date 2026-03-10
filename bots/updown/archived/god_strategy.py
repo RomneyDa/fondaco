@@ -18,7 +18,7 @@ import math
 from typing import Any, Dict, List, Optional
 
 from core.trader import HOLD, TradeAction
-from bots.updown.volatility_bargain import VolatilityBargain
+from bots.updown.archived.volatility_bargain import VolatilityBargain
 
 
 class GodStrategy(VolatilityBargain):
@@ -47,14 +47,14 @@ class GodStrategy(VolatilityBargain):
     def __init__(
         self,
         lookback_sessions=5,
-        min_sessions=5,
-        threshold=70.0,
-        max_token_price=0.20,
+        min_sessions=3,
+        threshold=1.0,
+        max_token_price=0.70,
         min_elapsed=0.03,
-        min_btc_move_bps=1.0,
-        max_btc_move_bps=20.0,
-        tp_slope=1.25,
-        tp_intercept=0.20,
+        min_btc_move_bps=0.5,
+        max_btc_move_bps=30.0,
+        tp_slope=1.5,
+        tp_intercept=0.25,
         data_dir=None,
     ):
         # Pass to VolatilityBargain for volatility computation only.
@@ -188,11 +188,12 @@ class GodStrategy(VolatilityBargain):
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]
-        # 5 * 5 * 4 * 3 * 3 = 900 combos
+        # 4 * 4 * 3 * 3 * 3 * 3 = 1296 combos
         return {
-            "threshold": [20.0, 35.0, 50.0, 70.0, 100.0],
-            "max_token_price": [0.08, 0.10, 0.12, 0.15, 0.20],
-            "min_btc_move_bps": [1.0, 2.0, 3.0, 5.0],
-            "max_btc_move_bps": [10.0, 15.0, 20.0],
-            "tp_intercept": [0.20, 0.30, 0.40],
+            "threshold": [1.0, 3.0, 5.0, 10.0],
+            "max_token_price": [0.50, 0.60, 0.70, 0.80],
+            "min_btc_move_bps": [0.5, 1.0, 2.0],
+            "max_btc_move_bps": [20.0, 30.0, 50.0],
+            "tp_slope": [1.0, 1.25, 1.5],
+            "tp_intercept": [0.20, 0.25, 0.30],
         }

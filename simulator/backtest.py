@@ -27,8 +27,8 @@ _worker_sim = None   # type: Optional[Simulator]
 _worker_sessions = None  # type: Optional[list]
 
 
-def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions):
-    # type: (float, str, float, list, list) -> None
+def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions, compound):
+    # type: (float, str, float, list, list, bool) -> None
     """Initializer for each worker process — sets up Simulator and sessions once."""
     global _worker_sim, _worker_sessions
     _worker_sim = Simulator(
@@ -36,6 +36,7 @@ def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions
         execution_mode=execution_mode,
         slippage=slippage,
         all_sessions=all_sessions,
+        compound=compound,
     )
     _worker_sessions = sessions
 
@@ -45,10 +46,56 @@ def _run_one(strategy):
     return _worker_sim.run_backtest(strategy, _worker_sessions)
 
 
-def build_variants(strategy_cls):
-    # type: (type,) -> list
+def parse_param_overrides(param_args):
+    # type: (list,) -> dict
+    """Parse --param KEY=v1,v2,... into {key: [values]}."""
+    overrides = {}  # type: dict
+    for arg in param_args:
+        if "=" not in arg:
+            print("Invalid --param format: '{}'. Expected KEY=v1,v2,...".format(arg))
+            sys.exit(1)
+        key, vals_str = arg.split("=", 1)
+        values = []
+        for v in vals_str.split(","):
+            v = v.strip()
+            if v.lower() == "none":
+                values.append(None)
+            elif v.lower() == "true":
+                values.append(True)
+            elif v.lower() == "false":
+                values.append(False)
+            else:
+                try:
+                    values.append(int(v))
+                except ValueError:
+                    try:
+                        values.append(float(v))
+                    except ValueError:
+                        values.append(v)
+        overrides[key] = values
+    return overrides
+
+
+def build_variants(strategy_cls, grid_overrides=None):
+    # type: (type, Optional[dict]) -> list
     """Build all parameter combinations from a strategy's param_grid."""
     grid = strategy_cls().param_grid()
+
+    if grid_overrides:
+        # Validate override keys exist in grid or constructor
+        import inspect
+        sig_params = set(inspect.signature(strategy_cls.__init__).parameters.keys()) - {"self"}
+        for key in grid_overrides:
+            if key not in sig_params:
+                print("Unknown param '{}' for {}. Available: {}".format(
+                    key, strategy_cls.__name__, ", ".join(sorted(sig_params)),
+                ))
+                sys.exit(1)
+        # Start from existing grid, apply overrides
+        if not grid:
+            grid = {}
+        grid.update(grid_overrides)
+
     if not grid:
         return [strategy_cls()]
 
@@ -76,45 +123,65 @@ def format_params(params):
     return ", ".join(parts)
 
 
-def print_leaderboard(results, top_n, optimize):
-    # type: (list, int, str) -> None
+def print_leaderboard(results, top_n, optimize, compound=False):
+    # type: (list, int, str, bool) -> None
     """Print a sorted leaderboard of backtest results."""
     sort_key = {
         "sharpe": lambda r: r.sharpe,
         "total_pnl": lambda r: r.total_pnl,
         "win_rate": lambda r: r.win_rate,
+        "kelly_growth": lambda r: r.geo_mean_return,
     }.get(optimize, lambda r: r.sharpe)
 
     results.sort(key=sort_key, reverse=True)
     shown = results[:top_n]
 
-    # Header
-    print("\n{:<20} {:>8} {:>10} {:>10} {:>8} {:>6}  {}".format(
-        "Strategy", "Sharpe", "Total PnL", "Mean PnL", "Win%", "N", "Params"
-    ))
-    print("-" * 95)
-
-    for r in shown:
-        print("{:<20} {:>8.3f} {:>10.2f} {:>10.2f} {:>7.1f}% {:>6}  {}".format(
-            r.strategy_name,
-            r.sharpe,
-            r.total_pnl,
-            r.mean_pnl,
-            r.win_rate * 100,
-            r.num_sessions,
-            format_params(r.params),
+    if compound:
+        # Kelly-aware header with geometric growth metrics
+        print("\n{:<20} {:>8} {:>8} {:>8} {:>10} {:>8} {:>6}  {}".format(
+            "Strategy", "GeoRet%", "Kelly_f", "MaxDD%", "Final$", "Win%", "N", "Params"
         ))
+        print("-" * 105)
+        for r in shown:
+            print("{:<20} {:>8.3f} {:>8.3f} {:>8.1f} {:>10.2f} {:>7.1f}% {:>6}  {}".format(
+                r.strategy_name,
+                r.geo_mean_return * 100,
+                r.kelly_fraction,
+                r.max_drawdown * 100,
+                r.final_bankroll,
+                r.win_rate * 100,
+                r.num_sessions,
+                format_params(r.params),
+            ))
+    else:
+        # Standard header + Kelly columns
+        print("\n{:<20} {:>8} {:>10} {:>10} {:>8} {:>8} {:>6}  {}".format(
+            "Strategy", "Sharpe", "Total PnL", "Mean PnL", "GeoRet%", "Win%", "N", "Params"
+        ))
+        print("-" * 105)
+        for r in shown:
+            print("{:<20} {:>8.3f} {:>10.2f} {:>10.2f} {:>8.3f} {:>7.1f}% {:>6}  {}".format(
+                r.strategy_name,
+                r.sharpe,
+                r.total_pnl,
+                r.mean_pnl,
+                r.geo_mean_return * 100,
+                r.win_rate * 100,
+                r.num_sessions,
+                format_params(r.params),
+            ))
 
     print()
 
 
-def print_strategy_summary(results, optimize):
-    # type: (list, str) -> None
+def print_strategy_summary(results, optimize, compound=False):
+    # type: (list, str, bool) -> None
     """Print best params per strategy."""
     sort_key = {
         "sharpe": lambda r: r.sharpe,
         "total_pnl": lambda r: r.total_pnl,
         "win_rate": lambda r: r.win_rate,
+        "kelly_growth": lambda r: r.geo_mean_return,
     }.get(optimize, lambda r: r.sharpe)
 
     # Group by strategy name
@@ -123,16 +190,22 @@ def print_strategy_summary(results, optimize):
         by_strategy.setdefault(r.strategy_name, []).append(r)
 
     print("=" * 70)
-    print("BEST PARAMS PER STRATEGY (optimizing: {})".format(optimize))
+    print("BEST PARAMS PER STRATEGY (optimizing: {}{})".format(
+        optimize, ", compound" if compound else ""))
     print("=" * 70)
 
     for name in sorted(by_strategy.keys()):
         variants = by_strategy[name]
         best = max(variants, key=sort_key)
         print("\n  {} ({} variants tested)".format(name, len(variants)))
-        print("    Best:  Sharpe={:.3f}  PnL={:.2f}  Win={:.1f}%".format(
+        print("    Best:  Sharpe={:.3f}  PnL={:.2f}  Win={:.1f}%  GeoRet={:.3f}%  MaxDD={:.1f}%".format(
             best.sharpe, best.total_pnl, best.win_rate * 100,
+            best.geo_mean_return * 100, best.max_drawdown * 100,
         ))
+        if compound:
+            print("    Kelly: f*={:.3f}  Final=${:.2f}  LogGrowth={:.3f}".format(
+                best.kelly_fraction, best.final_bankroll, best.log_growth,
+            ))
         print("    Params: {}".format(format_params(best.params)))
 
     print()
@@ -197,6 +270,7 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
         "sharpe": lambda r: r.sharpe,
         "total_pnl": lambda r: r.total_pnl,
         "win_rate": lambda r: r.win_rate,
+        "kelly_growth": lambda r: r.geo_mean_return,
     }.get(optimize, lambda r: r.sharpe)
 
     # Only log the best params per strategy (not every variant)
@@ -216,6 +290,10 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
             "mean_pnl": round(best.mean_pnl, 4),
             "win_rate": round(best.win_rate, 4),
             "num_sessions": best.num_sessions,
+            "geo_mean_return": round(best.geo_mean_return, 6),
+            "kelly_fraction": round(best.kelly_fraction, 4),
+            "max_drawdown": round(best.max_drawdown, 4),
+            "final_bankroll": round(best.final_bankroll, 4),
         })
 
     entry = {
@@ -226,6 +304,7 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
             "execution": args.execution,
             "slippage": args.slippage,
             "starting_cash": args.cash,
+            "compound": getattr(args, "compound", False),
             "optimize": optimize,
             "num_sessions": len(sessions),
             "total_variants": len(all_results),
@@ -257,8 +336,13 @@ def main():
     parser.add_argument(
         "--optimize",
         default="sharpe",
-        choices=["sharpe", "total_pnl", "win_rate"],
-        help="Metric to optimize (default: sharpe)",
+        choices=["sharpe", "total_pnl", "win_rate", "kelly_growth"],
+        help="Metric to optimize (default: sharpe). kelly_growth = geometric mean return",
+    )
+    parser.add_argument(
+        "--compound",
+        action="store_true",
+        help="Compound bankroll across sessions (Kelly-realistic). PnL carries forward.",
     )
     parser.add_argument(
         "--execution",
@@ -295,6 +379,13 @@ def main():
         action="store_true",
         help="Per-session breakdown for best params",
     )
+    parser.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        metavar="KEY=v1,v2,...",
+        help="Override param grid values (repeatable). e.g. --param min_elapsed=0.4,0.5,0.6",
+    )
     args = parser.parse_args()
 
     # Resolve starting cash
@@ -330,8 +421,9 @@ def main():
         sessions = all_sessions
 
     print("Loaded {} resolved sessions from {}".format(len(sessions), args.data_dir))
-    print("Execution: {} (slippage={})  Starting cash: ${}".format(
+    print("Execution: {} (slippage={})  Starting cash: ${}{}".format(
         args.execution, args.slippage, starting_cash,
+        "  [COMPOUND]" if args.compound else "",
     ))
 
     # Select strategies
@@ -350,13 +442,17 @@ def main():
         execution_mode=args.execution,
         slippage=args.slippage,
         all_sessions=all_sessions,
+        compound=args.compound,
     )
+
+    # Parse --param overrides
+    grid_overrides = parse_param_overrides(args.param) if args.param else None
 
     # Build all strategy variants upfront
     all_variants = []  # type: list
     for name in strategy_names:
         cls = ALL_STRATEGIES[name]
-        all_variants.extend(build_variants(cls))
+        all_variants.extend(build_variants(cls, grid_overrides))
 
     total_variants = len(all_variants)
 
@@ -372,7 +468,7 @@ def main():
             max_workers=num_workers,
             initializer=_init_worker,
             initargs=(starting_cash, args.execution, args.slippage,
-                      all_sessions, sessions),
+                      all_sessions, sessions, args.compound),
         ) as pool:
             all_results = list(pool.map(_run_one, all_variants))
 
@@ -381,8 +477,8 @@ def main():
     ))
 
     # Output
-    print_leaderboard(all_results, args.top, args.optimize)
-    print_strategy_summary(all_results, args.optimize)
+    print_leaderboard(all_results, args.top, args.optimize, compound=args.compound)
+    print_strategy_summary(all_results, args.optimize, compound=args.compound)
 
     if args.verbose:
         # Show per-session breakdown for the best overall result

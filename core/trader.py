@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.defaults import (
     CLOB_MIN_ORDER_TOKENS,
+    TRADE_CUTOFF_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -298,6 +299,8 @@ class SimExecutor(Executor):
             return None
 
         price = self._get_execution_price(action.side, sample)
+        if price is not None:
+            price = min(round(price, 2), 0.99)
         tokens, dollars = position.compute_trade_size(action.side, price, action.amount)
         if tokens <= 0:
             return None
@@ -346,9 +349,9 @@ class SimExecutor(Executor):
         elif self.execution_mode == "book":
             table = {
                 "buy_up": sample.get("up_token_best_ask"),
-                "sell_up": sample.get("up_token_best_bid"),
+                "sell_up": sample.get("up_token_midpoint"),
                 "buy_down": sample.get("down_token_best_ask"),
-                "sell_down": sample.get("down_token_best_bid"),
+                "sell_down": sample.get("down_token_midpoint"),
             }
             return table.get(side)
 
@@ -477,9 +480,9 @@ class SimExecutor(Executor):
 # ---------------------------------------------------------------------------
 
 
-FILL_CHECK_INTERVAL = 2.5  # seconds between polling order status
-SETTLEMENT_COOLDOWN_S = 10.0  # seconds to wait after buy fill before selling
+FILL_CHECK_INTERVAL = 0.5  # seconds between polling order status
 AUTO_EXIT_MIDPOINT_THRESHOLD = 0.99  # sell when midpoint >= this to avoid claiming
+SELL_COOLDOWN_SECONDS = 5.0  # min time between sell attempts for the same token
 
 
 class ClobExecutor(Executor):
@@ -490,6 +493,68 @@ class ClobExecutor(Executor):
         self.client = clob_client
         self.trade_log_file = trade_log_file
         self._last_fill_check = 0.0  # timestamp of last check_fills poll
+        self._last_sell_fail = {}  # type: Dict[str, float]  # token_id -> timestamp
+
+    def _check_sell_cooldown(self, token_id):
+        # type: (str) -> bool
+        """Return True if a sell for this token should be skipped (cooldown active)."""
+        last_fail = self._last_sell_fail.get(token_id)
+        if last_fail is not None:
+            if time.time() - last_fail < SELL_COOLDOWN_SECONDS:
+                return True
+        return False
+
+    def _record_sell_failure(self, token_id):
+        # type: (str) -> None
+        self._last_sell_fail[token_id] = time.time()
+
+    def _clear_sell_cooldown(self, token_id):
+        # type: (str) -> None
+        self._last_sell_fail.pop(token_id, None)
+
+    def _refresh_balance_allowance(self, token_id):
+        # type: (str) -> None
+        """Refresh CLOB's cached conditional token balance after a fill.
+
+        Retries up to 3 times — if this fails, sells will get
+        'not enough balance / allowance' errors.
+        """
+        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+
+        for attempt in range(3):
+            try:
+                self.client.update_balance_allowance(
+                    BalanceAllowanceParams(
+                        asset_type=AssetType.CONDITIONAL,
+                        token_id=token_id,
+                    )
+                )
+                # Log what the CLOB thinks we have after refresh
+                try:
+                    ba = self.client.get_balance_allowance(
+                        BalanceAllowanceParams(
+                            asset_type=AssetType.CONDITIONAL,
+                            token_id=token_id,
+                        )
+                    )
+                    logger.info(
+                        "CLOB balance after refresh: token=%s balance=%s allowance=%s",
+                        token_id[:12], ba.get("balance"), ba.get("allowance"),
+                    )
+                except Exception:
+                    pass
+                return
+            except Exception as e:
+                logger.warning(
+                    "Refresh balance allowance attempt %d/3 failed: %s",
+                    attempt + 1, e,
+                )
+                time.sleep(0.5)
+        logger.error(
+            "Failed to refresh balance allowance after 3 attempts for token %s. "
+            "Sells may fail with 'not enough balance / allowance'.",
+            token_id,
+        )
 
     def execute_trade(self, action, tick_index, metadata, sample, position):
         # type: (TradeAction, int, Dict[str, Any], Dict[str, Any], Position) -> Optional[Trade]
@@ -515,12 +580,15 @@ class ClobExecutor(Executor):
         now = datetime.now(timezone.utc).isoformat()
 
         # Map action side to token_id, order side, and book price keys.
-        # Both buys and sells cross the spread: buys at best_ask, sells at best_bid.
+        # Buys cross the spread at best_ask.  Sells use midpoint — on thin
+        # 0.01/0.99 books best_bid is always 0.01, so pricing a FAK sell there
+        # gives away the position.  Midpoint reflects the real market maker
+        # price and is more stable across the 300ms API latency.
         side_map = {
             "buy_up": ("up_token_id", "BUY", "up_token_best_ask", "up_token_best_bid"),
             "buy_down": ("down_token_id", "BUY", "down_token_best_ask", "down_token_best_bid"),
-            "sell_up": ("up_token_id", "SELL", "up_token_best_bid", "up_token_best_ask"),
-            "sell_down": ("down_token_id", "SELL", "down_token_best_bid", "down_token_best_ask"),
+            "sell_up": ("up_token_id", "SELL", "up_token_midpoint", "up_token_best_ask"),
+            "sell_down": ("down_token_id", "SELL", "down_token_midpoint", "down_token_best_ask"),
         }
 
         if action.side not in side_map:
@@ -534,12 +602,28 @@ class ClobExecutor(Executor):
 
         token_key, order_side, price_key, other_side_key = side_map[action.side]
         token_id = metadata[token_key]
+
+        # Sell cooldown: skip if a recent sell on this token failed
+        # (avoids spamming the CLOB when balance/allowance is stale)
+        if order_side == "SELL" and self._check_sell_cooldown(token_id):
+            return None
+
+        # Pre-sell refresh: ensure the CLOB has an up-to-date view of our
+        # conditional token balance before attempting the sell.
+        if order_side == "SELL":
+            self._refresh_balance_allowance(token_id)
+
         exec_price = sample.get(price_key)
         other_price = sample.get(other_side_key)
 
-        # Both sides of the book must exist
-        if (exec_price is None or exec_price <= 0 or exec_price >= 1.0
-                or other_price is None or other_price <= 0 or other_price >= 1.0):
+        # Exec price must be valid.  For buys, the other side of the book
+        # must also exist (spread sanity).  Sells only need the midpoint —
+        # the ask side often vanishes on the winning token late in the
+        # session, which is exactly when auto-exit needs to sell.
+        price_invalid = (exec_price is None or exec_price <= 0 or exec_price >= 1.0)
+        if not price_invalid and order_side == "BUY":
+            price_invalid = (other_price is None or other_price <= 0 or other_price >= 1.0)
+        if price_invalid:
             trade = Trade(
                 tick_index=tick_index, side=action.side, price=0, amount=0,
                 tokens=0, order_id=None, token_id=token_id, success=False,
@@ -548,7 +632,7 @@ class ClobExecutor(Executor):
             self._log_trade(trade)
             return trade
 
-        price = round(exec_price, 2)
+        price = min(round(exec_price, 2), 0.99)
         if price <= 0 or price >= 1.0:
             trade = Trade(
                 tick_index=tick_index, side=action.side, price=price, amount=0,
@@ -612,9 +696,33 @@ class ClobExecutor(Executor):
 
                 # Check if the CLOB rejected the order
                 if resp.get("success") is False:
-                    raise RuntimeError(
-                        "CLOB rejected order: {}".format(resp.get("errorMsg", "unknown"))
-                    )
+                    error_msg = resp.get("errorMsg", "unknown")
+                    # Balance/allowance error on sells: likely our tracked
+                    # token count is higher than actual (fees deducted from
+                    # fill).  Refresh cache and retry once.
+                    if (order_side == "SELL"
+                            and "balance" in str(error_msg).lower()):
+                        logger.warning(
+                            "Sell rejected (balance/allowance), refreshing and retrying"
+                        )
+                        self._refresh_balance_allowance(token_id)
+                        time.sleep(0.5)
+                        signed_order = self.client.create_order(order_args, options)
+                        resp = self.client.post_order(
+                            signed_order, orderType=OrderType.FAK,
+                        )
+                        if isinstance(resp, dict) and resp.get("success") is not False:
+                            order_id = resp.get("orderID") or resp.get("id")
+                        else:
+                            raise RuntimeError(
+                                "CLOB rejected sell after refresh: {}".format(
+                                    resp.get("errorMsg", "unknown")
+                                    if isinstance(resp, dict) else resp)
+                            )
+                    else:
+                        raise RuntimeError(
+                            "CLOB rejected order: {}".format(error_msg)
+                        )
 
                 # Parse actual fill amounts from response (6-decimal strings,
                 # may be int-like "13188404" or float-like "13188404.0")
@@ -642,6 +750,8 @@ class ClobExecutor(Executor):
 
             # Update position only on success (shared with simulator)
             position.apply_trade(action.side, price, actual_tokens)
+            if order_side == "SELL":
+                self._clear_sell_cooldown(token_id)
             trade = Trade(
                 tick_index=tick_index, side=action.side, price=price,
                 amount=actual_dollars, tokens=actual_tokens, order_id=order_id,
@@ -650,6 +760,8 @@ class ClobExecutor(Executor):
                 elapsed_seconds=sample.get("elapsed_seconds"),
             )
         except Exception as e:
+            if order_side == "SELL":
+                self._record_sell_failure(token_id)
             trade = Trade(
                 tick_index=tick_index, side=action.side, price=price,
                 amount=dollars, tokens=tokens, order_id=None,
@@ -692,6 +804,14 @@ class ClobExecutor(Executor):
 
         token_key, order_side = side_map[action.side]
         token_id = metadata[token_key]
+
+        # Sell cooldown: skip if a recent sell on this token failed
+        if order_side == "SELL" and self._check_sell_cooldown(token_id):
+            return None
+
+        # Pre-sell refresh: ensure the CLOB sees our tokens
+        if order_side == "SELL":
+            self._refresh_balance_allowance(token_id)
 
         price = round(action.price, 2)
         if price <= 0 or price >= 1.0:
@@ -736,11 +856,36 @@ class ClobExecutor(Executor):
             order_id = None
             if isinstance(resp, dict):
                 if resp.get("success") is False:
-                    raise RuntimeError(
-                        "CLOB rejected {} order: {}".format(
-                            order_type_label, resp.get("errorMsg", "unknown"))
-                    )
-                order_id = resp.get("orderID") or resp.get("id")
+                    error_msg = resp.get("errorMsg", "unknown")
+                    # Balance/allowance error on sells: likely on-chain
+                    # settlement hasn't completed yet.  Refresh and retry once.
+                    if (order_side == "SELL"
+                            and "balance" in str(error_msg).lower()):
+                        logger.warning(
+                            "%s sell rejected (balance/allowance), refreshing and retrying",
+                            order_type_label,
+                        )
+                        self._refresh_balance_allowance(token_id)
+                        time.sleep(0.5)
+                        signed_order = self.client.create_order(order_args, options)
+                        resp = self.client.post_order(
+                            signed_order, orderType=clob_order_type,
+                        )
+                        if isinstance(resp, dict) and resp.get("success") is not False:
+                            order_id = resp.get("orderID") or resp.get("id")
+                        else:
+                            raise RuntimeError(
+                                "CLOB rejected {} sell after refresh: {}".format(
+                                    order_type_label,
+                                    resp.get("errorMsg", "unknown")
+                                    if isinstance(resp, dict) else resp)
+                            )
+                    else:
+                        raise RuntimeError(
+                            "CLOB rejected {} order: {}".format(
+                                order_type_label, error_msg))
+                else:
+                    order_id = resp.get("orderID") or resp.get("id")
 
             if order_id is None:
                 raise RuntimeError("No order ID in {} response".format(order_type_label))
@@ -784,6 +929,8 @@ class ClobExecutor(Executor):
             )
 
         except Exception as e:
+            if order_side == "SELL":
+                self._record_sell_failure(token_id)
             logger.error("%s order placement failed: %s", order_type_label, e)
             trade_record = Trade(
                 tick_index=tick_index, side=action.side, price=price,
@@ -812,38 +959,29 @@ class ClobExecutor(Executor):
                 status = resp.get("status", "").upper() if isinstance(resp, dict) else ""
 
                 if status == "MATCHED":
+                    # MATCHED = fully filled. Use order.tokens directly;
+                    # the API's size_matched is unreliable (returns 0 for sells).
+                    filled_tokens = order.tokens
+
                     # Order filled — apply to position
                     if order.side in ("buy_up", "buy_down"):
                         if order.side == "buy_up":
-                            position.up_tokens += order.tokens
+                            position.up_tokens += filled_tokens
                         else:
-                            position.down_tokens += order.tokens
+                            position.down_tokens += filled_tokens
                         # Refresh CLOB's cached view of our conditional
                         # token balance so subsequent sells don't fail
                         # with "not enough balance / allowance".
-                        try:
-                            from py_clob_client.clob_types import (
-                                BalanceAllowanceParams, AssetType,
-                            )
-                            self.client.update_balance_allowance(
-                                BalanceAllowanceParams(
-                                    asset_type=AssetType.CONDITIONAL,
-                                    token_id=order.token_id,
-                                )
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                "Failed to refresh conditional allowance: %s", e,
-                            )
+                        self._refresh_balance_allowance(order.token_id)
                     else:
-                        position.cash += order.tokens * order.price
+                        position.cash += filled_tokens * order.price
 
                     fills.append(Trade(
                         tick_index=0,
                         side=order.side,
                         price=order.price,
-                        amount=order.tokens * order.price,
-                        tokens=order.tokens,
+                        amount=filled_tokens * order.price,
+                        tokens=filled_tokens,
                         order_id=order.order_id,
                         token_id=order.token_id,
                         success=True,
@@ -852,8 +990,8 @@ class ClobExecutor(Executor):
                         elapsed_seconds=sample.get("elapsed_seconds"),
                     ))
                     logger.info(
-                        "GTC order filled: %s %.0f tokens @ %.2f (order_id=%s)",
-                        order.side, order.tokens, order.price, order.order_id,
+                        "GTC order filled: %s %.4f tokens @ %.2f (order_id=%s)",
+                        order.side, filled_tokens, order.price, order.order_id,
                     )
 
                 elif status in ("CANCELLED", "EXPIRED"):
@@ -949,8 +1087,6 @@ class Trader:
         self._decision_log = []  # type: List[Dict[str, Any]]
         self._open_orders = []  # type: List[OpenOrder]
         self._last_tick_fills = []  # type: List[Trade]
-        self._settlement_cooldowns = {}  # type: Dict[str, float]  # token -> time.time() of last buy fill
-
     def start_session(self, metadata, position, initial_btc_price, window_duration,
                       reference_balance=None, capture_decision_log=False):
         # type: (Dict[str, Any], Position, float, float, Optional[float], bool) -> None
@@ -966,32 +1102,26 @@ class Trader:
         self._decision_log = []
         self._open_orders = []
         self._last_tick_fills = []
-        self._settlement_cooldowns = {}
         self.strategy._tick_logs = []
         self.strategy.on_session_start(metadata)
 
     def _apply_guardrails(self, action, sample=None):
         # type: (TradeAction, Optional[Dict[str, Any]]) -> TradeAction
-        """Apply settlement cooldown and cap buys to available cash."""
+        """Cap buys to available cash; block trades near session end."""
         if action.side == "hold":
             return action
 
-        if action.side.startswith("sell") and not isinstance(self.executor, SimExecutor):
-            token = "up" if action.side == "sell_up" else "down"
-            fill_time = self._settlement_cooldowns.get(token)
-            if fill_time is not None:
-                elapsed = time.time() - fill_time
-                if elapsed < SETTLEMENT_COOLDOWN_S:
-                    logger.info(
-                        "Settlement cooldown: suppressing %s (%.1fs since fill, need %.1fs)",
-                        action.side, elapsed, SETTLEMENT_COOLDOWN_S,
-                    )
-                    return HOLD
-                else:
-                    del self._settlement_cooldowns[token]
-
         if action.side.startswith("cancel"):
             return action
+
+        # Block all trades in the last few seconds of the session.
+        # The CLOB orderbook gets deleted before the window officially ends,
+        # so trades near the end fail with "orderbook does not exist" or
+        # "not enough balance / allowance" (tokens already settling).
+        if sample is not None and self._window_duration > 0:
+            elapsed = sample.get("elapsed_seconds", 0.0)
+            if elapsed >= self._window_duration - TRADE_CUTOFF_SECONDS:
+                return HOLD
 
         if action.side.startswith("buy"):
             cash = self._position.cash
@@ -1012,18 +1142,18 @@ class Trader:
 
     def _check_auto_exit(self, sample):
         # type: (Dict[str, Any]) -> TradeAction
-        """Sell held tokens when best_bid >= threshold to avoid claiming."""
+        """Sell held tokens when midpoint >= threshold to avoid claiming."""
         threshold = AUTO_EXIT_MIDPOINT_THRESHOLD
         pos = self._position
 
         if pos.up_tokens >= CLOB_MIN_ORDER_TOKENS:
-            bid = sample.get("up_token_best_bid")
-            if bid is not None and bid >= threshold:
+            mid = sample.get("up_token_midpoint")
+            if mid is not None and mid >= threshold:
                 return TradeAction(side="sell_up", amount=pos.up_tokens)
 
         if pos.down_tokens >= CLOB_MIN_ORDER_TOKENS:
-            bid = sample.get("down_token_best_bid")
-            if bid is not None and bid >= threshold:
+            mid = sample.get("down_token_midpoint")
+            if mid is not None and mid >= threshold:
                 return TradeAction(side="sell_down", amount=pos.down_tokens)
 
         return HOLD
@@ -1046,10 +1176,6 @@ class Trader:
                     fill.tick_index = self._tick_index
                     self._trades.append(fill)
                 self._last_tick_fills = fills
-                for fill in fills:
-                    if fill.side in ("buy_up", "buy_down"):
-                        token = "up" if fill.side == "buy_up" else "down"
-                        self._settlement_cooldowns[token] = time.time()
             except NotImplementedError:
                 pass
 

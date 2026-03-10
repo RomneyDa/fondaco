@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n api,vite -c blue,green \"tsx server/server.ts\" \"vite\"",
+    "dev": "concurrently -n api,vite -c blue,green \"tsx watch server/server.ts\" \"vite\"",
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist/server/server.js"
   },

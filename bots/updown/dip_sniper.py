@@ -25,14 +25,14 @@ class DipSniper(Strategy):
 
     def __init__(
         self,
-        signal_frac=0.25,
-        min_midpoint=0.55,
+        signal_frac=0.30,
+        min_midpoint=0.68,
         min_btc_bps=0.0,
-        limit_offset=0.02,
-        order_expiry_frac=0.50,
-        confirm_secs=30.0,
-        soft_threshold=0.02,
-        hard_sl=0.12,
+        limit_offset=0.025,
+        order_expiry_frac=0.12,
+        confirm_secs=50.0,
+        soft_threshold=0.01,
+        hard_sl=0.18,
         bet_fraction=1.0,
     ):
         # type: (...) -> None
@@ -60,23 +60,29 @@ class DipSniper(Strategy):
         # Per-session state
         self._side = None  # type: Optional[str]  # "up" or "down"
         self._order_placed = False
+        self._order_seen = False  # True once order appeared in open_orders
         self._filled = False
         self._exited = False
+        self._exit_sell_attempted = False
         self._buy_price = 0.0
         self._fill_elapsed = 0.0
         self._confirmed = False
         self._window_secs = 300.0
+        self._give_up = False  # stop retrying after placement failure
 
     def on_session_start(self, metadata):
         # type: (Dict[str, Any]) -> None
         self._side = None
         self._order_placed = False
+        self._order_seen = False
         self._filled = False
         self._exited = False
+        self._exit_sell_attempted = False
         self._buy_price = 0.0
         self._fill_elapsed = 0.0
         self._confirmed = False
         self._window_secs = metadata.get("window", 300)
+        self._give_up = False
 
     def _pick_direction(self, ctx):
         # type: (TickContext) -> Optional[str]
@@ -114,14 +120,24 @@ class DipSniper(Strategy):
 
     def on_tick(self, ctx):
         # type: (TickContext) -> TradeAction
+        if self._give_up:
+            return HOLD
+
         if self._exited:
-            # Keep retrying sell if guardrails (settlement cooldown) suppressed it
-            tokens = ctx.position.up_tokens if self._side == "up" else ctx.position.down_tokens
-            if tokens > 0:
-                return TradeAction(
-                    side="sell_up" if self._side == "up" else "sell_down",
-                    amount=tokens,
-                )
+            # Try to sell once. The Trader/ClobExecutor handles balance
+            # refresh + retry internally. If it still fails, accept loss
+            # at resolution rather than spamming the API.
+            if not self._exit_sell_attempted:
+                tokens = ctx.position.up_tokens if self._side == "up" else ctx.position.down_tokens
+                mid_key = "up_token_midpoint" if self._side == "up" else "down_token_midpoint"
+                mid = ctx.sample.get(mid_key)
+                if tokens > 0 and mid is not None and mid > 0:
+                    self._exit_sell_attempted = True
+                    return TradeAction(
+                        side="sell_up" if self._side == "up" else "sell_down",
+                        amount=tokens,
+                        price=mid,
+                    )
             return HOLD
 
         # --- Phase: Position management (if filled) ---
@@ -143,6 +159,7 @@ class DipSniper(Strategy):
                     return TradeAction(
                         side="sell_up" if self._side == "up" else "sell_down",
                         amount=tokens,
+                        price=mid,
                     )
                 return HOLD
 
@@ -158,6 +175,7 @@ class DipSniper(Strategy):
                             return TradeAction(
                                 side="sell_up" if self._side == "up" else "sell_down",
                                 amount=tokens,
+                                price=mid,
                             )
                         return HOLD
                     else:
@@ -177,16 +195,29 @@ class DipSniper(Strategy):
                     self._buy_price, self._fill_elapsed))
                 return HOLD
 
-            # Order expired (executor removed it) — reset to allow retry
-            if len(ctx.open_orders) == 0:
-                self.log("ORDER EXPIRED: {} at {:.3f}, elapsed_frac={:.2f}".format(
-                    self._side, self._buy_price, ctx.elapsed_fraction))
-                self._order_placed = False
-                self._side = None
-                self._buy_price = 0.0
-                # Fall through to re-evaluate direction below
-            else:
+            has_open = len(ctx.open_orders) > 0
+            if has_open:
+                self._order_seen = True
                 return HOLD
+
+            # No open orders — either expired naturally or never posted
+            if not self._order_seen:
+                # Order never appeared in open_orders — placement failed
+                # (e.g. CLOB rejected due to insufficient balance).
+                # Give up to avoid spamming the API.
+                self.log("ORDER FAILED TO PLACE: {} at {:.3f} (giving up)".format(
+                    self._side, self._buy_price))
+                self._give_up = True
+                return HOLD
+
+            # Order was live but expired — reset to allow retry
+            self.log("ORDER EXPIRED: {} at {:.3f}, elapsed_frac={:.2f}".format(
+                self._side, self._buy_price, ctx.elapsed_fraction))
+            self._order_placed = False
+            self._order_seen = False
+            self._side = None
+            self._buy_price = 0.0
+            # Fall through to re-evaluate direction below
 
         # --- Phase: Wait for signal window ---
         if ctx.elapsed_fraction < self.signal_frac:
@@ -214,6 +245,7 @@ class DipSniper(Strategy):
 
         self._side = direction
         self._order_placed = True
+        self._order_seen = False
         self._buy_price = limit_price
 
         dollars = ctx.max_buy_amount * self.bet_fraction
@@ -230,14 +262,11 @@ class DipSniper(Strategy):
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]
-        # 3 * 3 * 2 * 3 * 2 * 2 * 3 * 2 = 864 combos
+        # 5 * 4 * 4 * 4 * 3 = 960 combos
         return {
-            "signal_frac": [0.20, 0.25, 0.30],
-            "min_midpoint": [0.52, 0.55, 0.60],
-            "min_btc_bps": [0, 5],
-            "limit_offset": [0.01, 0.02, 0.03],
-            "order_expiry_frac": [0.35, 0.50],
-            "confirm_secs": [15, 30],
-            "soft_threshold": [0.01, 0.02, 0.03],
-            "hard_sl": [0.08, 0.15],
+            "signal_frac": [0.26, 0.28, 0.30, 0.31, 0.33],
+            "min_midpoint": [0.62, 0.64, 0.65, 0.68],
+            "limit_offset": [0.015, 0.018, 0.022, 0.025],
+            "order_expiry_frac": [0.12, 0.14, 0.16, 0.18],
+            "hard_sl": [0.13, 0.15, 0.18],
         }

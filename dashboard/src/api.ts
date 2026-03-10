@@ -138,6 +138,7 @@ export async function tradeBotOn(body: {
   cash?: number;
   dry_run?: boolean;
   session_cap?: number;
+  session_cash_ratio?: { ratio: number; max: number };
 }): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await fetch("/api/bot/trade-on", {

@@ -90,6 +90,7 @@ export interface StrategySlotStatus {
   starting_cash: number;
   per_session_cash?: number;
   session_cap?: number;
+  session_cash_ratio?: { ratio: number; max: number };
   pid?: number | null;
   alive?: boolean;
   auto_exit?: boolean;

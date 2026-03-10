@@ -29,10 +29,10 @@ class BargainHunter(Strategy):
 
     def __init__(
         self,
-        buy_price=0.18,
-        expiration_frac=0.34,
+        buy_price=0.57,
+        expiration_frac=0.30,
         side_mode="pricier",
-        btc_cancel_bps=None,
+        btc_cancel_bps=2.0,
     ):
         self.buy_price = buy_price
         self.expiration_frac = expiration_frac
@@ -127,12 +127,10 @@ class BargainHunter(Strategy):
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]
-        # 11 * 11 * 2 * 4 = 968 combos
+        # 5 * 5 * 2 * 4 = 200 combos
         return {
-            "buy_price": [0.15, 0.16, 0.17, 0.18, 0.19, 0.20,
-                          0.21, 0.22, 0.23, 0.24, 0.25],
-            "expiration_frac": [0.30, 0.32, 0.34, 0.36, 0.38, 0.40,
-                                0.42, 0.44, 0.46, 0.48, 0.50],
+            "buy_price": [0.47, 0.52, 0.57, 0.62, 0.67],
+            "expiration_frac": [0.25, 0.30, 0.35, 0.40, 0.45],
             "side_mode": ["cheaper", "pricier"],
-            "btc_cancel_bps": [5.0, 10.0, 15.0, 20.0],
+            "btc_cancel_bps": [2.0, 3.0, 5.0, 7.0],
         }

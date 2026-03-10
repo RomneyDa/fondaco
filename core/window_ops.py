@@ -16,8 +16,8 @@ from core.market_discovery import fetch_market_metadata, fetch_resolution
 logger = logging.getLogger(__name__)
 
 
-def wait_for_next_window(window_duration, is_running, on_waiting=None):
-    # type: (int, Callable[[], bool], Optional[Callable[[datetime], None]]) -> int
+def wait_for_next_window(window_duration, is_running, on_waiting=None, after_window_ts=None):
+    # type: (int, Callable[[], bool], Optional[Callable[[datetime], None]], Optional[int]) -> int
     """Wait until the start of the next window. Returns window timestamp.
 
     Args:
@@ -25,9 +25,33 @@ def wait_for_next_window(window_duration, is_running, on_waiting=None):
         is_running: callable returning False to abort the wait
         on_waiting: optional callback(next_dt) called each second while
                     waiting — useful for writing live status updates
+        after_window_ts: if provided, target the window immediately after
+                         this timestamp. Used after completing a session so
+                         post-processing delays don't cause a missed window.
     """
     now = time.time()
     current_window_start = (int(now) // window_duration) * window_duration
+
+    # If we just finished a session, target the next window after it
+    if after_window_ts is not None:
+        target_window = after_window_ts + window_duration
+        # If we're already past the target window, fall through to normal logic
+        if now < target_window + window_duration:
+            if now >= target_window:
+                # Target window already started — jump in immediately
+                return target_window
+            # Target window hasn't started yet — wait for it
+            wait_seconds = target_window - now
+            next_dt = datetime.fromtimestamp(target_window, tz=timezone.utc)
+            logger.info("Waiting %.0fs for next window at %s", wait_seconds, next_dt.isoformat())
+            mono_deadline = time.monotonic() + wait_seconds
+            while time.monotonic() < mono_deadline and is_running():
+                if on_waiting is not None:
+                    on_waiting(next_dt)
+                remaining = mono_deadline - time.monotonic()
+                time.sleep(min(1.0, max(0, remaining)))
+            return target_window
+
     next_window_start = current_window_start + window_duration
 
     # If we're in the first 3 seconds of the current window, use it

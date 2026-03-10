@@ -99,7 +99,9 @@ class AppManager:
             with self._lock:
                 self._markets.pop(slug_key, None)
                 self._threads.pop(slug_key, None)
-            self._save_state()
+            # Don't save state here — preserves markets list in app.json
+            # for --restore on next startup. Only explicit market-off or
+            # start_market should update app.json.
             logger.info("Market %s stopped and cleaned up.", slug_key)
 
     def stop_market(self, slug_prefix, after_session=False):

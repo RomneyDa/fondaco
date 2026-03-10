@@ -76,6 +76,7 @@ class BotWorker:
         market_dir,          # type: str
         dry_run=False,       # type: bool
         session_cap=None,    # type: Optional[float]
+        session_cash_ratio=None,  # type: Optional[Dict[str, float]]
         per_session=False,   # type: bool
         window_duration=300, # type: int
     ):
@@ -86,6 +87,7 @@ class BotWorker:
         self.market_dir = market_dir
         self.dry_run = dry_run
         self.session_cap = session_cap
+        self.session_cash_ratio = session_cash_ratio
         self.per_session = per_session
         self.window_duration = window_duration
         self.running = True
@@ -151,6 +153,7 @@ class BotWorker:
             "cash": round(bankroll, 4),
             "dry_run": self.dry_run,
             "session_cap": self.session_cap,
+            "session_cash_ratio": self.session_cash_ratio,
             "per_session": self.per_session,
             "session_count": self.session_count,
             "pid": os.getpid(),
@@ -162,24 +165,61 @@ class BotWorker:
             json.dump(state, f, indent=2)
         os.replace(tmp, filepath)
 
+    def _reload_session_config(self):
+        # type: () -> None
+        """Re-read cash, session_cash_ratio, and session_cap from state.json.
+
+        This allows set-cash to update these values while the worker is running.
+        """
+        filepath = os.path.join(self.state_dir, "state.json")
+        try:
+            with open(filepath, "r") as f:
+                state = json.load(f)
+            new_cash = state.get("cash")
+            new_ratio = state.get("session_cash_ratio")
+            new_cap = state.get("session_cap")
+            changed = False
+            if new_cash is not None:
+                bankroll = self.position.cash + self._session_reserve
+                if abs(new_cash - bankroll) > 0.001:
+                    self.position.cash = new_cash
+                    self._session_reserve = 0.0
+                    logger.info(
+                        "[%s] Reloaded cash: $%.2f -> $%.2f",
+                        self.strategy_name, bankroll, new_cash,
+                    )
+                    changed = True
+            if new_ratio != self.session_cash_ratio or new_cap != self.session_cap:
+                self.session_cash_ratio = new_ratio
+                self.session_cap = new_cap
+                logger.info(
+                    "[%s] Reloaded session config: ratio=%s cap=%s",
+                    self.strategy_name, self.session_cash_ratio, self.session_cap,
+                )
+                changed = True
+        except (OSError, json.JSONDecodeError):
+            pass
+
     def restore_state(self):
         # type: () -> None
-        """Restore cash and session count from last run."""
+        """Restore session count from last run.
+
+        Cash is NOT restored here — the MarketRunner already handles cash
+        restoration when ``--cash`` is not explicitly provided.  Restoring
+        cash here would overwrite an explicit ``--cash`` value passed via
+        ``trade-on``.
+        """
         filepath = os.path.join(self.state_dir, "state.json")
         if not os.path.exists(filepath):
             return
         try:
             with open(filepath, "r") as f:
                 state = json.load(f)
-            if "cash" in state:
-                self.position.cash = state["cash"]
-                self.starting_cash = state["cash"]
-                self.cash = state["cash"]
-                self.session_count = state.get("session_count", 0)
-                logger.info(
-                    "[%s] Restored state: cash=$%.2f, sessions=%d",
-                    self.strategy_name, self.position.cash, self.session_count,
-                )
+            self.session_count = state.get("session_count", 0)
+            logger.info(
+                "[%s] Restored session_count=%d (cash=$%.2f from launcher)",
+                self.strategy_name, self.session_count, self.position.cash,
+            )
         except Exception as e:
             logger.warning("[%s] Failed to restore state: %s", self.strategy_name, e)
 
@@ -212,12 +252,27 @@ class BotWorker:
                 trade_dicts = []
                 trade_count = 0
 
+                self._reload_session_config()
+
                 if self.per_session:
                     self.position.cash = self.cash
                     self.starting_cash = self.cash
 
                 self._session_reserve = 0.0
-                if self.session_cap is not None and self.position.cash > self.session_cap:
+                if self.session_cash_ratio is not None:
+                    ratio = self.session_cash_ratio["ratio"]
+                    cap = self.session_cash_ratio["max"]
+                    deploy = min(self.position.cash * ratio, cap)
+                    deploy = round(deploy, 4)
+                    if self.position.cash > deploy:
+                        self._session_reserve = self.position.cash - deploy
+                        self.position.cash = deploy
+                        logger.info(
+                            "[%s] Session ratio %.0f%% up to $%.2f: deploying $%.2f, reserve $%.2f",
+                            self.strategy_name, ratio * 100, cap,
+                            self.position.cash, self._session_reserve,
+                        )
+                elif self.session_cap is not None and self.position.cash > self.session_cap:
                     self._session_reserve = self.position.cash - self.session_cap
                     self.position.cash = self.session_cap
                     logger.info(
@@ -429,10 +484,11 @@ class BotWorker:
         filepath = os.path.join(self.state_dir, "live_trades.json")
         try:
             with open(filepath, "w") as f:
+                bankroll = self.position.cash + self._session_reserve
                 json.dump({
                     "strategy": self.strategy_name,
                     "dry_run": self.dry_run,
-                    "cash": round(self.position.cash, 4),
+                    "cash": round(bankroll, 4),
                     "trade_count": trade_count,
                     "trades": trade_dicts[-50:],
                 }, f)
@@ -467,6 +523,8 @@ def main():
     parser.add_argument("--cash", type=float, required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--session-cap", type=float, default=None)
+    parser.add_argument("--session-cash-ratio", default=None,
+                        help="ratio:max e.g. 0.25:3")
     parser.add_argument("--per-session", action="store_true")
     parser.add_argument("--window", type=int, default=300)
     parser.add_argument("--restore", action="store_true", help="Restore state from disk")
@@ -491,6 +549,11 @@ def main():
     )
     logging.getLogger().handlers[0].setLevel(logging.INFO)
 
+    session_cash_ratio = None
+    if args.session_cash_ratio:
+        parts = args.session_cash_ratio.split(":")
+        session_cash_ratio = {"ratio": float(parts[0]), "max": float(parts[1])}
+
     worker = BotWorker(
         strategy_name=args.strategy,
         params=params,
@@ -499,6 +562,7 @@ def main():
         market_dir=args.market_dir,
         dry_run=args.dry_run,
         session_cap=args.session_cap,
+        session_cash_ratio=session_cash_ratio,
         per_session=args.per_session,
         window_duration=args.window,
     )
@@ -506,6 +570,7 @@ def main():
     if args.restore:
         worker.restore_state()
 
+    worker.save_state()
     worker.run()
 
 

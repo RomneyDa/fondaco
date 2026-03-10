@@ -64,6 +64,7 @@ class WorkerInfo:
     dry_run: bool
     per_session: bool
     session_cap: Optional[float]
+    session_cash_ratio: Optional[Dict[str, float]]
     process: Optional[subprocess.Popen]
     started_at: str
 
@@ -170,8 +171,8 @@ class MarketRunner:
     # ----- Worker management -----
 
     def enable_trading(self, strategy_name, params=None, cash=None, dry_run=False,
-                       per_session=False, session_cap=None):
-        # type: (str, Optional[Dict[str, Any]], Optional[float], bool, bool, Optional[float]) -> None
+                       per_session=False, session_cap=None, session_cash_ratio=None):
+        # type: (str, Optional[Dict[str, Any]], Optional[float], bool, bool, Optional[float], Optional[Dict[str, float]]) -> None
         """Spawn a bot worker process for the given strategy."""
         if strategy_name not in self._valid_strategies:
             raise ValueError("Unknown strategy '{}' for market type '{}'. Available: {}".format(
@@ -218,7 +219,7 @@ class MarketRunner:
             self._kill_worker_by_name(strategy_name)
             process = self._spawn_worker(
                 strategy_name, parsed_params, starting_cash,
-                dry_run, per_session, session_cap,
+                dry_run, per_session, session_cap, session_cash_ratio,
             )
             worker = WorkerInfo(
                 strategy_name=strategy_name,
@@ -227,6 +228,7 @@ class MarketRunner:
                 dry_run=dry_run,
                 per_session=per_session,
                 session_cap=session_cap,
+                session_cash_ratio=session_cash_ratio,
                 process=process,
                 started_at=datetime.now(timezone.utc).isoformat(),
             )
@@ -234,15 +236,15 @@ class MarketRunner:
 
         logger.info(
             "[%s] Worker spawned: strategy=%s params=%s cash=$%.2f dry_run=%s "
-            "per_session=%s session_cap=%s pid=%s",
+            "per_session=%s session_cap=%s session_cash_ratio=%s pid=%s",
             self.slug_key, strategy_name, parsed_params, starting_cash, dry_run,
-            per_session, session_cap,
+            per_session, session_cap, session_cash_ratio,
             process.pid if process else None,
         )
         self._save_strategies_config()
 
-    def _spawn_worker(self, strategy_name, params, cash, dry_run, per_session, session_cap):
-        # type: (str, Dict[str, Any], float, bool, bool, Optional[float]) -> subprocess.Popen
+    def _spawn_worker(self, strategy_name, params, cash, dry_run, per_session, session_cap, session_cash_ratio=None):
+        # type: (str, Dict[str, Any], float, bool, bool, Optional[float], Optional[Dict[str, float]]) -> subprocess.Popen
         """Spawn a bot worker subprocess."""
         cmd = [
             sys.executable, "-m", "app.bot_worker",
@@ -262,6 +264,10 @@ class MarketRunner:
             cmd.append("--per-session")
         if session_cap is not None:
             cmd.extend(["--session-cap", str(session_cap)])
+        if session_cash_ratio is not None:
+            cmd.extend(["--session-cash-ratio", "{}:{}".format(
+                session_cash_ratio["ratio"], session_cash_ratio["max"],
+            )])
 
         log_dir = os.path.join(self._workers_dir, strategy_name)
         os.makedirs(log_dir, exist_ok=True)
@@ -372,8 +378,9 @@ class MarketRunner:
                 logger.info("[%s] All workers killed.", self.slug_key)
             self._save_strategies_config()
 
-    def set_cash(self, cash, strategy_name=None):
-        # type: (float, Optional[str]) -> None
+    def set_cash(self, cash, strategy_name=None, session_cash_ratio=None,
+                 session_cap=None, clear_session_limit=False):
+        # type: (float, Optional[str], Optional[Dict[str, float]], Optional[float], bool) -> None
         with self._lock:
             if not self._workers:
                 raise RuntimeError("No active workers to update")
@@ -400,6 +407,21 @@ class MarketRunner:
                 else:
                     state = {}
                 state["cash"] = round(cash, 4)
+                if session_cash_ratio is not None:
+                    state["session_cash_ratio"] = session_cash_ratio
+                    state["session_cap"] = None
+                    w.session_cash_ratio = session_cash_ratio
+                    w.session_cap = None
+                elif session_cap is not None:
+                    state["session_cap"] = session_cap
+                    state["session_cash_ratio"] = None
+                    w.session_cap = session_cap
+                    w.session_cash_ratio = None
+                elif clear_session_limit:
+                    state["session_cap"] = None
+                    state["session_cash_ratio"] = None
+                    w.session_cap = None
+                    w.session_cash_ratio = None
                 tmp = state_file + ".tmp"
                 with open(tmp, "w") as f:
                     json.dump(state, f, indent=2)
@@ -408,6 +430,7 @@ class MarketRunner:
                             self.slug_key, w.strategy_name, cash)
             except Exception as e:
                 logger.warning("Failed to update cash for %s: %s", w.strategy_name, e)
+        self._save_strategies_config()
 
     def set_auto_exit(self, enabled, strategy_name=None):
         # type: (bool, Optional[str]) -> None
@@ -456,6 +479,7 @@ class MarketRunner:
                 "dry_run": w.dry_run,
                 "per_session": w.per_session,
                 "session_cap": w.session_cap,
+                "session_cash_ratio": w.session_cash_ratio,
             })
         try:
             os.makedirs(os.path.dirname(self._strategies_file), exist_ok=True)
@@ -493,6 +517,7 @@ class MarketRunner:
                     dry_run=entry.get("dry_run", False),
                     per_session=entry.get("per_session", False),
                     session_cap=entry.get("session_cap"),
+                    session_cash_ratio=entry.get("session_cash_ratio"),
                 )
                 logger.info("[%s] Restored strategy: %s", self.slug_key, name)
             except Exception:
@@ -518,6 +543,8 @@ class MarketRunner:
                 }
                 if w.session_cap is not None:
                     info["session_cap"] = round(w.session_cap, 4)
+                if w.session_cash_ratio is not None:
+                    info["session_cash_ratio"] = w.session_cash_ratio
                 flag_file = os.path.join(self._workers_dir, w.strategy_name, "auto_exit.flag")
                 info["auto_exit"] = os.path.exists(flag_file)
                 strategies.append(info)
@@ -540,6 +567,7 @@ class MarketRunner:
         # type: () -> None
         """Main loop — data collection + tick broadcasting. Runs as thread target."""
         self._broadcaster.start()
+        self._last_window_ts = None  # type: Optional[int]
 
         completed = self.recorder.count_completed_sessions()
         logger.info(
@@ -625,6 +653,7 @@ class MarketRunner:
 
         window_ts = wait_for_next_window(
             self.window_duration, lambda: self.running, on_waiting=_on_waiting,
+            after_window_ts=self._last_window_ts,
         )
         if not self.running:
             return
@@ -702,6 +731,8 @@ class MarketRunner:
             "window_ts": window_ts,
         })
 
+        self._last_window_ts = window_ts
+
         if self._workers:
             self._save_strategies_config()
 
@@ -710,6 +741,8 @@ class MarketRunner:
     def _poll_and_broadcast(self, session, metadata, window_ts):
         # type: (SessionData, Any, int) -> None
         window_end_ts = window_ts + self.window_duration
+        # Hard deadline: never collect past the window end
+        hard_deadline_ts = window_end_ts
         next_sample_time = time.time()
         pending = []
         last_live_write = 0.0
@@ -717,6 +750,18 @@ class MarketRunner:
 
         while self.running:
             now = time.time()
+
+            # Hard cutoff — never run past deadline regardless of pending futures
+            if now >= hard_deadline_ts:
+                if pending:
+                    logger.warning(
+                        "[%s] Hard deadline reached with %d pending futures — cancelling.",
+                        self.slug_key, len(pending),
+                    )
+                    for f in pending:
+                        f.cancel()
+                    pending = []
+                break
 
             if now >= next_sample_time and next_sample_time < window_end_ts:
                 pending.append(
@@ -784,18 +829,22 @@ class MarketRunner:
         strategies_info = []
         for w in workers:
             live = self._read_worker_live_trades(w.strategy_name)
+            state = self._read_worker_state(w.strategy_name)
+            state_cash = state.get("cash", w.cash) if state else w.cash
             if live:
                 strategies_info.append({
                     "name": w.strategy_name,
                     "dry_run": w.dry_run,
-                    "cash": live.get("cash", w.cash),
+                    "cash": live.get("cash", state_cash),
+                    "bankroll": state_cash,
                     "trades": live.get("trades", []),
                 })
             else:
                 strategies_info.append({
                     "name": w.strategy_name,
                     "dry_run": w.dry_run,
-                    "cash": w.cash,
+                    "cash": state_cash,
+                    "bankroll": state_cash,
                     "trades": [],
                 })
 

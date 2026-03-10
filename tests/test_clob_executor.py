@@ -330,6 +330,202 @@ def test_missing_fill_amounts_falls_back_to_requested(mock_client, metadata, sam
 # ===========================================================================
 
 
+# ===========================================================================
+# ClobExecutor.check_fills — GTC sell fill tests
+# ===========================================================================
+
+
+class TestClobCheckFills:
+    """Test ClobExecutor.check_fills with mocked get_order responses.
+
+    Critical: sell fills must report correct tokens/amount even when the
+    CLOB API returns size_matched=0 (known API behavior for sells).
+    """
+
+    def _make_order(self, side="sell_down", price=0.80, tokens=6.0, token_id="tok-1"):
+        return OpenOrder(
+            order_id="order-sell-1",
+            side=side,
+            token="down" if "down" in side else "up",
+            price=price,
+            tokens=tokens,
+            dollars_reserved=0.0 if "sell" in side else tokens * price,
+            tokens_reserved=tokens if "sell" in side else 0.0,
+            tick_placed=0,
+            token_id=token_id,
+        )
+
+    def test_sell_fill_with_size_matched_zero(self, mock_client):
+        """CLOB returns size_matched='0' for sells — must use order.tokens."""
+        mock_client.get_order.return_value = {
+            "id": "order-sell-1",
+            "status": "MATCHED",
+            "side": "SELL",
+            "original_size": "6",
+            "size_matched": "0",
+            "price": "0.8",
+        }
+        ex = ClobExecutor(mock_client)
+        ex._last_fill_check = 0  # bypass throttle
+        pos = Position(cash=10.0, down_tokens=0.0)  # tokens already reserved
+        order = self._make_order()
+        orders = [order]
+        sample = {"elapsed_seconds": 150.0}
+
+        fills = ex.check_fills(orders, sample, pos)
+
+        assert len(fills) == 1
+        assert fills[0].tokens == 6.0
+        assert fills[0].amount == pytest.approx(4.8)  # 6 * 0.80
+        assert fills[0].success is True
+        assert fills[0].side == "sell_down"
+        assert pos.cash == pytest.approx(14.8)  # 10 + 4.8
+        assert len(orders) == 0  # removed from open orders
+
+    def test_buy_fill_matched(self, mock_client):
+        """Buy fill with MATCHED status applies tokens to position."""
+        mock_client.get_order.return_value = {
+            "id": "order-buy-1",
+            "status": "MATCHED",
+            "side": "BUY",
+            "original_size": "100",
+            "size_matched": "100",
+            "price": "0.50",
+        }
+        ex = ClobExecutor(mock_client)
+        ex._last_fill_check = 0
+        pos = Position(cash=50.0, up_tokens=0.0)  # cash already reserved
+        order = self._make_order(side="buy_up", price=0.50, tokens=100.0)
+        orders = [order]
+        sample = {"elapsed_seconds": 60.0}
+
+        fills = ex.check_fills(orders, sample, pos)
+
+        assert len(fills) == 1
+        assert fills[0].tokens == 100.0
+        assert fills[0].amount == pytest.approx(50.0)
+        assert pos.up_tokens == 100.0
+        assert len(orders) == 0
+
+    def test_sell_up_fill_credits_cash(self, mock_client):
+        """Sell up tokens — cash credited correctly."""
+        mock_client.get_order.return_value = {
+            "id": "order-sell-up-1",
+            "status": "MATCHED",
+            "size_matched": "0",
+            "original_size": "50",
+        }
+        ex = ClobExecutor(mock_client)
+        ex._last_fill_check = 0
+        pos = Position(cash=0.0, up_tokens=0.0)
+        order = self._make_order(side="sell_up", price=0.90, tokens=50.0)
+        orders = [order]
+
+        fills = ex.check_fills(orders, {"elapsed_seconds": 200.0}, pos)
+
+        assert len(fills) == 1
+        assert fills[0].tokens == 50.0
+        assert fills[0].amount == pytest.approx(45.0)  # 50 * 0.90
+        assert pos.cash == pytest.approx(45.0)
+
+    def test_cancelled_order_unreserves_tokens(self, mock_client):
+        """Cancelled sell returns reserved tokens to position."""
+        mock_client.get_order.return_value = {
+            "id": "order-sell-1",
+            "status": "CANCELLED",
+        }
+        ex = ClobExecutor(mock_client)
+        ex._last_fill_check = 0
+        pos = Position(cash=10.0, down_tokens=0.0)  # tokens were reserved
+        order = self._make_order()
+        orders = [order]
+
+        fills = ex.check_fills(orders, {"elapsed_seconds": 150.0}, pos)
+
+        assert len(fills) == 0
+        assert pos.down_tokens == 6.0  # tokens returned
+        assert len(orders) == 0
+
+    def test_live_order_stays_pending(self, mock_client):
+        """LIVE status keeps order in the pending list."""
+        mock_client.get_order.return_value = {
+            "id": "order-sell-1",
+            "status": "LIVE",
+        }
+        ex = ClobExecutor(mock_client)
+        ex._last_fill_check = 0
+        pos = Position(cash=10.0, down_tokens=0.0)
+        order = self._make_order()
+        orders = [order]
+
+        fills = ex.check_fills(orders, {"elapsed_seconds": 150.0}, pos)
+
+        assert len(fills) == 0
+        assert len(orders) == 1  # still pending
+        assert pos.cash == 10.0  # unchanged
+
+    def test_api_error_keeps_order_pending(self, mock_client):
+        """If get_order raises, order stays in pending list for retry."""
+        mock_client.get_order.side_effect = RuntimeError("API timeout")
+        ex = ClobExecutor(mock_client)
+        ex._last_fill_check = 0
+        pos = Position(cash=10.0, down_tokens=0.0)
+        order = self._make_order()
+        orders = [order]
+
+        fills = ex.check_fills(orders, {"elapsed_seconds": 150.0}, pos)
+
+        assert len(fills) == 0
+        assert len(orders) == 1  # kept for retry
+
+    def test_throttle_skips_check(self, mock_client):
+        """check_fills is throttled — returns empty if called too soon."""
+        ex = ClobExecutor(mock_client)
+        # _last_fill_check defaults to 0, so first call goes through
+        ex._last_fill_check = 0
+        pos = Position(cash=10.0)
+        order = self._make_order()
+
+        mock_client.get_order.return_value = {"status": "LIVE"}
+        ex.check_fills([order], {"elapsed_seconds": 150.0}, pos)
+
+        # Second call immediately — should be throttled
+        mock_client.get_order.reset_mock()
+        fills = ex.check_fills([order], {"elapsed_seconds": 150.0}, pos)
+        assert len(fills) == 0
+        mock_client.get_order.assert_not_called()
+
+    def test_multiple_sells_all_fill(self, mock_client):
+        """Multiple pending sell orders all fill in one check."""
+        mock_client.get_order.return_value = {
+            "status": "MATCHED",
+            "size_matched": "0",
+        }
+        ex = ClobExecutor(mock_client)
+        ex._last_fill_check = 0
+        pos = Position(cash=0.0, up_tokens=0.0, down_tokens=0.0)
+
+        order1 = OpenOrder(
+            order_id="sell-1", side="sell_up", token="up",
+            price=0.90, tokens=10.0,
+            dollars_reserved=0.0, tokens_reserved=10.0,
+            tick_placed=0, token_id="tok-up",
+        )
+        order2 = OpenOrder(
+            order_id="sell-2", side="sell_down", token="down",
+            price=0.80, tokens=20.0,
+            dollars_reserved=0.0, tokens_reserved=20.0,
+            tick_placed=0, token_id="tok-down",
+        )
+        orders = [order1, order2]
+
+        fills = ex.check_fills(orders, {"elapsed_seconds": 200.0}, pos)
+
+        assert len(fills) == 2
+        assert pos.cash == pytest.approx(25.0)  # 10*0.90 + 20*0.80
+        assert len(orders) == 0
+
+
 class TestSimExecutorLimitOrders:
     """Test the SimExecutor limit order lifecycle: place → fill → cancel."""
 

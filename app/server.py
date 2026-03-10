@@ -182,11 +182,13 @@ class _Handler(BaseHTTPRequestHandler):
             session_cap = body.get("session_cap")
             if session_cap is not None:
                 session_cap = float(session_cap)
+            session_cash_ratio = body.get("session_cash_ratio")
 
             runner = mgr.get_market(slug_prefix)
             runner.enable_trading(
                 strategy_name, params, cash=cash, dry_run=dry_run,
                 per_session=per_session, session_cap=session_cap,
+                session_cash_ratio=session_cash_ratio,
             )
             self._send_json({
                 "ok": True,
@@ -232,8 +234,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Missing 'cash' field"}, 400)
                 return
             strategy_name = body.get("strategy")
+            session_cash_ratio = body.get("session_cash_ratio")
+            session_cap = body.get("session_cap")
+            if session_cap is not None:
+                session_cap = float(session_cap)
+            clear_session_limit = body.get("clear_session_limit", False)
             runner = mgr.get_market(slug_prefix)
-            runner.set_cash(float(cash), strategy_name=strategy_name)
+            runner.set_cash(
+                float(cash), strategy_name=strategy_name,
+                session_cash_ratio=session_cash_ratio,
+                session_cap=session_cap,
+                clear_session_limit=clear_session_limit,
+            )
             self._send_json({
                 "ok": True,
                 "cash": round(float(cash), 4),
@@ -302,6 +314,7 @@ class _Handler(BaseHTTPRequestHandler):
                 strategy_name, target.params, cash=cash,
                 dry_run=target.dry_run, per_session=target.per_session,
                 session_cap=target.session_cap,
+                session_cash_ratio=target.session_cash_ratio,
             )
             self._send_json({
                 "ok": True,

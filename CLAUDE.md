@@ -80,17 +80,23 @@ uv run python -m app market-off btc-updown-5m-          # Stop market (kills bot
 uv run python -m app market-off btc-updown-5m- --after-session  # Graceful stop
 
 # Bot lifecycle (slug_prefix is first positional arg)
+uv run python -m app trade-on btc-updown-5m- --strategy LateSniper --cash 20 --session-cash-ratio 0.25:3
 uv run python -m app trade-on btc-updown-5m- --strategy LateSniper --cash 100 --session-cap 5
 uv run python -m app trade-off btc-updown-5m- --strategy LateSniper
 uv run python -m app trade-off btc-updown-5m-           # Kill all bots on this market
 uv run python -m app reload btc-updown-5m- --strategy LateSniper
 uv run python -m app set-cash btc-updown-5m- 50 --strategy LateSniper
+uv run python -m app set-cash btc-updown-5m- 50 --session-cash-ratio 0.25:3  # Update ratio
 
 # Standalone claim (no running app needed)
 uv run python -m app claim [--no-wait]
 
 # Backtest (slug key shorthand resolves to data/markets/{slug}/sessions)
 uv run python -m simulator.backtest btc-updown-5m --strategy all --top 10 --recent 30
+
+# Override param grid from CLI (no file edits needed)
+uv run python -m simulator.backtest btc-updown-5m --strategy LateSniper --recent 30 \
+  --param min_elapsed=0.45,0.50,0.55 --param stop_loss_pct=0.03,0.05
 ```
 
 Known prefixes in `slugs.json` (git-ignored). Use `--window` matching the slug (300 for 5m, 900 for 15m).
@@ -101,8 +107,18 @@ Known prefixes in `slugs.json` (git-ignored). Use `--window` matching the slug (
 |---|---|
 | `--per-session` | Reset cash to `--cash` at each session start. No accumulation. |
 | `--session-cap <N>` | Deploy at most $N per session; excess held in reserve. Bankroll grows/shrinks but per-session risk is capped. |
+| `--session-cash-ratio R:M` | Deploy `min(R * bankroll, M)` per session. Scales with bankroll — winning strategies deploy more, losing ones deploy less. |
 
-**`--session-cap` is the typical choice.** Example: `--cash 10 --session-cap 5` → $10 bankroll, $5 deployed per session. Win $2 → bankroll=$12, next session still deploys $5.
+**`--session-cash-ratio` is the typical choice.** Example: `--cash 20 --session-cash-ratio 0.25:3` → $20 bankroll, deploys 25% ($5) per session up to $3 max. Win $4 → bankroll=$24, next session deploys min(25%×$24, $3) = $3. Lose $2 → bankroll=$18, next session deploys min(25%×$18, $3) = $3. Lose more → bankroll=$8, deploys min(25%×$8, $3) = $2.
+
+`--session-cap` is the simpler alternative — fixed dollar amount per session regardless of bankroll.
+
+**Updating on a running worker:**
+```bash
+uv run python -m app set-cash btc-updown-5m- 20 --session-cash-ratio 0.25:3
+uv run python -m app set-cash btc-updown-5m- 20 --session-cap 5
+uv run python -m app set-cash btc-updown-5m- 20 --clear-session-limit
+```
 
 ## File Structure
 
@@ -173,7 +189,7 @@ POST /api/control/market-off                     # {slug_prefix, after_session?}
 POST /api/control/trade-on                       # {slug_prefix, strategy, params?, cash?, ...}
 POST /api/control/trade-off                      # {slug_prefix, strategy?}
 POST /api/control/reload                         # {slug_prefix, strategy}
-POST /api/control/set-cash                       # {slug_prefix, cash, strategy?}
+POST /api/control/set-cash                       # {slug_prefix, cash, strategy?, session_cash_ratio?, session_cap?, clear_session_limit?}
 ```
 
 ## Tick Scale
@@ -203,18 +219,23 @@ CLOB ~300ms, Gamma ~270ms, Data API ~375ms, Builder Relayer ~675ms. Network RTT 
 |---|---|---|
 | Min order size | CLOB_MIN_ORDER_TOKENS | 5 tokens |
 
-Per-session risk controlled by `--session-cap`. Settlement cooldown prevents selling before on-chain settlement; enforced in `Trader.process_tick()`. Balance cached to `.cache/balance.json`; use `--cash cached` to start from real balance.
+Per-session risk controlled by `--session-cash-ratio` (scales with bankroll) or `--session-cap` (fixed amount). Settlement cooldown prevents selling before on-chain settlement; enforced in `Trader.process_tick()`. Balance cached to `.cache/balance.json`; use `--cash cached` to start from real balance.
 
 ## Strategy Param Optimization
 
 Use iterative grid refinement — coarse grid → zoom in → zoom in. Keep each sweep **< 1000 combos**.
 
-1. **Coarse sweep** — Wide spacing, verify combo count before running:
+1. **Coarse sweep** — Use the strategy's built-in `param_grid()`:
    ```bash
    uv run python -m simulator.backtest btc-updown-5m --strategy MyStrategy --top 10 --recent 30
    ```
-2. **Refine** — Tighter grid centered on best params from step 1.
-3. **Polish (optional)** — Even finer steps. Stop when top results cluster tightly.
+2. **Refine** — Override specific params via `--param` (no file edits needed):
+   ```bash
+   uv run python -m simulator.backtest btc-updown-5m --strategy MyStrategy --recent 30 \
+     --param min_elapsed=0.45,0.48,0.50,0.52,0.55 --param stop_loss_pct=0.02,0.03,0.04
+   ```
+   Unspecified params still use the strategy's `param_grid()` values. Use a single value to pin: `--param max_price=0.95`.
+3. **Polish (optional)** — Even finer `--param` steps. Stop when top results cluster tightly.
 
 ## CRITICAL RULES — REAL MONEY
 

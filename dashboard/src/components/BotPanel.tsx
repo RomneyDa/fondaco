@@ -35,10 +35,22 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
     };
   }, []);
 
-  // --- Strategies (dynamic) ---
+  // --- Strategies (dynamic, retry until loaded) ---
   const [strategies, setStrategies] = useState<string[]>([]);
   useEffect(() => {
-    fetchStrategies().then(setStrategies);
+    let cancelled = false;
+    function load() {
+      fetchStrategies().then((s) => {
+        if (cancelled) return;
+        if (s.length > 0) {
+          setStrategies(s);
+        } else {
+          setTimeout(load, 3000);
+        }
+      });
+    }
+    load();
+    return () => { cancelled = true; };
   }, []);
 
   // --- Slugs for market-on ---
@@ -108,7 +120,7 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
     refreshTimerRef.current = setTimeout(onRefresh, 2000);
   }
 
-  async function handleTradeOn(slugPrefix: string, strategyName: string, opts: { cash: number; sessionCap?: number; dryRun: boolean }) {
+  async function handleTradeOn(slugPrefix: string, strategyName: string, opts: { cash: number; sessionCap?: number; sessionCashRatio?: { ratio: number; max: number }; dryRun: boolean }) {
     setLoading(true);
     const body: any = {
       slug_prefix: slugPrefix,
@@ -116,7 +128,8 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
       cash: opts.cash,
       dry_run: opts.dryRun,
     };
-    if (opts.sessionCap != null) body.session_cap = opts.sessionCap;
+    if (opts.sessionCashRatio != null) body.session_cash_ratio = opts.sessionCashRatio;
+    else if (opts.sessionCap != null) body.session_cap = opts.sessionCap;
     const res = await tradeBotOn(body);
     flashMessage(res.ok ? `Started: ${strategyName}` : res.error || "Failed");
     setLoading(false);
@@ -303,7 +316,7 @@ function MarketSection({
   market: MarketStatus;
   loading: boolean;
   strategies: string[];
-  onTradeOn: (slug: string, strategy: string, opts: { cash: number; sessionCap?: number; dryRun: boolean }) => void;
+  onTradeOn: (slug: string, strategy: string, opts: { cash: number; sessionCap?: number; sessionCashRatio?: { ratio: number; max: number }; dryRun: boolean }) => void;
   onTradeOff: (slug: string, strategy?: string) => void;
   onReload: (slug: string, strategy: string) => void;
   onMarketOff: (slug: string) => void;
@@ -316,7 +329,7 @@ function MarketSection({
 
   const [selected, setSelected] = useState("");
   const [cash, setCash] = useState("10");
-  const [sessionCap, setSessionCap] = useState("5");
+  const [sessionCap, setSessionCap] = useState("25%:3");
 
   return (
     <div style={{ marginTop: 16, padding: 16, background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 8 }}>
@@ -377,7 +390,10 @@ function MarketSection({
                 }}>DEAD</span>}
                 <span style={{ color: "var(--text-dim)", fontSize: 13, marginLeft: "auto" }}>
                   ${(s.bankroll ?? s.cash).toFixed(2)}
-                  {s.session_cap != null && (
+                  {s.session_cash_ratio != null && (
+                    <span style={{ opacity: 0.6 }}> ({Math.round(s.session_cash_ratio.ratio * 100)}% up to ${s.session_cash_ratio.max.toFixed(0)})</span>
+                  )}
+                  {s.session_cash_ratio == null && s.session_cap != null && (
                     <span style={{ opacity: 0.6 }}> (${s.session_cap.toFixed(0)}/s)</span>
                   )}
                 </span>
@@ -420,47 +436,57 @@ function MarketSection({
       )}
 
       {available.length > 0 && (
-        <div style={{
-          display: "flex", alignItems: "center", gap: 8, marginTop: 10,
-          padding: "8px 12px", background: "var(--bg)", borderRadius: 6, border: "1px dashed var(--border)",
-        }}>
-          <select
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-            style={{ flex: 1, fontSize: 13 }}
-          >
-            <option value="">Add strategy...</option>
-            {available.map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
-          <input
-            type="number" value={cash} onChange={(e) => setCash(e.target.value)}
-            min="1" step="1" placeholder="Cash" title="Cash ($)"
-            style={{ width: 60, fontSize: 13 }}
-          />
-          <input
-            type="number" value={sessionCap} onChange={(e) => setSessionCap(e.target.value)}
-            min="1" step="1" placeholder="Cap" title="Session cap ($)"
-            style={{ width: 60, fontSize: 13 }}
-          />
-          <button
-            className="bot-btn"
-            style={{ fontSize: 11, padding: "4px 12px", background: "var(--green)", color: "#fff" }}
-            disabled={loading || !selected}
-            onClick={() => {
-              if (!selected) return;
-              const cap = sessionCap.trim() ? parseFloat(sessionCap) : undefined;
-              onTradeOn(market.slug_prefix, selected, {
-                cash: parseFloat(cash) || 10,
-                sessionCap: cap,
-                dryRun: false,
-              });
-              setSelected("");
-            }}
-          >
-            Add
-          </button>
+        <div className="add-strategy-form">
+          <div className="add-strategy-row">
+            <label className="add-strategy-field add-strategy-field--strategy">
+              <span className="add-strategy-label">Strategy</span>
+              <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+                <option value="">Select...</option>
+                {available.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </label>
+            <label className="add-strategy-field">
+              <span className="add-strategy-label">Cash</span>
+              <input
+                type="number" value={cash} onChange={(e) => setCash(e.target.value)}
+                min="1" step="1"
+              />
+            </label>
+            <label className="add-strategy-field">
+              <span className="add-strategy-label">Session limit</span>
+              <input
+                type="text" value={sessionCap} onChange={(e) => setSessionCap(e.target.value)}
+                placeholder="5 or 25%:3"
+              />
+            </label>
+            <button
+              className="bot-btn add-strategy-btn"
+              disabled={loading || !selected}
+              onClick={() => {
+                if (!selected) return;
+                const capStr = sessionCap.trim();
+                let sessionCapVal: number | undefined;
+                let sessionCashRatioVal: { ratio: number; max: number } | undefined;
+                if (capStr && capStr.includes("%")) {
+                  const parts = capStr.replace("%", "").split(":");
+                  sessionCashRatioVal = { ratio: parseFloat(parts[0]) / 100, max: parseFloat(parts[1]) };
+                } else if (capStr) {
+                  sessionCapVal = parseFloat(capStr);
+                }
+                onTradeOn(market.slug_prefix, selected, {
+                  cash: parseFloat(cash) || 10,
+                  sessionCap: sessionCapVal,
+                  sessionCashRatio: sessionCashRatioVal,
+                  dryRun: false,
+                });
+                setSelected("");
+              }}
+            >
+              Add
+            </button>
+          </div>
         </div>
       )}
     </div>
