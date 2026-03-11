@@ -6,6 +6,7 @@ slugs.json
 
 # Secrets and cached auth
 .env
+!.env.example
 .cache/
 
 # Python
