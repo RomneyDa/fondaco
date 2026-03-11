@@ -13,6 +13,8 @@ class Strategy(ABC):
     description = ""  # type: str
     version = "1"  # type: str
     requires_full_session = False  # type: bool
+    uses_history = False  # type: bool  # Set True if on_tick reads ctx.history
+    min_elapsed_hint = 0.0  # type: float  # Simulator skips ticks before this (only when requires_full_session=False)
 
     @abstractmethod
     def on_session_start(self, metadata):

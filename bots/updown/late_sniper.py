@@ -23,18 +23,19 @@ class LateSniper(Strategy):
     # Lower confidence (0.69) enters more often, max_price cap (0.94) avoids
     # overpaying, wider take-profit (0.30) lets winners run.
     # Half-Kelly cash% = 50%, deploying at quarter-Kelly (25%).
-    version = "6"
+    version = "7"
 
     def __init__(
         self,
-        min_elapsed=0.56,
-        confidence_threshold=0.69,
-        max_price=0.94,
-        stop_loss_pct=0.09,  # type: Optional[float]
-        take_profit_pct=0.30,  # type: Optional[float]
+        min_elapsed=0.54,
+        confidence_threshold=0.67,
+        max_price=0.98,
+        stop_loss_pct=0.12,  # type: Optional[float]
+        take_profit_pct=None,  # type: Optional[float]
         bet_fraction=1.0,
     ):
         self.min_elapsed = min_elapsed
+        self.min_elapsed_hint = min_elapsed
         self.confidence_threshold = confidence_threshold
         self.max_price = max_price
         self.stop_loss_pct = stop_loss_pct
@@ -149,9 +150,9 @@ class LateSniper(Strategy):
 
     def param_grid(self):
         return {
-            "min_elapsed": [0.50, 0.53, 0.56, 0.58],
-            "confidence_threshold": [0.67, 0.69, 0.71, 0.73],
-            "max_price": [0.92, 0.94, 0.96],
-            "stop_loss_pct": [None, 0.07, 0.09, 0.11],
-            "take_profit_pct": [None, 0.25, 0.30, 0.40],
+            "min_elapsed": [0.50, 0.52, 0.54, 0.56],
+            "confidence_threshold": [0.64, 0.67, 0.70, 0.73],
+            "max_price": [0.94, 0.96, 0.98],
+            "stop_loss_pct": [None, 0.10, 0.12, 0.14],
+            "take_profit_pct": [None, 0.25, 0.35],
         }

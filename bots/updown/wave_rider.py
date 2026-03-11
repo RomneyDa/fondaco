@@ -21,6 +21,7 @@ Stop-loss at 10% prevents catastrophic losses. 3 entries/session
 captures multiple wave opportunities. Pullback threshold (0.3 bps) is
 effectively a noise filter — any pullback after trend establishment
 triggers entry. Half-Kelly f*=1.0 → cash_pct=50%.
+
 """
 
 import math
@@ -63,7 +64,7 @@ class WaveRider(Strategy):
         "Identifies session trend, buys on pullback dips at better prices. "
         "Volatility from recent sessions calibrates pullback thresholds."
     )
-    version = "2"
+    version = "3"
     requires_full_session = True
 
     def __init__(
@@ -76,9 +77,9 @@ class WaveRider(Strategy):
         vol_pullback_scale=0.3,
         min_elapsed=0.28,
         no_new_after=0.95,
-        max_price=0.65,
-        max_entries=3,
-        stop_loss_pct=0.10,       # type: Optional[float]
+        max_price=0.70,
+        max_entries=1,
+        stop_loss_pct=0.30,       # type: Optional[float]
         take_profit_pct=None,     # type: Optional[float]
         cooldown_ticks=72,
     ):

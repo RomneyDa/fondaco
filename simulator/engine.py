@@ -1,9 +1,11 @@
 """Core simulation engine for backtesting Polymarket up/down strategies."""
 
 import glob
+import hashlib
 import json
 import math
 import os
+import pickle
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -18,7 +20,7 @@ from core.trader import (
     SimExecutor,
     Trader,
 )
-from core.defaults import TAKER_FEE_BASE_BPS
+from core.models import Sample
 
 
 def _parse_utc(s):
@@ -91,25 +93,159 @@ class BacktestResult:
     total_fees: float = 0.0          # total taker fees paid across all sessions
 
 
-def load_sessions(data_dir):
-    # type: (str) -> List[Dict[str, Any]]
-    """Load all resolved session JSON files from a directory tree."""
+def _list_session_files(data_dir):
+    # type: (str) -> List[str]
+    """List all JSON files in a data directory, sorted by name."""
     pattern = os.path.join(data_dir, "**", "*.json")
     files = glob.glob(pattern, recursive=True)
     if not files:
-        # Also try non-recursive (flat directory)
         pattern = os.path.join(data_dir, "*.json")
         files = glob.glob(pattern)
-    sessions = []
-    for f in sorted(files):
+    return sorted(files)
+
+
+def _cache_path(data_dir, suffix=""):
+    # type: (str, str) -> str
+    """Return a cache path for a given data directory."""
+    cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache")
+    dir_hash = hashlib.md5(os.path.normpath(data_dir).encode()).hexdigest()[:12]
+    return os.path.join(cache_dir, "sessions_{}{}.pkl".format(dir_hash, suffix))
+
+
+def _dir_fingerprint(files):
+    # type: (List[str]) -> str
+    """Quick fingerprint: file count + total size + newest mtime."""
+    count = len(files)
+    total_size = 0
+    newest = 0.0
+    for f in files:
+        try:
+            st = os.stat(f)
+            total_size += st.st_size
+            if st.st_mtime > newest:
+                newest = st.st_mtime
+        except OSError:
+            pass
+    return "{}:{}:{:.6f}".format(count, total_size, newest)
+
+
+def load_session_summaries(data_dir):
+    # type: (str) -> List[Dict[str, Any]]
+    """Load lightweight session summaries for all sessions (no sample data).
+
+    Much faster than load_sessions — reads only the metadata fields needed
+    for _build_session_summaries. Uses a pickle cache.
+    """
+    files = _list_session_files(data_dir)
+    if not files:
+        return []
+    cache_file = _cache_path(data_dir, "_summaries")
+    fingerprint = _dir_fingerprint(files)
+
+    # Try cache
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "rb") as fh:
+                cached = pickle.load(fh)
+            if cached.get("fingerprint") == fingerprint:
+                return cached["summaries"]
+        except (pickle.UnpicklingError, EOFError, KeyError, OSError):
+            pass
+
+    # Build from JSON (fast — only reads metadata, not samples)
+    summaries = []
+    for f in files:
         with open(f, "r") as fh:
             data = json.load(fh)
-        # Skip unresolved sessions and non-session files (e.g. .trading.json)
         if data.get("outcome") is None or "samples" not in data:
             continue
-        data["_source_file"] = f
-        sessions.append(data)
+        meta = data.get("metadata", {})
+        ws = meta.get("window_start_utc", "")
+        try:
+            window_start = _parse_utc(ws)
+        except (ValueError, TypeError):
+            continue
+        initial_btc = data.get("initial_btc_price_usd")
+        final_btc = data.get("final_btc_price_usd")
+        outcome = data.get("outcome")
+        if initial_btc and final_btc and outcome:
+            summaries.append({
+                "window_start": window_start,
+                "initial_btc": initial_btc,
+                "final_btc": final_btc,
+                "outcome": outcome,
+            })
+    summaries.sort(key=lambda x: x["window_start"])
+
+    # Cache
+    try:
+        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        with open(cache_file, "wb") as fh:
+            pickle.dump({"fingerprint": fingerprint, "summaries": summaries}, fh,
+                        protocol=pickle.HIGHEST_PROTOCOL)
+    except OSError:
+        pass
+
+    return summaries
+
+
+def load_sessions(data_dir, recent=None):
+    # type: (str, Optional[int]) -> List[Dict[str, Any]]
+    """Load resolved session JSON files from a directory tree.
+
+    Args:
+        data_dir: Path to session files directory.
+        recent: If set, only fully load the N most recent sessions.
+                Saves significant I/O and memory when --recent is used.
+
+    Samples are kept as raw dicts for fast loading. Conversion to Sample
+    objects happens lazily in Simulator.run_session (only for sessions
+    actually replayed).
+    """
+    files = _list_session_files(data_dir)
+    if not files:
+        return []
+
+    # Filter to session files only (need outcome + samples)
+    # We need to identify which files are valid sessions to count correctly.
+    # With --recent, only load the last N valid session files.
+    if recent is not None and recent < len(files):
+        # Load from the end — we need to find the last `recent` valid sessions.
+        # Scan backwards to avoid loading all files.
+        sessions = []
+        for f in reversed(files):
+            with open(f, "r") as fh:
+                data = json.load(fh)
+            if data.get("outcome") is None or "samples" not in data:
+                continue
+            data["_source_file"] = f
+            sessions.append(data)
+            if len(sessions) >= recent:
+                break
+        sessions.reverse()
+    else:
+        sessions = []
+        for f in files:
+            with open(f, "r") as fh:
+                data = json.load(fh)
+            if data.get("outcome") is None or "samples" not in data:
+                continue
+            data["_source_file"] = f
+            sessions.append(data)
+
     return sessions
+
+
+def _convert_samples(session_dict):
+    # type: (Dict[str, Any]) -> None
+    """Convert sample dicts to Sample objects in-place (lazy, once per session).
+
+    Sample objects use __slots__ for faster attribute access in the hot
+    tick loop vs dict .get() calls.
+    """
+    samples = session_dict.get("samples")
+    if samples and isinstance(samples[0], dict):
+        session_dict["samples"] = [Sample(s) for s in samples]
 
 
 def _compute_kelly_metrics(results, starting_cash, compound):
@@ -169,24 +305,9 @@ def _compute_kelly_metrics(results, starting_cash, compound):
         final_bankroll *= (1.0 + ret)
 
     # Estimate optimal Kelly fraction numerically.
-    # Scan f from 0.01 to 1.0, find f that maximizes E[log(1 + f*r)].
-    # This is exact for the empirical distribution — no small-bet approximation.
-    best_f = 0.0
-    best_growth = 0.0
-    for f_int in range(1, 101):  # 0.01 to 1.00 in steps of 0.01
-        f = f_int / 100.0
-        g = 0.0
-        valid = True
-        for ret in returns:
-            v = 1.0 + f * ret
-            if v <= 0:
-                valid = False
-                break
-            g += math.log(v)
-        if valid and g > best_growth:
-            best_growth = g
-            best_f = f
-    kelly_f = best_f
+    # Ternary search on concave log-growth function (converges in ~50 iterations
+    # vs 100-step linear scan). f* maximizes E[log(1 + f*r)].
+    kelly_f = _ternary_kelly_search(returns)
 
     # Recommended session-cash-ratio: what fraction f of bankroll to deploy
     # per session, where the strategy receives f*bankroll as its cash.
@@ -240,6 +361,44 @@ def _compute_kelly_metrics(results, starting_cash, compound):
     }
 
 
+def _log_growth_at_f(f, returns):
+    # type: (float, List[float]) -> float
+    """Compute E[log(1 + f*r)] for a given f and return series."""
+    g = 0.0
+    for ret in returns:
+        v = 1.0 + f * ret
+        if v <= 0:
+            return float("-inf")
+        g += math.log(v)
+    return g
+
+
+def _ternary_kelly_search(returns, lo=0.001, hi=1.0, tol=0.005):
+    # type: (List[float], float, float, float) -> float
+    """Find Kelly-optimal f via ternary search on the concave log-growth function.
+
+    Converges in ~log2((hi-lo)/tol) ≈ 8 iterations instead of a 100-step scan.
+    """
+    if not returns:
+        return 0.0
+    for _ in range(50):  # more than enough for convergence
+        if hi - lo < tol:
+            break
+        m1 = lo + (hi - lo) / 3.0
+        m2 = hi - (hi - lo) / 3.0
+        g1 = _log_growth_at_f(m1, returns)
+        g2 = _log_growth_at_f(m2, returns)
+        if g1 < g2:
+            lo = m1
+        else:
+            hi = m2
+    best_f = (lo + hi) / 2.0
+    # Only return positive f if it actually has positive growth
+    if _log_growth_at_f(best_f, returns) <= 0:
+        return 0.0
+    return best_f
+
+
 # Default fractional Kelly multiplier (half-Kelly).
 # Full Kelly is usually too aggressive due to estimation error and regime shifts.
 # Half-Kelly gives ~75% of the growth rate with much less variance.
@@ -288,15 +447,6 @@ def compute_kelly_sizing(results, starting_cash, kelly_multiplier=KELLY_FRACTION
                 "projected_final": starting_cash, "projected_max_dd": 0.0}
 
     # Laplace smoothing via Rule of Three.
-    # With binary-outcome markets (token → $0 or $1), a loss is -100%.
-    # When zero losses are observed, inject synthetic total-loss events
-    # so the implied loss rate matches the 95% CI upper bound (~3/n).
-    #
-    # Formula: n_inject = max(1, round(3 * n_traded / (n_traded + 3)))
-    #   - Small samples (n=10): injects 2 losses → ~17% implied loss rate (conservative)
-    #   - Medium samples (n=50): injects 3 losses → ~5.7% (still cautious)
-    #   - Large samples (n=200): injects 3 losses → ~1.5% (matches rule of three)
-    #   - Asymptote: approaches 3 as n→∞
     traded_returns = [r for r in returns if r != 0.0]
     loss_count = sum(1 for r in traded_returns if r < 0)
     if loss_count == 0 and len(traded_returns) > 0:
@@ -306,25 +456,8 @@ def compute_kelly_sizing(results, starting_cash, kelly_multiplier=KELLY_FRACTION
     else:
         smoothed_returns = returns
 
-    # Numerical Kelly: find f* that maximizes E[log(1 + f * r_i)]
-    # Fine-grained scan: 0.001 to 1.0 in steps of 0.001
-    best_f = 0.0
-    best_growth = 0.0
-    for f_int in range(1, 1001):
-        f = f_int / 1000.0
-        g = 0.0
-        valid = True
-        for ret in smoothed_returns:
-            v = 1.0 + f * ret
-            if v <= 0:
-                valid = False
-                break
-            g += math.log(v)
-        if valid and g > best_growth:
-            best_growth = g
-            best_f = f
-
-    kelly_f = best_f
+    # Ternary search for Kelly-optimal f (replaces 1000-step linear scan)
+    kelly_f = _ternary_kelly_search(smoothed_returns)
     cash_pct = round(kelly_f * kelly_multiplier, 4)
 
     # Project compound growth at recommended cash_pct
@@ -363,19 +496,25 @@ class Simulator:
         slippage=0.02,
         all_sessions=None,
         compound=False,
-        fee_bps=TAKER_FEE_BASE_BPS,
+        fees=True,
         session_cash_ratio=None,
+        session_summaries=None,
     ):
         self.starting_cash = starting_cash
         self.execution_mode = execution_mode
         self.slippage = slippage
         self.compound = compound
-        self.fee_bps = fee_bps
+        self.fees = fees
         self.session_cash_ratio = session_cash_ratio  # (ratio, max) or None
-        # Pre-build sorted session summaries for strategies that need lookback
-        self._session_summaries = (
-            _build_session_summaries(all_sessions) if all_sessions else None
-        )
+        # Pre-build sorted session summaries for strategies that need lookback.
+        # Accept pre-computed summaries (from parent process) to avoid pickling
+        # all_sessions into every worker.
+        if session_summaries is not None:
+            self._session_summaries = session_summaries
+        elif all_sessions is not None:
+            self._session_summaries = _build_session_summaries(all_sessions)
+        else:
+            self._session_summaries = None
 
     def run_session(self, strategy, session_dict, session_cash=None):
         # type: (Any, Dict[str, Any], Optional[float]) -> SessionResult
@@ -385,6 +524,8 @@ class Simulator:
         self.starting_cash as the bankroll for this session.
         """
         cash = session_cash if session_cash is not None else self.starting_cash
+        # Lazy conversion: convert sample dicts to Sample objects on first use
+        _convert_samples(session_dict)
         samples = session_dict["samples"]
         metadata = session_dict["metadata"]
         outcome = session_dict["outcome"]
@@ -405,18 +546,52 @@ class Simulator:
 
         # Compute window duration from samples
         if len(samples) >= 2:
-            window_duration = samples[-1]["elapsed_seconds"]
+            last = samples[-1]
+            window_duration = last.elapsed_seconds if hasattr(last, 'elapsed_seconds') else last["elapsed_seconds"]
         else:
             window_duration = 300.0
 
         position = Position(cash=cash)
-        executor = SimExecutor(self.execution_mode, self.slippage, fee_bps=self.fee_bps)
-        trader = Trader(strategy, executor)
+        executor = SimExecutor(self.execution_mode, self.slippage, fees=self.fees)
+        trader = Trader(strategy, executor, sim_mode=True)
         trader.start_session(metadata, position, initial_btc, window_duration,
                              reference_balance=cash)
 
-        for sample in samples:
-            trader.process_tick(sample)
+        # P5: Skip early ticks for strategies that don't need them.
+        # Only skip when requires_full_session=False and strategy has a
+        # min_elapsed_hint > 0. Safe because the strategy returns HOLD for
+        # all ticks before min_elapsed anyway.
+        min_hint = getattr(strategy, 'min_elapsed_hint', 0.0)
+        skip_early = (
+            min_hint > 0
+            and not getattr(strategy, 'requires_full_session', False)
+            and window_duration > 0
+        )
+
+        # Use fast sim path (reusable TickContext, no auto-exit check, etc.)
+        process = trader.process_tick_sim
+
+        if skip_early:
+            # Find the first sample index at or after min_elapsed_hint
+            target_elapsed = min_hint * window_duration
+            # Binary search for the start index
+            lo_idx, hi_idx = 0, len(samples)
+            while lo_idx < hi_idx:
+                mid_idx = (lo_idx + hi_idx) // 2
+                s = samples[mid_idx]
+                el = s.elapsed_seconds if hasattr(s, 'elapsed_seconds') else s["elapsed_seconds"]
+                if el < target_elapsed:
+                    lo_idx = mid_idx + 1
+                else:
+                    hi_idx = mid_idx
+            start_idx = lo_idx
+            # Set tick_index to match so strategy sees correct tick_index
+            trader._tick_index = start_idx
+            for sample in samples[start_idx:]:
+                process(sample)
+        else:
+            for sample in samples:
+                process(sample)
 
         trades = trader.end_session(outcome)
 

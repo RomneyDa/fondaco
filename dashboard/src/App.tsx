@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Routes, Route } from "react-router-dom";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { fetchBotStatus, fetchLivePrefixes, fetchPrefixes } from "./api";
+import { fetchBalance, fetchBotStatus, fetchLivePrefixes, fetchPrefixes } from "./api";
+import type { BalanceInfo } from "./api";
 import { useSSE } from "./hooks/useSSE";
 import type { BotStatus, LivePayload, PrefixInfo } from "./types";
 import { Sidebar } from "./components/Sidebar";
@@ -12,6 +13,7 @@ import { LiveView } from "./components/LiveView";
 import { BotPanel } from "./components/BotPanel";
 import { StrategyDetail } from "./components/StrategyDetail";
 import { OptimizerPanel } from "./components/OptimizerPanel";
+import { Positions } from "./components/Positions";
 
 export interface PingEntry {
   time: Date;
@@ -29,6 +31,7 @@ export function App() {
   const [navVersion, setNavVersion] = useState(0);
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [pings, setPings] = useState<PingEntry[]>([]);
+  const [balance, setBalance] = useState<BalanceInfo>({ portfolio: null });
 
   const addPing = useCallback((entry: PingEntry) => {
     setPings((prev) => [entry, ...prev].slice(0, MAX_PINGS));
@@ -81,13 +84,17 @@ export function App() {
   useEffect(() => {
     fetchLivePrefixes().then(setLivePrefixes);
     doPing().then((s) => setBotStatus(s ?? { running: false }));
+    fetchBalance().then(setBalance);
   }, []);
 
   useEffect(() => {
     const interval = setInterval(() => {
       doPing().then((s) => { if (s) setBotStatus(s); });
     }, 5000);
-    return () => clearInterval(interval);
+    const balanceInterval = setInterval(() => {
+      fetchBalance().then(setBalance);
+    }, 30000);
+    return () => { clearInterval(interval); clearInterval(balanceInterval); };
   }, []);
 
   const [tradeRefresh, setTradeRefresh] = useState(0);
@@ -120,6 +127,7 @@ export function App() {
           livePrefixes={livePrefixes}
           botStatus={botStatus}
           pings={pings}
+          balance={balance}
         />
       </Panel>
       <Separator className="resize-handle" />
@@ -152,6 +160,10 @@ export function App() {
             <Route
               path="/optimizer"
               element={<OptimizerPanel />}
+            />
+            <Route
+              path="/positions"
+              element={<Positions />}
             />
           </Routes>
         </main>

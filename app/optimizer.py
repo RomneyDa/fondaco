@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.defaults import BASE_DIR, DEFAULT_RATIO_MAX, MARKETS_DIR, OPTIMIZER_MAX_RATIO, market_sessions_dir
-from simulator.engine import Simulator, BacktestResult, load_sessions, compute_kelly_sizing, KELLY_FRACTION
+from simulator.engine import Simulator, BacktestResult, load_sessions, load_session_summaries, compute_kelly_sizing, KELLY_FRACTION
 from simulator.backtest import build_variants, format_params
 from bots import ALL_STRATEGIES
 
@@ -263,12 +263,11 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
 
     # Load sessions
     sessions_dir = market_sessions_dir(slug_key)
-    all_sessions = load_sessions(sessions_dir)
-    if not all_sessions:
+    sessions = load_sessions(sessions_dir, recent=lookback)
+    if not sessions:
         logger.warning("[%s/%s] No sessions found", slug_key, strategy_name)
         return "skip", {"reason": "no_sessions"}
 
-    sessions = all_sessions[-lookback:]
     if len(sessions) < 5:
         logger.warning("[%s/%s] Too few sessions (%d), need at least 5",
                        slug_key, strategy_name, len(sessions))
@@ -276,6 +275,9 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
 
     logger.info("[%s/%s] Using %d sessions for optimization",
                 slug_key, strategy_name, len(sessions))
+
+    # Load lightweight summaries for strategy lookback (no sample data)
+    session_summaries = load_session_summaries(sessions_dir)
 
     # Step 1: Run baseline with current params
     try:
@@ -289,7 +291,7 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
     sim = Simulator(
         starting_cash=starting_cash,
         execution_mode="book",
-        all_sessions=all_sessions,
+        session_summaries=session_summaries,
         compound=False,  # Phase 1: flat cash for clean per-session returns
     )
     baseline_result = sim.run_backtest(baseline_strategy, sessions)

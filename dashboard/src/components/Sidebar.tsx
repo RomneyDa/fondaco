@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
 import type { PingEntry } from "../App";
+import type { BalanceInfo } from "../api";
 import type { BotStatus, MarketStatus, PrefixInfo } from "../types";
 import { fmtSessionName } from "../utils/formatTime";
 
@@ -9,9 +10,10 @@ interface Props {
   livePrefixes: string[];
   botStatus: BotStatus | null;
   pings: PingEntry[];
+  balance: BalanceInfo;
 }
 
-export function Sidebar({ prefixes, livePrefixes, botStatus, pings }: Props) {
+export function Sidebar({ prefixes, livePrefixes, botStatus, pings, balance }: Props) {
   const isRunning = botStatus?.running ?? false;
   const markets = botStatus?.markets ?? [];
 
@@ -20,8 +22,13 @@ export function Sidebar({ prefixes, livePrefixes, botStatus, pings }: Props) {
 
   return (
     <nav className="w-full h-full bg-sidebar border-r border-border flex flex-col overflow-y-auto">
-      <div className="px-5 py-4 border-b border-border">
+      <div className="px-5 py-4 border-b border-border flex items-baseline justify-between">
         <h1 className="text-lg font-semibold text-accent">eros-pm</h1>
+        {balance.portfolio != null && (
+          <NavLink to="/positions" className="text-sm font-mono text-dim hover:text-accent transition-colors">
+            ${balance.portfolio.toFixed(2)}
+          </NavLink>
+        )}
       </div>
 
       <div className="py-3 border-b border-border">

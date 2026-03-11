@@ -13,12 +13,16 @@ import itertools
 import json
 import os
 import sys
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from simulator.engine import Simulator, BacktestResult, load_sessions, compute_kelly_sizing, KELLY_FRACTION
-from core.defaults import BALANCE_CACHE_FILE, DEFAULT_RATIO_MAX, MARKETS_DIR, TAKER_FEE_BASE_BPS, market_backtest_log, market_sessions_dir
+from simulator.engine import (
+    Simulator, BacktestResult, load_sessions, load_session_summaries,
+    compute_kelly_sizing, KELLY_FRACTION,
+)
+from core.defaults import BALANCE_CACHE_FILE, DEFAULT_RATIO_MAX, MARKETS_DIR, market_backtest_log, market_sessions_dir
 from bots import ALL_STRATEGIES
 
 
@@ -27,10 +31,13 @@ _worker_sim = None   # type: Optional[Simulator]
 _worker_sessions = None  # type: Optional[list]
 
 
-def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions, fee_bps):
-    # type: (float, str, float, list, list, int) -> None
+def _init_worker(starting_cash, execution_mode, slippage, session_summaries, sessions, fees):
+    # type: (float, str, float, list, list, bool) -> None
     """Initializer for each worker process — sets up Simulator and sessions once.
 
+    P1: Session summaries (tiny, ~few KB) are pre-built in the parent and
+    passed here instead of all_sessions (~580 MB). Only the --recent subset
+    of sessions is passed.
     Phase 1 always runs with compound=False to get clean per-session returns.
     """
     global _worker_sim, _worker_sessions
@@ -38,9 +45,9 @@ def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions
         starting_cash=starting_cash,
         execution_mode=execution_mode,
         slippage=slippage,
-        all_sessions=all_sessions,
+        session_summaries=session_summaries,
         compound=False,  # Phase 1: flat cash for clean returns
-        fee_bps=fee_bps,
+        fees=fees,
     )
     _worker_sessions = sessions
 
@@ -48,6 +55,18 @@ def _init_worker(starting_cash, execution_mode, slippage, all_sessions, sessions
 def _run_one(strategy):
     """Run a single strategy variant in a worker process."""
     return _worker_sim.run_backtest(strategy, _worker_sessions)
+
+
+def _run_batch(variants):
+    """Run a batch of strategy variants in a worker process.
+
+    P7: Batching improves CPU cache locality — session data stays hot
+    across variants instead of being evicted between worker task switches.
+    """
+    results = []
+    for strategy in variants:
+        results.append(_worker_sim.run_backtest(strategy, _worker_sessions))
+    return results
 
 
 def parse_param_overrides(param_args):
@@ -333,7 +352,7 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
             "starting_cash": args.cash,
             "kelly_fraction": getattr(args, "kelly_fraction", KELLY_FRACTION),
             "optimize": optimize,
-            "fee_bps": getattr(args, "fee_bps", TAKER_FEE_BASE_BPS),
+            "fees": args.fees,
             "num_sessions": len(sessions),
             "total_variants": len(all_results),
         },
@@ -417,10 +436,11 @@ def main():
         help="Override param grid values (repeatable). e.g. --param min_elapsed=0.4,0.5,0.6",
     )
     parser.add_argument(
-        "--fee-bps",
-        type=int,
-        default=TAKER_FEE_BASE_BPS,
-        help="CLOB taker fee base rate in bps (default: {}). 0 to disable.".format(TAKER_FEE_BASE_BPS),
+        "--no-fees",
+        dest="fees",
+        action="store_false",
+        default=True,
+        help="Disable taker fee simulation.",
     )
     args = parser.parse_args()
 
@@ -445,22 +465,19 @@ def main():
     args.data_dir = _resolve_data_dir(args.data_dir)
     backtest_log_file = _resolve_backtest_log(args.data_dir)
 
-    # Load sessions
-    all_sessions = load_sessions(args.data_dir)
-    if not all_sessions:
+    # Load sessions — with --recent, only load the subset we need (fast).
+    # Session summaries (for strategy lookback) are loaded separately and
+    # don't require full sample data.
+    sessions = load_sessions(args.data_dir, recent=args.recent)
+    if not sessions:
         print("No resolved sessions found in: {}".format(args.data_dir))
         sys.exit(1)
 
-    if args.recent is not None:
-        sessions = all_sessions[-args.recent:]
-    else:
-        sessions = all_sessions
-
-    fee_bps = args.fee_bps
+    fees = args.fees
     kelly_mult = args.kelly_fraction
     print("Loaded {} resolved sessions from {}".format(len(sessions), args.data_dir))
-    print("Execution: {} (slippage={})  Starting cash: ${}  Fee: {} bps".format(
-        args.execution, args.slippage, starting_cash, fee_bps,
+    print("Execution: {} (slippage={})  Starting cash: ${}  Fees: {}".format(
+        args.execution, args.slippage, starting_cash, "on" if fees else "off",
     ))
 
     # Select strategies
@@ -479,13 +496,17 @@ def main():
     # Rank by Sharpe to find the best risk-adjusted edge.
     print("\n── Phase 1: Strategy Selection (Sharpe on flat cash) ──")
 
+    # P1: Load session summaries separately (tiny, ~few KB).
+    # These provide lookback data for strategies without loading full sample data.
+    session_summaries = load_session_summaries(args.data_dir)
+
     sim = Simulator(
         starting_cash=starting_cash,
         execution_mode=args.execution,
         slippage=args.slippage,
-        all_sessions=all_sessions,
+        session_summaries=session_summaries,
         compound=False,  # flat cash for clean returns
-        fee_bps=fee_bps,
+        fees=fees,
     )
 
     # Parse --param overrides
@@ -507,13 +528,38 @@ def main():
         print("Running {} variants across {} workers...".format(
             total_variants, num_workers,
         ))
-        with ProcessPoolExecutor(
-            max_workers=num_workers,
-            initializer=_init_worker,
-            initargs=(starting_cash, args.execution, args.slippage,
-                      all_sessions, sessions, fee_bps),
-        ) as pool:
-            all_results = list(pool.map(_run_one, all_variants))
+
+        pool_initargs = (starting_cash, args.execution, args.slippage,
+                         session_summaries, sessions, fees)
+
+        # P7: Batch variants for better CPU cache locality.
+        # Each worker runs a batch of variants over the same sessions,
+        # keeping session data hot in cache.
+        batch_size = max(1, total_variants // (num_workers * 2))
+        if batch_size > 1 and total_variants > num_workers * 2:
+            batches = []
+            for i in range(0, total_variants, batch_size):
+                batches.append(all_variants[i:i + batch_size])
+            fork_ctx = multiprocessing.get_context("fork")
+            with ProcessPoolExecutor(
+                max_workers=num_workers,
+                mp_context=fork_ctx,
+                initializer=_init_worker,
+                initargs=pool_initargs,
+            ) as pool:
+                batch_results = list(pool.map(_run_batch, batches))
+            all_results = []
+            for batch in batch_results:
+                all_results.extend(batch)
+        else:
+            fork_ctx = multiprocessing.get_context("fork")
+            with ProcessPoolExecutor(
+                max_workers=num_workers,
+                mp_context=fork_ctx,
+                initializer=_init_worker,
+                initargs=pool_initargs,
+            ) as pool:
+                all_results = list(pool.map(_run_one, all_variants))
 
     print("Tested {} strategy variants across {} strategies".format(
         total_variants, len(strategy_names),

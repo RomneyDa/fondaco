@@ -131,7 +131,7 @@ Bot endpoints require `slug_prefix` in JSON body.
 
 **API latency:** CLOB ~300ms, Gamma ~270ms, Data ~375ms, Builder ~675ms. Negligible for 5-min windows.
 
-**Taker fees (crypto markets):** `fee = tokens × price × 0.25 × (price × (1-price))^2`. Max 1.56% at p=0.50. Constants in `core/defaults.py`, computed by `compute_taker_fee()`. Both executors deduct fees via `position.cash -= fee`. Backtest: `--fee-bps` (default 1000).
+**Taker fees (crypto markets):** `fee = tokens × price × 0.25 × (price × (1-price))^2`. Max 1.56% at p=0.50. Constants in `core/defaults.py`, computed by `compute_taker_fee()`. Both executors deduct fees via `position.cash -= fee`. Backtest: fees on by default, `--no-fees` to disable.
 
 **Guardrails:** Min order 5 tokens. Per-session risk via `--session-cash-ratio` or `--session-cap`. Settlement cooldown in `Trader.process_tick()`. Balance cached to `.cache/balance.json`.
 

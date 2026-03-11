@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.defaults import (
     CLOB_MIN_ORDER_TOKENS,
-    TAKER_FEE_BASE_BPS,
     TRADE_CUTOFF_SECONDS,
     compute_taker_fee,
 )
@@ -193,19 +192,31 @@ class Position:
         return cls(cash=d["cash"], up_tokens=d.get("up_tokens", 0.0), down_tokens=d.get("down_tokens", 0.0))
 
 
-@dataclass
 class TickContext:
-    """Everything a strategy sees at each tick."""
-    tick_index: int
-    sample: Dict[str, Any]
-    history: List[Dict[str, Any]]
-    position: Position
-    metadata: Dict[str, Any]
-    initial_btc_price: float
-    elapsed_fraction: float  # 0.0 to 1.0
-    max_buy_amount: float = 0.0    # Max dollars a buy can spend (guardrail-aware)
-    loss_limit_hit: bool = False    # True if loss limit reached (all buys blocked)
-    open_orders: List[OpenOrder] = field(default_factory=list)
+    """Everything a strategy sees at each tick.
+
+    Uses __slots__ instead of @dataclass for faster construction in the
+    hot simulation loop (~5400 constructions per session).
+    """
+    __slots__ = (
+        'tick_index', 'sample', 'history', 'position', 'metadata',
+        'initial_btc_price', 'elapsed_fraction', 'max_buy_amount',
+        'loss_limit_hit', 'open_orders',
+    )
+
+    def __init__(self, tick_index, sample, history, position, metadata,
+                 initial_btc_price, elapsed_fraction, max_buy_amount=0.0,
+                 loss_limit_hit=False, open_orders=None):
+        self.tick_index = tick_index
+        self.sample = sample
+        self.history = history
+        self.position = position
+        self.metadata = metadata
+        self.initial_btc_price = initial_btc_price
+        self.elapsed_fraction = elapsed_fraction
+        self.max_buy_amount = max_buy_amount
+        self.loss_limit_hit = loss_limit_hit
+        self.open_orders = open_orders if open_orders is not None else []
 
 
 # ---------------------------------------------------------------------------
@@ -291,11 +302,11 @@ class Executor(ABC):
 class SimExecutor(Executor):
     """Executes trades against historical sample data for backtesting."""
 
-    def __init__(self, execution_mode="book", slippage=0.02, fee_bps=TAKER_FEE_BASE_BPS):
-        # type: (str, float, int) -> None
+    def __init__(self, execution_mode="book", slippage=0.02, fees=True):
+        # type: (str, float, bool) -> None
         self.execution_mode = execution_mode
         self.slippage = slippage
-        self.fee_bps = fee_bps
+        self.fees = fees
         self._sim_order_counter = 0
 
     def execute_trade(self, action, tick_index, metadata, sample, position):
@@ -315,7 +326,7 @@ class SimExecutor(Executor):
             return None
 
         position.apply_trade(action.side, price, tokens)
-        fee = compute_taker_fee(price, tokens, self.fee_bps)
+        fee = compute_taker_fee(price, tokens, self.fees)
         position.cash -= fee
         return Trade(
             tick_index=tick_index,
@@ -328,40 +339,30 @@ class SimExecutor(Executor):
         )
 
     def _get_execution_price(self, side, sample):
-        # type: (str, Dict[str, Any]) -> Optional[float]
-        """Look up execution price based on mode and action side."""
+        # type: (str, Any) -> Optional[float]
+        """Look up execution price based on mode and action side.
+
+        Uses direct attribute access + if/elif instead of building a dict
+        table each call (this is in the hot path for every trade).
+        """
+        _get = sample.get
+        is_up = "up" in side  # buy_up or sell_up
+        is_buy = side[0] == "b"  # buy_up or buy_down
+
         if self.execution_mode == "midpoint_slippage":
-            table = {
-                "buy_up": sample.get("up_token_midpoint"),
-                "sell_up": sample.get("up_token_midpoint"),
-                "buy_down": sample.get("down_token_midpoint"),
-                "sell_down": sample.get("down_token_midpoint"),
-            }
-            base = table.get(side)
+            base = _get("up_token_midpoint") if is_up else _get("down_token_midpoint")
             if base is None:
                 return None
-            if side.startswith("buy"):
-                return base + self.slippage
-            else:
-                return base - self.slippage
+            return base + self.slippage if is_buy else base - self.slippage
 
         elif self.execution_mode == "midpoint":
-            table = {
-                "buy_up": sample.get("up_token_midpoint"),
-                "sell_up": sample.get("up_token_midpoint"),
-                "buy_down": sample.get("down_token_midpoint"),
-                "sell_down": sample.get("down_token_midpoint"),
-            }
-            return table.get(side)
+            return _get("up_token_midpoint") if is_up else _get("down_token_midpoint")
 
         elif self.execution_mode == "book":
-            table = {
-                "buy_up": sample.get("up_token_best_ask"),
-                "sell_up": sample.get("up_token_midpoint"),
-                "buy_down": sample.get("down_token_best_ask"),
-                "sell_down": sample.get("down_token_midpoint"),
-            }
-            return table.get(side)
+            if is_buy:
+                return _get("up_token_best_ask") if is_up else _get("down_token_best_ask")
+            else:
+                return _get("up_token_midpoint") if is_up else _get("down_token_midpoint")
 
         return None
 
@@ -458,7 +459,7 @@ class SimExecutor(Executor):
                 else:
                     position.cash += order.tokens * order.price
 
-                fee = compute_taker_fee(order.price, order.tokens, self.fee_bps)
+                fee = compute_taker_fee(order.price, order.tokens, self.fees)
                 position.cash -= fee
 
                 fills.append(Trade(
@@ -1169,11 +1170,14 @@ class Trader:
     Trader handles TickContext construction, strategy calls, and execution.
     """
 
-    def __init__(self, strategy, executor, auto_exit_flag_file=None):
-        # type: (Any, Executor, Optional[str]) -> None
+    def __init__(self, strategy, executor, auto_exit_flag_file=None, sim_mode=False):
+        # type: (Any, Executor, Optional[str], bool) -> None
         self.strategy = strategy
         self.executor = executor
         self._auto_exit_flag_file = auto_exit_flag_file
+        self._sim_mode = sim_mode
+        # Only skip history in sim mode when strategy explicitly doesn't use it
+        self._uses_history = not sim_mode or getattr(strategy, 'uses_history', True)
         self._metadata = {}   # type: Dict[str, Any]
         self._position = None  # type: Optional[Position]
         self._initial_btc_price = 0.0
@@ -1185,6 +1189,10 @@ class Trader:
         self._decision_log = []  # type: List[Dict[str, Any]]
         self._open_orders = []  # type: List[OpenOrder]
         self._last_tick_fills = []  # type: List[Trade]
+        # Reusable TickContext for sim mode (avoids allocation per tick)
+        self._sim_ctx = None  # type: Optional[TickContext]
+        # Cache strategy's on_tick method to avoid attribute lookup per tick
+        self._on_tick = strategy.on_tick
     def start_session(self, metadata, position, initial_btc_price, window_duration,
                       reference_balance=None, capture_decision_log=False):
         # type: (Dict[str, Any], Position, float, float, Optional[float], bool) -> None
@@ -1202,6 +1210,21 @@ class Trader:
         self._last_tick_fills = []
         self.strategy._tick_logs = []
         self.strategy.on_session_start(metadata)
+        # Pre-allocate reusable TickContext for sim mode
+        if self._sim_mode:
+            empty_history = self._history if self._uses_history else []
+            self._sim_ctx = TickContext(
+                tick_index=0,
+                sample=None,
+                history=empty_history,
+                position=position,
+                metadata=metadata,
+                initial_btc_price=initial_btc_price,
+                elapsed_fraction=0.0,
+                max_buy_amount=position.cash,
+                loss_limit_hit=False,
+                open_orders=[],
+            )
 
     def _apply_guardrails(self, action, sample=None):
         # type: (TradeAction, Optional[Dict[str, Any]]) -> TradeAction
@@ -1285,21 +1308,31 @@ class Trader:
         elapsed_frac = min(elapsed_frac, 1.0)
 
         # 2. Build TickContext with open_orders snapshot
-        ctx = TickContext(
-            tick_index=self._tick_index,
-            sample=sample,
-            history=self._history,
-            position=Position(
+        # In sim mode, skip the defensive Position copy (strategies never mutate it)
+        # and skip history if the strategy doesn't use it.
+        if self._sim_mode:
+            pos = self._position
+            history = self._history if self._uses_history else []
+            orders = list(self._open_orders) if self._open_orders else []
+        else:
+            pos = Position(
                 cash=self._position.cash,
                 up_tokens=self._position.up_tokens,
                 down_tokens=self._position.down_tokens,
-            ),
+            )
+            history = self._history
+            orders = list(self._open_orders)
+        ctx = TickContext(
+            tick_index=self._tick_index,
+            sample=sample,
+            history=history,
+            position=pos,
             metadata=self._metadata,
             initial_btc_price=self._initial_btc_price,
             elapsed_fraction=elapsed_frac,
             max_buy_amount=self._position.cash,
             loss_limit_hit=False,
-            open_orders=list(self._open_orders),
+            open_orders=orders,
         )
 
         # 3. Call strategy
@@ -1332,7 +1365,8 @@ class Trader:
                     except NotImplementedError:
                         pass
                     self._open_orders.remove(order)
-            self._history.append(sample)
+            if self._uses_history:
+                self._history.append(sample)
             self._tick_index += 1
             return None
 
@@ -1373,8 +1407,114 @@ class Trader:
         if trade is not None and trade.success is not False:
             self._trades.append(trade)
 
-        self._history.append(sample)
+        if self._uses_history:
+            self._history.append(sample)
         self._tick_index += 1
+        return trade
+
+    def process_tick_sim(self, sample):
+        # type: (Any) -> Optional[Trade]
+        """Optimized tick processing for backtesting.
+
+        Skips live-only overhead: no auto-exit file check, no defensive
+        Position copy, reuses a pre-allocated TickContext. Still handles
+        tick logs, limit orders, and guardrails correctly.
+        """
+        # Check fills on pending limit orders
+        if self._open_orders:
+            try:
+                fills = self.executor.check_fills(
+                    self._open_orders, sample, self._position,
+                )
+                for fill in fills:
+                    fill.tick_index = self._tick_index
+                    self._trades.append(fill)
+            except NotImplementedError:
+                pass
+
+        # Update the reusable context in-place (no allocation)
+        ctx = self._sim_ctx
+        tick_idx = self._tick_index
+        ctx.tick_index = tick_idx
+        ctx.sample = sample
+        # Use attribute access on Sample objects (faster than dict .get())
+        elapsed_seconds = sample.elapsed_seconds if hasattr(sample, 'elapsed_seconds') else sample.get("elapsed_seconds", 0.0)
+        elapsed_frac = elapsed_seconds / self._window_duration if self._window_duration > 0 else 0.0
+        if elapsed_frac > 1.0:
+            elapsed_frac = 1.0
+        ctx.elapsed_fraction = elapsed_frac
+        ctx.max_buy_amount = self._position.cash
+        if self._open_orders:
+            ctx.open_orders = list(self._open_orders)
+
+        # Call strategy (cached method reference)
+        action = self._on_tick(ctx)
+
+        # Drain tick log buffer (strategies call self.log())
+        tick_logs = self.strategy._tick_logs
+        if tick_logs:
+            tick_logs.clear()
+
+        # Fast path: most ticks return HOLD
+        if action.side == "hold":
+            self._tick_index = tick_idx + 1
+            return None
+
+        # Guardrail: block trades near session end
+        if elapsed_seconds >= self._window_duration - TRADE_CUTOFF_SECONDS:
+            self._tick_index = tick_idx + 1
+            return None
+
+        # Cancel actions
+        if action.side.startswith("cancel"):
+            token = "up" if action.side == "cancel_up" else "down"
+            for order in list(self._open_orders):
+                if order.token == token:
+                    try:
+                        self.executor.cancel_order(order, self._position)
+                    except NotImplementedError:
+                        pass
+                    self._open_orders.remove(order)
+            self._tick_index = tick_idx + 1
+            return None
+
+        # Cap buy amount to available cash
+        if action.side.startswith("buy"):
+            cash = self._position.cash
+            if cash <= 0:
+                self._tick_index = tick_idx + 1
+                return None
+            if action.amount > cash:
+                action = TradeAction(side=action.side, amount=cash,
+                                     price=action.price,
+                                     expiration_seconds=action.expiration_seconds)
+
+        # Route: limit order vs FAK
+        trade = None
+        if action.price is not None:
+            # Limit order path
+            self._replace_order_on_token(action)
+            try:
+                order = self.executor.place_limit_order(
+                    action, tick_idx, self._metadata, sample, self._position,
+                )
+                if order is not None:
+                    self._open_orders.append(order)
+            except NotImplementedError:
+                action = TradeAction(side=action.side, amount=action.amount)
+                trade = self.executor.execute_trade(
+                    action, tick_idx, self._metadata, sample, self._position,
+                )
+        else:
+            trade = self.executor.execute_trade(
+                action, tick_idx, self._metadata, sample, self._position,
+            )
+
+        if trade is not None:
+            trade.strategy_version = getattr(self.strategy, "version", None)
+            self._trades.append(trade)
+
+        self._tick_index = tick_idx + 1
         return trade
 
     def _replace_order_on_token(self, action):

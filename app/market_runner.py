@@ -701,6 +701,14 @@ class MarketRunner:
             collection_started_utc=datetime.now(timezone.utc).isoformat(),
         )
 
+        # Clear stale position data before broadcasting session_start.
+        # Workers delete their live_trades.json on session_end, but that
+        # happens asynchronously.  A dashboard poll in the gap can read the
+        # old file and re-populate the cache, making stale positions appear
+        # in the new session.  Clearing here guarantees a clean slate.
+        self.recorder.clear_live_session()
+        self._live_trades_cache.clear()
+
         metadata_dict = asdict(metadata)
         self._broadcaster.broadcast({
             "type": "session_start",

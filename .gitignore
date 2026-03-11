@@ -38,3 +38,9 @@ Thumbs.db
 
 tmp/
 backup/
+
+# Large archives
+data.zip
+
+# Claim server logs
+claim-server/claim-server.log

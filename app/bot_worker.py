@@ -320,6 +320,11 @@ class BotWorker:
                     metadata_dict = None
                     continue
 
+                # Each session is a new market with new token IDs —
+                # any leftover tokens from a prior session are stale.
+                self.position.up_tokens = 0.0
+                self.position.down_tokens = 0.0
+
                 self._reload_session_config()
 
                 if self.per_session:

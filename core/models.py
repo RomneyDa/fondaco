@@ -19,6 +19,47 @@ class PriceSample:
     down_token_best_ask: Optional[float]
 
 
+class Sample:
+    """Lightweight sample with __slots__ for fast attribute access in backtesting.
+
+    Drop-in replacement for sample dicts — supports both attribute access
+    (sample.btc_price_usd) and dict-style access (sample["key"], sample.get("key")).
+    Uses __slots__ to avoid per-instance __dict__, saving memory and speeding up
+    attribute lookups vs dict hash lookups.
+    """
+    __slots__ = (
+        'timestamp_utc', 'elapsed_seconds', 'btc_price_usd',
+        'up_token_midpoint', 'down_token_midpoint',
+        'up_token_best_bid', 'up_token_best_ask',
+        'down_token_best_bid', 'down_token_best_ask',
+    )
+
+    def __init__(self, d):
+        # type: (dict) -> None
+        self.timestamp_utc = d.get('timestamp_utc')
+        self.elapsed_seconds = d.get('elapsed_seconds', 0.0)
+        self.btc_price_usd = d.get('btc_price_usd')
+        self.up_token_midpoint = d.get('up_token_midpoint')
+        self.down_token_midpoint = d.get('down_token_midpoint')
+        self.up_token_best_bid = d.get('up_token_best_bid')
+        self.up_token_best_ask = d.get('up_token_best_ask')
+        self.down_token_best_bid = d.get('down_token_best_bid')
+        self.down_token_best_ask = d.get('down_token_best_ask')
+
+    def get(self, key, default=None):
+        # type: (str, object) -> object
+        """Dict-style .get() for backward compatibility."""
+        return getattr(self, key, default)
+
+    def __getitem__(self, key):
+        # type: (str) -> object
+        """Dict-style ['key'] access for backward compatibility."""
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key)
+
+
 @dataclass
 class MarketMetadata:
     """Static info about a single 5-minute market."""

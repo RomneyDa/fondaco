@@ -1,5 +1,50 @@
 import type { AppStatus, BotStatus, LivePayload, PrefixInfo, SessionData, SessionSummary, TradeLogEntry, TradingInfo } from "./types";
 
+export interface BalanceInfo {
+  portfolio: number | null;
+}
+
+export async function fetchBalance(): Promise<BalanceInfo> {
+  try {
+    const res = await fetch("/api/balance");
+    if (!res.ok) return { portfolio: null };
+    return res.json();
+  } catch {
+    return { portfolio: null };
+  }
+}
+
+export interface PositionInfo {
+  asset: string;
+  conditionId: string;
+  size: number;
+  avgPrice: number;
+  currentValue: number;
+  curPrice: number;
+  cashPnl: number;
+  percentPnl: number;
+  redeemable: boolean;
+  title: string;
+  slug: string;
+  outcome: string;
+  icon: string;
+}
+
+export interface PositionsResponse {
+  positions: PositionInfo[];
+  usdc: number | null;
+}
+
+export async function fetchPositions(): Promise<PositionsResponse> {
+  try {
+    const res = await fetch("/api/positions");
+    if (!res.ok) return { positions: [], usdc: null };
+    return res.json();
+  } catch {
+    return { positions: [], usdc: null };
+  }
+}
+
 export async function fetchPrefixes(): Promise<PrefixInfo[]> {
   const res = await fetch("/api/prefixes");
   const { prefixes } = (await res.json()) as { prefixes: string[] };

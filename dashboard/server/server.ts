@@ -591,6 +591,112 @@ app.get("/api/strategies", async (_req: Request, res: Response) => {
 
 const PROJECT_ROOT = path.resolve(__dirname, "../..");
 const SLUGS_JSON = path.join(PROJECT_ROOT, "slugs.json");
+const AUTH_CACHE = path.join(PROJECT_ROOT, ".cache", "auth.json");
+const DATA_API_BASE = "https://data-api.polymarket.com";
+const USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+const POLYGON_RPCS = [
+  "https://polygon-bor-rpc.publicnode.com",
+  "https://polygon.llamarpc.com",
+];
+
+// Cache portfolio value for 30s to avoid hammering APIs
+let balanceCache: { value: number; timestamp: number } | null = null;
+const BALANCE_CACHE_TTL = 30_000;
+
+async function fetchPortfolioValue(): Promise<number | null> {
+  // Check cache
+  if (balanceCache && Date.now() - balanceCache.timestamp < BALANCE_CACHE_TTL) {
+    return balanceCache.value;
+  }
+
+  let safeAddress: string;
+  try {
+    const auth = JSON.parse(fs.readFileSync(AUTH_CACHE, "utf-8"));
+    safeAddress = auth.safe_address;
+    if (!safeAddress) return null;
+  } catch {
+    return null;
+  }
+
+  // Fetch positions and USDC balance in parallel
+  const [positions, usdcBalance] = await Promise.all([
+    fetchAllPositions(safeAddress),
+    fetchUsdcBalance(safeAddress),
+  ]);
+
+  if (positions === null && usdcBalance === null) return null;
+
+  const positionValue = (positions ?? []).reduce(
+    (sum: number, p: any) => sum + (parseFloat(p.currentValue) || 0),
+    0
+  );
+  const total = positionValue + (usdcBalance ?? 0);
+
+  balanceCache = { value: Math.round(total * 100) / 100, timestamp: Date.now() };
+  return balanceCache.value;
+}
+
+async function fetchAllPositions(safeAddress: string): Promise<any[] | null> {
+  try {
+    const url = `${DATA_API_BASE}/positions?user=${safeAddress}&sizeThreshold=0&limit=500`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data) ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchUsdcBalance(safeAddress: string): Promise<number | null> {
+  // balanceOf(address) selector = 0x70a08231
+  const calldata = "0x70a08231" + safeAddress.slice(2).padStart(64, "0");
+  for (const rpc of POLYGON_RPCS) {
+    try {
+      const res = await fetch(rpc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_call",
+          params: [{ to: USDC_E, data: calldata }, "latest"],
+          id: 1,
+        }),
+      });
+      const json = await res.json() as any;
+      if (json.result) {
+        // USDC.e has 6 decimals
+        return parseInt(json.result, 16) / 1e6;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+app.get("/api/balance", async (_req: Request, res: Response) => {
+  const value = await fetchPortfolioValue();
+  res.json({ portfolio: value });
+});
+
+app.get("/api/positions", async (_req: Request, res: Response) => {
+  let safeAddress: string;
+  try {
+    const auth = JSON.parse(fs.readFileSync(AUTH_CACHE, "utf-8"));
+    safeAddress = auth.safe_address;
+    if (!safeAddress) { res.json({ positions: [], usdc: null }); return; }
+  } catch {
+    res.json({ positions: [], usdc: null }); return;
+  }
+
+  const [positions, usdc] = await Promise.all([
+    fetchAllPositions(safeAddress),
+    fetchUsdcBalance(safeAddress),
+  ]);
+
+  res.json({ positions: positions ?? [], usdc });
+});
 
 app.get("/api/slugs", (_req: Request, res: Response) => {
   try {

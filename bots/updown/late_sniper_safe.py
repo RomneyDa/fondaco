@@ -37,6 +37,7 @@ class LateSniperSafe(Strategy):
         bet_fraction=1.0,
     ):
         self.min_elapsed = min_elapsed
+        self.min_elapsed_hint = min_elapsed
         self.confidence_threshold = confidence_threshold
         self.max_price = max_price
         self.confirm_ticks = confirm_ticks

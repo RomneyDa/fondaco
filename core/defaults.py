@@ -38,22 +38,15 @@ OPTIMIZER_MAX_RATIO = 0.12         # Optimizer may never set session-cash-ratio 
 # fee = tokens * price * feeRate * (price * (1 - price))^exponent
 CRYPTO_FEE_RATE = 0.25
 CRYPTO_FEE_EXPONENT = 2
-# Legacy constant kept for CLI --fee-bps compatibility (not used in formula)
-TAKER_FEE_BASE_BPS = 1000
-
-
-def compute_taker_fee(price, tokens, base_bps=TAKER_FEE_BASE_BPS):
-    # type: (float, float, int) -> float
+def compute_taker_fee(price, tokens, enabled=True):
+    # type: (float, float, bool) -> float
     """Compute CLOB taker fee in dollars.
 
     Polymarket crypto fee: fee = C * p * feeRate * (p * (1-p))^exponent
     where feeRate=0.25, exponent=2 for crypto markets.
     Max ~1.56% of notional at price 0.50.
-
-    base_bps is accepted for CLI compatibility but only used as an on/off
-    switch (0 = no fees).  The actual rate uses the documented formula.
     """
-    if price <= 0 or price >= 1.0 or tokens <= 0 or base_bps <= 0:
+    if not enabled or price <= 0 or price >= 1.0 or tokens <= 0:
         return 0.0
     fee = tokens * price * CRYPTO_FEE_RATE * (price * (1.0 - price)) ** CRYPTO_FEE_EXPONENT
     return fee
