@@ -1,23 +1,23 @@
-"""Poisson jump model + Kelly criterion for BTC up/down markets.
+"""Poisson jump model for BTC up/down markets.
 
 Models BTC tick-by-tick price changes as a compound Poisson process. Counts
 significant up-jumps and down-jumps, estimates arrival rates, then uses the
 Skellam distribution (normal approximation for the difference of two Poissons)
 to compute the probability of BTC finishing above or below the strike.
 
-Sizes bets using the Kelly criterion: f* = (p - price) / (1 - price), which
-is the optimal fraction for a binary bet paying $1 on win and $0 on loss.
-
-Key differences from DigitalOption (Black-Scholes):
-- Discrete jump dynamics instead of continuous diffusion
-- Kelly criterion for theoretically optimal bet sizing
-- Jump threshold adapts to market microstructure noise floor
+v6: Fix stop-loss churning that destroyed Sharpe in v5 (0.03 → 0.19).
+- No re-entry after stop-loss — one entry per session max. Churning
+  (6-12 trades/session) was the #1 Sharpe killer due to fee multiplication.
+- Late entry (min_elapsed=0.65): wait for Poisson model to accumulate signal.
+  Early entry at noisy midpoints (0.50-0.65) was picking wrong sides.
+- Higher edge threshold (0.10): only enter when model is confident.
+- max_price cap (0.90): safety guard, but edge_min already prevents overpaying.
+- Half-Kelly sizing: f*=0.67 → cash_pct=33.5%. 38% win rate over 200 sessions.
 """
 
 import math
 from typing import Any, Dict, List, Optional
 
-from core.defaults import CLOB_MIN_ORDER_TOKENS
 from core.trader import HOLD, TradeAction, TickContext
 from core.strategies.base import Strategy
 
@@ -29,54 +29,54 @@ def _norm_cdf(x):
 
 
 class PoissonKelly(Strategy):
-    """Poisson jump counting + Kelly sizing for up/down binary markets.
+    """Poisson jump counting for up/down binary markets.
+
+    Pure signal generator: detects directional edge via Poisson model,
+    then bets full session cash. Position sizing is handled externally
+    by session_cash_ratio (computed via Kelly criterion on backtest returns).
 
     Params:
         jump_bps: minimum BTC move (in basis points) to count as a jump event
         min_jumps: minimum total jumps observed before allowing entry (warmup)
         min_elapsed: don't consider entry before this elapsed fraction
         no_new_after: stop new entries after this elapsed fraction
-        min_kelly: minimum Kelly fraction required to trigger entry
-        max_kelly: cap Kelly fraction (avoid overbetting on noisy estimates)
         edge_min: minimum edge (p_model - market_price) required for entry
+        max_price: don't buy tokens above this midpoint (caps downside)
         stop_loss_pct: sell if midpoint drops this fraction below entry price
     """
 
     name = "PoissonKelly"
     description = (
         "Models BTC price as a Poisson jump process, estimates win probability "
-        "via Skellam distribution, and sizes bets using the Kelly criterion."
+        "via Skellam distribution. External Kelly sizing via session_cash_ratio."
     )
-    version = "4"
+    version = "6"
     requires_full_session = True
 
     def __init__(
         self,
-        jump_bps=0.20,
+        jump_bps=0.18,
         min_jumps=8,
-        min_elapsed=0.15,
-        no_new_after=0.60,
-        min_kelly=0.03,
-        max_kelly=0.35,
-        edge_min=0.02,
-        stop_loss_pct=0.07,
+        min_elapsed=0.65,
+        no_new_after=0.95,
+        edge_min=0.10,
+        max_price=0.90,
+        stop_loss_pct=0.10,
     ):
         self.jump_bps = jump_bps
         self.min_jumps = min_jumps
         self.min_elapsed = min_elapsed
         self.no_new_after = no_new_after
-        self.min_kelly = min_kelly
-        self.max_kelly = max_kelly
         self.edge_min = edge_min
+        self.max_price = max_price
         self.stop_loss_pct = stop_loss_pct
         self._params = {
             "jump_bps": jump_bps,
             "min_jumps": min_jumps,
             "min_elapsed": min_elapsed,
             "no_new_after": no_new_after,
-            "min_kelly": min_kelly,
-            "max_kelly": max_kelly,
             "edge_min": edge_min,
+            "max_price": max_price,
             "stop_loss_pct": stop_loss_pct,
         }
 
@@ -88,7 +88,6 @@ class PoissonKelly(Strategy):
         self._entry_midpoint = 0.0
         self._exited = False
         self._exit_sell_attempted = False
-        self._entry_count = 0
 
     def on_session_start(self, metadata):
         # type: (Dict[str, Any]) -> None
@@ -99,7 +98,6 @@ class PoissonKelly(Strategy):
         self._entry_midpoint = 0.0
         self._exited = False
         self._exit_sell_attempted = False
-        self._entry_count = 0
 
     def _held_side(self, ctx):
         # type: (TickContext) -> Optional[str]
@@ -111,13 +109,7 @@ class PoissonKelly(Strategy):
 
     def _compute_p_up(self, ctx):
         # type: (TickContext) -> Optional[float]
-        """Compute P(BTC finishes above strike) using Poisson jump model.
-
-        Estimates up/down jump arrival rates from observed counts, then uses
-        the Skellam distribution (normal approximation) to compute the
-        probability that the net jump count plus current BTC displacement
-        remains positive through end of session.
-        """
+        """Compute P(BTC finishes above strike) using Poisson jump model."""
         btc = ctx.sample.get("btc_price_usd")
         strike = ctx.initial_btc_price
         if btc is None or strike <= 0:
@@ -148,13 +140,11 @@ class PoissonKelly(Strategy):
         net_current = displacement_bps / max(self.jump_bps, 0.01)
 
         # Skellam distribution: X = Poisson(mu_up) - Poisson(mu_down)
-        # E[X] = mu_up - mu_down, Var[X] = mu_up + mu_down
-        # P(BTC up at end) ≈ P(net_current + X > 0) = Phi(z)
+        # P(BTC up at end) ~ P(net_current + X > 0) = Phi(z)
         skellam_mean = mu_up - mu_down
         skellam_var = mu_up + mu_down
 
         if skellam_var < 1e-10:
-            # No expected future jumps — use current displacement sign
             if net_current > 0:
                 return 1.0
             elif net_current < 0:
@@ -163,18 +153,6 @@ class PoissonKelly(Strategy):
 
         z = (net_current + skellam_mean) / math.sqrt(skellam_var)
         return _norm_cdf(z)
-
-    def _kelly_fraction(self, p, market_price):
-        # type: (float, float) -> float
-        """Kelly criterion for a binary bet.
-
-        Buy token at market_price, pays $1 on win, $0 on loss.
-        f* = (p - market_price) / (1 - market_price)
-        """
-        if market_price >= 0.99 or market_price <= 0.01:
-            return 0.0
-        f = (p - market_price) / (1.0 - market_price)
-        return max(0.0, min(f, self.max_kelly))
 
     def on_tick(self, ctx):
         # type: (TickContext) -> TradeAction
@@ -198,7 +176,6 @@ class PoissonKelly(Strategy):
         held = self._held_side(ctx)
         if held is not None:
             if self._exited:
-                # Already tried to exit — try sell once more, then give up
                 if not self._exit_sell_attempted:
                     self._exit_sell_attempted = True
                     current_mid = up_mid if held == "up" else down_mid
@@ -208,7 +185,9 @@ class PoissonKelly(Strategy):
                         return TradeAction(side=sell_side, amount=tokens, price=current_mid)
                 return HOLD
             current_mid = up_mid if held == "up" else down_mid
-            if self.stop_loss_pct is not None and self._entry_midpoint > 0 and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
+            if (self.stop_loss_pct is not None
+                    and self._entry_midpoint > 0
+                    and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct)):
                 self.log("stop-loss: mid={:.3f} down {:.1f}% from entry {:.3f}".format(
                     current_mid,
                     (1.0 - current_mid / self._entry_midpoint) * 100,
@@ -220,15 +199,11 @@ class PoissonKelly(Strategy):
                 return TradeAction(side=sell_side, amount=tokens, price=current_mid)
             return HOLD
 
-        # If we exited (stop-loss), reset state to allow re-entry
-        if self._exited and held is None:
-            self.log("position flat after exit #{}, allowing re-entry".format(self._entry_count))
-            self._exited = False
-            self._exit_sell_attempted = False
-            self._entry_side = None
-            self._entry_midpoint = 0.0
+        # No re-entry after stop-loss — churning destroys Sharpe via fees
+        if self._exited:
+            return HOLD
 
-        # Still holding or already entered and haven't exited — wait
+        # Already entered and haven't exited — wait
         if self._entry_side is not None:
             return HOLD
 
@@ -245,48 +220,39 @@ class PoissonKelly(Strategy):
 
         p_down = 1.0 - p_up
 
-        # Kelly fraction and edge for each side
-        kelly_up = self._kelly_fraction(p_up, up_mid)
-        kelly_down = self._kelly_fraction(p_down, down_mid)
+        # Edge for each side
         edge_up = p_up - up_mid
         edge_down = p_down - down_mid
 
-        # Pick the better side (must clear both Kelly and edge thresholds)
-        if kelly_up >= kelly_down and kelly_up >= self.min_kelly and edge_up >= self.edge_min:
+        # Pick the better side (must clear edge threshold and max_price)
+        if edge_up >= edge_down and edge_up >= self.edge_min and up_mid <= self.max_price:
             side = "buy_up"
-            kelly = kelly_up
             midpoint = up_mid
             edge = edge_up
             p = p_up
-        elif kelly_down >= self.min_kelly and edge_down >= self.edge_min:
+        elif edge_down >= self.edge_min and down_mid <= self.max_price:
             side = "buy_down"
-            kelly = kelly_down
             midpoint = down_mid
             edge = edge_down
             p = p_down
         else:
-            self.log("HOLD: p_up={:.3f} up_mid={:.3f} k_up={:.3f} e_up={:.3f} | "
-                     "p_dn={:.3f} dn_mid={:.3f} k_dn={:.3f} e_dn={:.3f} | "
+            self.log("HOLD: p_up={:.3f} up_mid={:.3f} e_up={:.3f} | "
+                     "p_dn={:.3f} dn_mid={:.3f} e_dn={:.3f} | "
                      "jumps={}/{}".format(
-                         p_up, up_mid, kelly_up, edge_up,
-                         p_down, down_mid, kelly_down, edge_down,
+                         p_up, up_mid, edge_up,
+                         p_down, down_mid, edge_down,
                          self._up_jumps, self._down_jumps))
             return HOLD
 
         self._entry_side = "up" if side == "buy_up" else "down"
         self._entry_midpoint = midpoint
-        self._entry_count += 1
 
-        # Kelly-sized bet (respects guardrails via max_buy_amount)
-        dollars = ctx.max_buy_amount * kelly
-        # Ensure at least minimum order size (5 tokens * price), capped at available cash
-        min_dollars = CLOB_MIN_ORDER_TOKENS * midpoint
-        if dollars < min_dollars:
-            dollars = min(min_dollars, ctx.max_buy_amount)
+        # Bet full session cash (sizing handled externally via session_cash_ratio)
+        dollars = ctx.position.cash
 
-        self.log("ENTRY {}: p={:.3f} mid={:.3f} edge={:.3f} kelly={:.3f} ${:.2f} | "
+        self.log("ENTRY {}: p={:.3f} mid={:.3f} edge={:.3f} ${:.2f} | "
                  "jumps={}/{} at {:.0f}%".format(
-                     side, p, midpoint, edge, kelly, dollars,
+                     side, p, midpoint, edge, dollars,
                      self._up_jumps, self._down_jumps,
                      ctx.elapsed_fraction * 100))
 
@@ -294,11 +260,11 @@ class PoissonKelly(Strategy):
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]
-        # 4 * 4 * 3 * 3 * 4 = 576 combos
         return {
-            "jump_bps": [0.15, 0.18, 0.20, 0.25],
-            "min_elapsed": [0.15, 0.18, 0.20, 0.25],
-            "no_new_after": [0.50, 0.55, 0.60],
-            "max_kelly": [0.35, 0.45, 0.55],
-            "stop_loss_pct": [0.07, 0.09, 0.11, 0.13],
+            "jump_bps": [0.15, 0.18, 0.20],
+            "min_elapsed": [0.60, 0.65, 0.70, 0.75],
+            "no_new_after": [0.90, 0.95],
+            "edge_min": [0.08, 0.10, 0.12, 0.15],
+            "stop_loss_pct": [0.08, 0.10, 0.12],
+            "max_price": [0.85, 0.90, 0.95],
         }

@@ -261,12 +261,18 @@ def compute_kelly_sizing(results, starting_cash, kelly_multiplier=KELLY_FRACTION
     because the decision not to trade is part of the strategy and represents
     a real deployment opportunity.
 
-    Laplace smoothing: when few or no losses are observed, the empirical
-    distribution underestimates tail risk. We inject a synthetic worst-case
-    loss (-100% of deployed capital) to ensure Kelly accounts for the
-    asymmetry between small wins and total loss. This prevents Kelly from
-    recommending dangerously large positions when the sample happens to
-    contain no losses.
+    Laplace smoothing (Rule of Three): when few or no losses are observed,
+    the empirical distribution underestimates tail risk. With 0 losses in
+    n trials, the 95% CI upper bound on the true loss rate is ~3/n (the
+    "rule of three" from frequentist statistics; equivalently, the 95th
+    percentile of the Beta(1, n+1) posterior). We inject synthetic total-loss
+    events to match this upper bound, preventing Kelly from recommending
+    dangerously large positions when the sample happens to contain no losses.
+
+    Why this matters: with 1 fixed synthetic loss (the old approach), the
+    implied loss rate shrinks as 1/n — so 200 sessions → 0.5% loss rate →
+    Kelly f*=0.55 → half-Kelly 28%. With rule-of-three scaling, 200 sessions
+    → 3 synthetic losses → ~1.5% loss rate → much more conservative sizing.
     """
     # Extract per-session return fractions (on deployed capital)
     returns = []  # type: List[float]
@@ -281,15 +287,22 @@ def compute_kelly_sizing(results, starting_cash, kelly_multiplier=KELLY_FRACTION
         return {"kelly_f": 0.0, "cash_pct": 0.0, "projected_geo_return": 0.0,
                 "projected_final": starting_cash, "projected_max_dd": 0.0}
 
-    # Laplace smoothing: inject a synthetic total-loss event.
+    # Laplace smoothing via Rule of Three.
     # With binary-outcome markets (token → $0 or $1), a loss is -100%.
-    # We add 1 worst-case loss per N traded sessions to prevent Kelly
-    # from treating zero observed losses as zero loss probability.
+    # When zero losses are observed, inject synthetic total-loss events
+    # so the implied loss rate matches the 95% CI upper bound (~3/n).
+    #
+    # Formula: n_inject = max(1, round(3 * n_traded / (n_traded + 3)))
+    #   - Small samples (n=10): injects 2 losses → ~17% implied loss rate (conservative)
+    #   - Medium samples (n=50): injects 3 losses → ~5.7% (still cautious)
+    #   - Large samples (n=200): injects 3 losses → ~1.5% (matches rule of three)
+    #   - Asymptote: approaches 3 as n→∞
     traded_returns = [r for r in returns if r != 0.0]
     loss_count = sum(1 for r in traded_returns if r < 0)
     if loss_count == 0 and len(traded_returns) > 0:
-        # Add 1 synthetic total loss: -1.0 (lost everything deployed)
-        smoothed_returns = returns + [-1.0]
+        n_traded = len(traded_returns)
+        n_inject = max(1, round(3.0 * n_traded / (n_traded + 3)))
+        smoothed_returns = returns + [-1.0] * n_inject
     else:
         smoothed_returns = returns
 

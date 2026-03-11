@@ -200,7 +200,8 @@ class MarketRunner:
                 try:
                     with open(state_file, "r") as f:
                         saved = json.load(f)
-                    cash = saved.get("cash")
+                    # Prefer live_cash (actual bankroll) over cash (baseline)
+                    cash = saved.get("live_cash") or saved.get("cash")
                     logger.info(
                         "[%s/%s] Using saved cash from last run: $%.2f",
                         self.slug_key, strategy_name, cash,

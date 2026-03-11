@@ -146,7 +146,7 @@ The optimizer uses the same two-phase approach and translates `cash_pct` into th
 
 **Why half-Kelly:** Full empirical Kelly is upward-biased from estimation error and regime shifts. Half-Kelly gives ~75% of growth with much less variance. Use `--kelly-fraction 0.25` for conservative, `1.0` for aggressive.
 
-**Laplace smoothing for total-loss markets:** In binary-outcome markets (token → $0 or $1), a loss is -100% of deployed capital. With small wins (+4-6%) and total losses, Kelly is extremely sensitive to the estimated loss rate. When the sample has zero observed losses, naive Kelly says f*=1.0 (bet everything) — which is dangerously overfit. We inject 1 synthetic total-loss event into the return series before computing Kelly. This gives realistic sizing: e.g. with ~20 wins and 1 synthetic loss, Kelly f*≈0.25, half-Kelly→12.5% per session.
+**Laplace smoothing (Rule of Three) for total-loss markets:** In binary-outcome markets (token → $0 or $1), a loss is -100% of deployed capital. With small wins (+4-6%) and total losses, Kelly is extremely sensitive to the estimated loss rate. When the sample has zero observed losses, naive Kelly says f*=1.0 (bet everything) — which is dangerously overfit. We inject synthetic total-loss events using the **Rule of Three**: with 0 losses in n trials, the 95% CI upper bound on loss rate ≈ 3/n. We inject `max(1, round(3*n_traded/(n_traded+3)))` synthetic losses (approaches 3 for large n). This scales with sample size — unlike a fixed 1-loss injection which underestimates risk as n grows.
 
 **Caveat:** Kelly assumes returns scale linearly with size. If fills/slippage change materially with size (liquidity limits, market impact), the true optimal sizing is lower.
 

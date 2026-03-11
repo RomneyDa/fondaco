@@ -318,8 +318,11 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 return
 
+            # Use live bankroll from worker's state.json, not the stale
+            # in-memory cash from when the worker was first spawned.
+            reload_cash = None  # let enable_trading read from state.json
             runner.enable_trading(
-                strategy_name, target.params, cash=target.cash,
+                strategy_name, target.params, cash=reload_cash,
                 dry_run=target.dry_run, per_session=target.per_session,
                 session_cap=target.session_cap,
                 session_cash_ratio=target.session_cash_ratio,

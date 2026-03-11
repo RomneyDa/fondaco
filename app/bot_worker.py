@@ -256,6 +256,37 @@ class BotWorker:
             msg_type = msg.get("type")
 
             if msg_type == "session_start":
+                is_replayed = msg.get("replayed", False)
+
+                # Mid-session rejoin with active trader — preserve everything.
+                # Resetting trader would orphan pending GTC orders and lose
+                # cash reserved for them.
+                if is_replayed and trader is not None and not self.strategy.requires_full_session:
+                    logger.info(
+                        "[%s] Mid-session rejoin: active trader preserved "
+                        "(cash=$%.2f, reserve=$%.2f, up=%.2f, down=%.2f)",
+                        self.strategy_name, self.position.cash,
+                        self._session_reserve, self.position.up_tokens,
+                        self.position.down_tokens,
+                    )
+                    continue
+
+                # Cancel pending orders from the outgoing trader before
+                # resetting, so reserved cash is returned to position.
+                if trader is not None:
+                    try:
+                        cancelled = trader.cancel_all_pending()
+                        if cancelled > 0:
+                            logger.info(
+                                "[%s] Cancelled %d pending orders before session reset",
+                                self.strategy_name, cancelled,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "[%s] Failed to cancel pending orders: %s",
+                            self.strategy_name, e,
+                        )
+
                 metadata_dict = msg.get("metadata")
                 trader = None
                 trader_initialized = False
@@ -265,7 +296,7 @@ class BotWorker:
 
                 # On mid-session rejoin, restore trade state from previous
                 # live_trades.json so sidecars and trade counts stay accurate.
-                if msg.get("replayed"):
+                if is_replayed:
                     restored = self._restore_live_trades()
                     if restored is not None:
                         trade_dicts = restored
@@ -279,7 +310,7 @@ class BotWorker:
                 # If this is a replayed session_start (mid-session join) and
                 # the strategy needs cumulative data from tick 0, wait for the
                 # next fresh session.
-                if msg.get("replayed") and self.strategy.requires_full_session:
+                if is_replayed and self.strategy.requires_full_session:
                     logger.info(
                         "[%s] Mid-session join skipped (requires_full_session=True), "
                         "waiting for next session",
@@ -295,6 +326,14 @@ class BotWorker:
                     self.position.cash = self.cash
                     self.starting_cash = self.cash
 
+                # Restore any unreturned reserve from a previous session
+                # (e.g. session_end fired with trader=None, skipping _resolve)
+                if self._session_reserve > 0:
+                    self.position.cash += self._session_reserve
+                    logger.info(
+                        "[%s] Restored leftover reserve $%.2f -> cash $%.2f",
+                        self.strategy_name, self._session_reserve, self.position.cash,
+                    )
                 self._session_reserve = 0.0
                 if self.session_cash_ratio is not None:
                     ratio = self.session_cash_ratio["ratio"]
