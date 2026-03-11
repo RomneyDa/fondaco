@@ -56,7 +56,7 @@ def main():
         )
         sys.exit(1)
 
-    interval = int(os.environ.get("CLAIM_INTERVAL", "300"))
+    interval = int(os.environ.get("CLAIM_INTERVAL", "900"))
 
     # Derive Safe address once at startup
     from auth import derive_safe_address

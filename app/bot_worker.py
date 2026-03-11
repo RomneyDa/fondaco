@@ -569,13 +569,15 @@ class BotWorker:
             except Exception as e:
                 logger.warning("Failed to save sidecar: %s", e)
 
-        if trade_count > 0 and not self.dry_run and self._private_key:
-            try:
-                from app.claim import has_builder_creds, claim_background
-                if has_builder_creds():
-                    claim_background(self._private_key, self._safe_address)
-            except Exception:
-                pass
+        # Auto-claim disabled — relayer rate limit (~100/day) means claims
+        # are batched by the separate claim-server on a 15-min interval.
+        # if trade_count > 0 and not self.dry_run and self._private_key:
+        #     try:
+        #         from app.claim import has_builder_creds, claim_background
+        #         if has_builder_creds():
+        #             claim_background(self._private_key, self._safe_address)
+        #     except Exception:
+        #         pass
 
         live_path = os.path.join(self.state_dir, "live_trades.json")
         try:
