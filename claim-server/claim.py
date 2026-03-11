@@ -10,6 +10,38 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+# ---------------------------------------------------------------------------
+# Monkey-patch the Builder Relayer client's HTTP helper to use curl_cffi
+# which impersonates Chrome's actual TLS fingerprint.  Cloudflare blocks
+# both bare requests and cloudscraper on this IP.
+# ---------------------------------------------------------------------------
+def _patch_relayer_http():
+    from curl_cffi import requests as curl_requests
+    import py_builder_relayer_client.http_helpers.helpers as _h
+    from py_builder_relayer_client.exceptions import RelayerApiException
+
+    def _patched_request(endpoint, method, headers=None, data=None):
+        try:
+            resp = curl_requests.request(
+                method=method,
+                url=endpoint,
+                headers=headers or {},
+                json=data if data else None,
+                impersonate="chrome",
+            )
+            if resp.status_code != 200:
+                raise RelayerApiException(resp)
+            try:
+                return resp.json()
+            except Exception:
+                return resp.text
+        except curl_requests.RequestsError:
+            raise RelayerApiException(error_msg="Request exception!")
+
+    _h.request = _patched_request
+
+_patch_relayer_http()
+
 logger = logging.getLogger(__name__)
 
 # Polygon mainnet chain ID

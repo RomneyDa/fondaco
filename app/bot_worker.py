@@ -569,14 +569,13 @@ class BotWorker:
             except Exception as e:
                 logger.warning("Failed to save sidecar: %s", e)
 
-        # Auto-redemption disabled — handled by separate claim server
-        # if trade_count > 0 and not self.dry_run and self._private_key:
-        #     try:
-        #         from app.claim import has_builder_creds, claim_background
-        #         if has_builder_creds():
-        #             claim_background(self._private_key, self._safe_address)
-        #     except Exception:
-        #         pass
+        if trade_count > 0 and not self.dry_run and self._private_key:
+            try:
+                from app.claim import has_builder_creds, claim_background
+                if has_builder_creds():
+                    claim_background(self._private_key, self._safe_address)
+            except Exception:
+                pass
 
         live_path = os.path.join(self.state_dir, "live_trades.json")
         try:

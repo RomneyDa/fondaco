@@ -8,4 +8,6 @@ dependencies = [
     "py-clob-client>=0.1.0",
     "py-builder-relayer-client>=0.0.1",
     "python-dotenv>=1.0.0",
+    "cloudscraper>=1.2.71",
+    "curl-cffi>=0.14.0",
 ]
