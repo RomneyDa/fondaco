@@ -113,6 +113,8 @@ class TickBroadcaster:
 
     def _accept_loop(self):
         # type: () -> None
+        sweep_interval = 30.0  # seconds between dead-client sweeps
+        last_sweep = time.time()
         while self._running:
             try:
                 readable, _, _ = select.select([self._server], [], [], 1.0)
@@ -138,9 +140,40 @@ class TickBroadcaster:
                         len(self._clients),
                         ", replayed session_start" if replay else "",
                     )
+
+                # Periodic sweep: detect dead clients even when no broadcasts occur
+                now = time.time()
+                if now - last_sweep >= sweep_interval:
+                    last_sweep = now
+                    self._sweep_dead_clients()
             except Exception:
                 if self._running:
                     time.sleep(0.1)
+
+    def _sweep_dead_clients(self):
+        # type: () -> None
+        """Probe clients with zero-length send to detect dead sockets."""
+        with self._lock:
+            dead = []
+            for c in self._clients:
+                try:
+                    # select for writability with zero timeout
+                    _, writable, errored = select.select([], [c], [c], 0)
+                    if errored:
+                        dead.append(c)
+                except Exception:
+                    dead.append(c)
+            for c in dead:
+                self._clients.remove(c)
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            if dead:
+                logger.debug(
+                    "TickBroadcaster: swept %d dead client(s), %d remaining",
+                    len(dead), len(self._clients),
+                )
 
     @property
     def client_count(self):

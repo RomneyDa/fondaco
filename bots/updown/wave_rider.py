@@ -24,11 +24,12 @@ triggers entry. Half-Kelly f*=1.0 → cash_pct=50%.
 
 """
 
-import math
 from typing import Any, Dict, List, Optional
 
+from core.defaults import BPS_DIVISOR
 from core.trader import HOLD, TradeAction, TickContext
 from core.strategies.base import Strategy
+from core.volatility import compute_session_volatility
 
 
 class WaveRider(Strategy):
@@ -64,7 +65,7 @@ class WaveRider(Strategy):
         "Identifies session trend, buys on pullback dips at better prices. "
         "Volatility from recent sessions calibrates pullback thresholds."
     )
-    version = "3"
+    version = "5"
     requires_full_session = True
 
     def __init__(
@@ -134,45 +135,18 @@ class WaveRider(Strategy):
         self._adaptive_pullback_bps = self.pullback_bps
 
         prior_summaries = metadata.get("_prior_session_summaries")
-        if prior_summaries is None:
+        vol = compute_session_volatility(
+            prior_summaries, self.vol_lookback, self.min_vol_sessions)
+        if vol is None:
+            if prior_summaries is not None:
+                self.log("Insufficient lookback for volatility")
             return
 
-        valid = [s for s in prior_summaries
-                 if s.get("initial_btc") and s.get("final_btc")
-                 and s["initial_btc"] > 0]
-        recent = valid[-self.vol_lookback:]
-
-        if len(recent) < self.min_vol_sessions:
-            return
-
-        # Compute session return volatility (std of abs returns in bps)
-        abs_returns_bps = []
-        for s in recent:
-            ret = abs(s["final_btc"] - s["initial_btc"]) / s["initial_btc"] * 10000.0
-            abs_returns_bps.append(ret)
-
-        mean_ret = sum(abs_returns_bps) / len(abs_returns_bps)
-        if len(abs_returns_bps) > 1:
-            variance = sum((r - mean_ret) ** 2 for r in abs_returns_bps) / (len(abs_returns_bps) - 1)
-            vol_std = variance ** 0.5
-        else:
-            vol_std = mean_ret
-
-        # Adaptive pullback: scale with volatility
-        # Higher vol → bigger pullbacks expected → wait for deeper dip
+        mean_ret, vol_std = vol
         adaptive = max(self.pullback_bps, vol_std * self.vol_pullback_scale)
         self._adaptive_pullback_bps = adaptive
-
         self.log("Vol: mean_abs={:.2f}bps std={:.2f}bps → pullback={:.2f}bps".format(
             mean_ret, vol_std, adaptive))
-
-    def _held_side(self, ctx):
-        # type: (TickContext) -> Optional[str]
-        if ctx.position.up_tokens > 0:
-            return "up"
-        if ctx.position.down_tokens > 0:
-            return "down"
-        return None
 
     def _detect_trend(self, initial_btc):
         # type: (float) -> Optional[str]
@@ -181,7 +155,7 @@ class WaveRider(Strategy):
             return None
 
         current = self._btc_prices[-1]
-        displacement_bps = (current - initial_btc) / initial_btc * 10000.0
+        displacement_bps = (current - initial_btc) / initial_btc * BPS_DIVISOR
 
         if displacement_bps >= self.trend_threshold_bps:
             return "up"
@@ -204,45 +178,18 @@ class WaveRider(Strategy):
             return HOLD
 
         # --- Manage existing position ---
-        held = self._held_side(ctx)
-        if held is not None:
-            current_mid = up_mid if held == "up" else down_mid
-            sell_side = "sell_up" if held == "up" else "sell_down"
-            tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
-
-            if self._entry_midpoint > 0 and tokens > 0:
-                # Stop-loss
-                if (self.stop_loss_pct is not None
-                        and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct)):
-                    if ctx.tick_index - self._last_trade_tick < 36:
-                        return HOLD
-                    self._last_trade_tick = ctx.tick_index
-                    self.log("stop-loss: mid={:.3f} entry={:.3f} drop={:.1f}%".format(
-                        current_mid, self._entry_midpoint,
-                        (1.0 - current_mid / self._entry_midpoint) * 100))
-                    self._entry_midpoint = 0.0
-                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
-
-                # Take-profit
-                if (self.take_profit_pct is not None
-                        and current_mid >= self._entry_midpoint * (1.0 + self.take_profit_pct)):
-                    if ctx.tick_index - self._last_trade_tick < 36:
-                        return HOLD
-                    self._last_trade_tick = ctx.tick_index
-                    self.log("take-profit: mid={:.3f} entry={:.3f} gain={:.1f}%".format(
-                        current_mid, self._entry_midpoint,
-                        (current_mid / self._entry_midpoint - 1.0) * 100))
-                    self._entry_midpoint = 0.0
-                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
-
-            return HOLD
+        if self._held_side(ctx) is not None:
+            exit_action = self._check_exit(ctx, up_mid, down_mid,
+                                            self.stop_loss_pct, self.take_profit_pct)
+            return exit_action if exit_action is not None else HOLD
 
         # --- No position: detect trend, wait for pullback ---
 
+        # Buy order expired without filling — reset entry state
+        self._check_expired_entry(ctx)
+
         # Timing guard
-        if ctx.elapsed_fraction < self.min_elapsed:
-            return HOLD
-        if ctx.elapsed_fraction >= self.no_new_after:
+        if self._check_timing_guards(ctx, self.min_elapsed, self.no_new_after):
             return HOLD
 
         # Max entries
@@ -277,10 +224,10 @@ class WaveRider(Strategy):
 
         if trend == "up":
             # BTC was going up, now it pulled back — buy UP at discount
-            pullback = (self._wave_peak - btc) / self._wave_peak * 10000.0
+            pullback = (self._wave_peak - btc) / self._wave_peak * BPS_DIVISOR
         else:
             # BTC was going down, now it pulled back up — buy DOWN at discount
-            pullback = (btc - self._wave_peak) / self._wave_peak * 10000.0
+            pullback = (btc - self._wave_peak) / self._wave_peak * BPS_DIVISOR
 
         if pullback < self._adaptive_pullback_bps:
             return HOLD
@@ -296,7 +243,8 @@ class WaveRider(Strategy):
                 self.log("BUY UP #{} on pullback: pb={:.2f}bps mid={:.3f} ${:.2f} at {:.0f}%".format(
                     self._entry_count, pullback, up_mid, dollars,
                     ctx.elapsed_fraction * 100))
-                return TradeAction(side="buy_up", amount=dollars, price=up_mid)
+                return TradeAction(side="buy_up", amount=dollars, price=up_mid,
+                                   expiration_seconds=10)
         else:
             if down_mid <= self.max_price and down_mid > 0:
                 self._entry_count += 1
@@ -307,7 +255,8 @@ class WaveRider(Strategy):
                 self.log("BUY DOWN #{} on pullback: pb={:.2f}bps mid={:.3f} ${:.2f} at {:.0f}%".format(
                     self._entry_count, pullback, down_mid, dollars,
                     ctx.elapsed_fraction * 100))
-                return TradeAction(side="buy_down", amount=dollars, price=down_mid)
+                return TradeAction(side="buy_down", amount=dollars, price=down_mid,
+                                   expiration_seconds=10)
 
         return HOLD
 

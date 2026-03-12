@@ -144,6 +144,32 @@ app.get("/api/sessions/:prefix/summaries", (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Session stats: pre-computed per-session statistics from the cache.
+ *
+ * Query params:
+ *   ?last=N        — return the N most recent stats (default: all)
+ *   ?before=ISO    — only stats before this timestamp
+ *   ?after=ISO     — only stats after this timestamp (for delta fetches)
+ *   ?session=ISO   — return stats for a specific session
+ */
+app.get("/api/sessions/:prefix/stats", async (req: Request, res: Response) => {
+  try {
+    // Build query string to proxy to the Python control server
+    const params = new URLSearchParams();
+    params.set("slug_prefix", req.params.prefix);
+    for (const key of ["last", "before", "after", "session"]) {
+      if (req.query[key]) params.set(key, req.query[key] as string);
+    }
+    const { status, data } = await proxyToControl(
+      `/api/control/session-stats?${params.toString()}`
+    );
+    res.status(status).json(data);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 app.get("/api/sessions/:prefix", (req: Request, res: Response) => {
   try {
     const dir = safePath(MARKETS_DIR, req.params.prefix, "sessions");
@@ -245,6 +271,29 @@ app.get(
                   byStrategy[entry.strategy].push(entry);
                 }
               } catch {}
+            }
+
+            // Deduplicate by order_id: GTC orders are logged once at
+            // placement (no fee) and again at fill (with fee). Keep the
+            // fill record (has fee) and drop the placement duplicate.
+            for (const name of Object.keys(byStrategy)) {
+              const seen = new Map<string, number>();
+              const trades = byStrategy[name];
+              const deduped: any[] = [];
+              for (const t of trades) {
+                const key = t.order_id || `${t.timestamp}-${t.side}`;
+                const existing = seen.get(key);
+                if (existing != null) {
+                  // Prefer the record with a fee (the fill)
+                  if (t.fee != null && deduped[existing].fee == null) {
+                    deduped[existing] = t;
+                  }
+                } else {
+                  seen.set(key, deduped.length);
+                  deduped.push(t);
+                }
+              }
+              byStrategy[name] = deduped;
             }
 
             const strategyNames = Object.keys(byStrategy);
@@ -960,6 +1009,28 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
       }
     }
 
+    // Deduplicate by order_id BEFORE computing active sessions.
+    // GTC orders are logged at placement (no fee) and again at fill (with fee);
+    // prefer the fill record.
+    {
+      const seenIdx = new Map<string, number>();
+      const deduped: any[] = [];
+      for (const t of trades) {
+        const key = t.order_id || `${t.timestamp}-${t.side}`;
+        const existing = seenIdx.get(key);
+        if (existing != null) {
+          if (t.fee != null && deduped[existing].fee == null) {
+            deduped[existing] = t;
+          }
+        } else {
+          seenIdx.set(key, deduped.length);
+          deduped.push(t);
+        }
+      }
+      trades.length = 0;
+      trades.push(...deduped);
+    }
+
     // Build in-progress sessions from trades after the last resolution
     // Group unresolved trades into sessions by 5-minute windows
     const lastResolutionTime = resolutions.length > 0
@@ -986,6 +1057,28 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
       }
       windows.push(currentWindow);
 
+      // Read live session for tick/timing info
+      let liveTicks: number | null = null;
+      let liveWindowEnd: string | null = null;
+      let liveWindowStart: string | null = null;
+      let liveElapsed: number | null = null;
+      try {
+        const liveFile = path.join(MARKETS_DIR, market, "live", "session.json");
+        if (fs.existsSync(liveFile)) {
+          const liveData = JSON.parse(fs.readFileSync(liveFile, "utf-8"));
+          if (liveData.samples) {
+            liveTicks = liveData.samples.length;
+            liveElapsed = liveData.samples.length > 0
+              ? liveData.samples[liveData.samples.length - 1].elapsed_seconds
+              : 0;
+          }
+          if (liveData.metadata) {
+            liveWindowEnd = liveData.metadata.window_end_utc || null;
+            liveWindowStart = liveData.metadata.window_start_utc || null;
+          }
+        }
+      } catch {}
+
       for (const windowTrades of windows) {
         const successfulTrades = windowTrades.filter((t) => t.success !== false);
         const totalSpent = successfulTrades.reduce((sum, t) => sum + (t.amount || 0), 0);
@@ -1000,23 +1093,16 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
           cash: null,
           session_number: null,
           _active: true,
+          _tick_index: liveTicks,
+          _elapsed_seconds: liveElapsed,
+          _window_end_utc: liveWindowEnd,
+          _window_start_utc: liveWindowStart,
         });
       }
     }
 
-    // Deduplicate by order_id (trades may appear in both sidecars and bot_trades.jsonl)
-    const seenOids = new Set<string>();
-    const dedupedTrades: any[] = [];
-    for (const t of trades) {
-      const key = t.order_id || `${t.timestamp}-${t.side}`;
-      if (!seenOids.has(key)) {
-        seenOids.add(key);
-        dedupedTrades.push(t);
-      }
-    }
-
     // Sort trades by timestamp descending
-    dedupedTrades.sort((a, b) => {
+    trades.sort((a, b) => {
       const ta = a.timestamp || a.session_start || "";
       const tb = b.timestamp || b.session_start || "";
       return tb.localeCompare(ta);
@@ -1024,17 +1110,18 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
 
     // Compute total fees from trades
     let totalFees = 0;
-    for (const t of dedupedTrades) {
+    for (const t of trades) {
       if (typeof t.fee === "number") totalFees += t.fee;
     }
     for (const r of resolutions) {
       if (typeof r.fee === "number") totalFees += r.fee;
     }
 
-    // Compute stats from sessions
-    const pnls = sessions.map((s) => s.pnl as number);
+    // Compute stats from resolved sessions only (exclude active/unresolved)
+    const resolvedSessions = sessions.filter((s) => !s._active);
+    const pnls = resolvedSessions.map((s) => s.pnl as number);
     const totalPnl = pnls.reduce((a, b) => a + b, 0);
-    const tradedSessions = sessions.filter((s) => s.trades > 0);
+    const tradedSessions = resolvedSessions.filter((s) => s.trades > 0);
     const tradedPnls = tradedSessions.map((s) => s.pnl as number);
     const wins = tradedPnls.filter((p) => p > 0).length;
     const losses = tradedPnls.filter((p) => p < 0).length;
@@ -1059,7 +1146,7 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
 
     // Build version history from session logs (group sessions by version)
     const versionSummary: Record<string, { sessions: number; traded: number; pnl: number; wins: number; losses: number; first: string; last: string }> = {};
-    for (const s of sessions) {
+    for (const s of resolvedSessions) {
       const v = s.strategy_version || "unknown";
       if (!versionSummary[v]) {
         versionSummary[v] = { sessions: 0, traded: 0, pnl: 0, wins: 0, losses: 0, first: s.timestamp, last: s.timestamp };
@@ -1083,7 +1170,7 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
       strategy,
       market,
       stats: {
-        total_sessions: sessions.length,
+        total_sessions: resolvedSessions.length,
         traded_sessions: tradedSessions.length,
         total_pnl: Math.round(totalPnl * 100) / 100,
         wins,
@@ -1096,8 +1183,7 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
           if (fs.existsSync(stateFile)) {
             try {
               const state = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
-              if (state.live_cash != null) return state.live_cash;
-              if (state.cash != null) return state.cash;
+              if (state.bankroll != null) return state.bankroll;
             } catch {}
           }
           return sessions.length > 0 ? sessions[sessions.length - 1].cash : null;
@@ -1106,7 +1192,7 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
         total_fees: Math.round(totalFees * 100) / 100,
       },
       sessions: sessions.slice(-200),
-      trades: dedupedTrades.slice(0, 500),
+      trades: trades.slice(0, 500),
       resolutions: resolutions.slice(-200),
       version_summary: versionSummary,
     });

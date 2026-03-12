@@ -18,14 +18,10 @@ v6: Fix stop-loss churning that destroyed Sharpe in v5 (0.03 → 0.19).
 import math
 from typing import Any, Dict, List, Optional
 
+from core.defaults import BPS_DIVISOR
+from core.math_utils import norm_cdf
 from core.trader import HOLD, TradeAction, TickContext
 from core.strategies.base import Strategy
-
-
-def _norm_cdf(x):
-    # type: (float) -> float
-    """Standard normal CDF via math.erf."""
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
 class PoissonKelly(Strategy):
@@ -50,7 +46,7 @@ class PoissonKelly(Strategy):
         "Models BTC price as a Poisson jump process, estimates win probability "
         "via Skellam distribution. External Kelly sizing via session_cash_ratio."
     )
-    version = "6"
+    version = "8"
     requires_full_session = True
 
     def __init__(
@@ -84,28 +80,20 @@ class PoissonKelly(Strategy):
         self._prev_btc = 0.0
         self._up_jumps = 0
         self._down_jumps = 0
-        self._entry_side = None  # type: Optional[str]
+        self._entry_count = 0
         self._entry_midpoint = 0.0
-        self._exited = False
-        self._exit_sell_attempted = False
+        self._stopped_out = False
+        self._last_trade_tick = -999
 
     def on_session_start(self, metadata):
         # type: (Dict[str, Any]) -> None
         self._prev_btc = 0.0
         self._up_jumps = 0
         self._down_jumps = 0
-        self._entry_side = None
+        self._entry_count = 0
         self._entry_midpoint = 0.0
-        self._exited = False
-        self._exit_sell_attempted = False
-
-    def _held_side(self, ctx):
-        # type: (TickContext) -> Optional[str]
-        if ctx.position.up_tokens > 0:
-            return "up"
-        if ctx.position.down_tokens > 0:
-            return "down"
-        return None
+        self._stopped_out = False
+        self._last_trade_tick = -999
 
     def _compute_p_up(self, ctx):
         # type: (TickContext) -> Optional[float]
@@ -136,7 +124,7 @@ class PoissonKelly(Strategy):
         mu_down = lambda_down * remaining
 
         # Current BTC displacement expressed as equivalent net jumps
-        displacement_bps = (btc / strike - 1.0) * 10000.0
+        displacement_bps = (btc / strike - 1.0) * BPS_DIVISOR
         net_current = displacement_bps / max(self.jump_bps, 0.01)
 
         # Skellam distribution: X = Poisson(mu_up) - Poisson(mu_down)
@@ -152,7 +140,7 @@ class PoissonKelly(Strategy):
             return 0.5
 
         z = (net_current + skellam_mean) / math.sqrt(skellam_var)
-        return _norm_cdf(z)
+        return norm_cdf(z)
 
     def on_tick(self, ctx):
         # type: (TickContext) -> TradeAction
@@ -165,7 +153,7 @@ class PoissonKelly(Strategy):
 
         # --- Count jumps ---
         if self._prev_btc > 0:
-            ret_bps = (btc / self._prev_btc - 1.0) * 10000.0
+            ret_bps = (btc / self._prev_btc - 1.0) * BPS_DIVISOR
             if ret_bps >= self.jump_bps:
                 self._up_jumps += 1
             elif ret_bps <= -self.jump_bps:
@@ -173,44 +161,27 @@ class PoissonKelly(Strategy):
         self._prev_btc = btc
 
         # --- Manage existing position: stop-loss ---
-        held = self._held_side(ctx)
-        if held is not None:
-            if self._exited:
-                if not self._exit_sell_attempted:
-                    self._exit_sell_attempted = True
-                    current_mid = up_mid if held == "up" else down_mid
-                    sell_side = "sell_up" if held == "up" else "sell_down"
-                    tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
-                    if tokens > 0 and current_mid is not None and current_mid > 0:
-                        return TradeAction(side=sell_side, amount=tokens, price=current_mid)
-                return HOLD
-            current_mid = up_mid if held == "up" else down_mid
-            if (self.stop_loss_pct is not None
-                    and self._entry_midpoint > 0
-                    and current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct)):
-                self.log("stop-loss: mid={:.3f} down {:.1f}% from entry {:.3f}".format(
-                    current_mid,
-                    (1.0 - current_mid / self._entry_midpoint) * 100,
-                    self._entry_midpoint,
-                ))
-                sell_side = "sell_up" if held == "up" else "sell_down"
-                tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
-                self._exited = True
-                return TradeAction(side=sell_side, amount=tokens, price=current_mid)
+        if self._held_side(ctx) is not None:
+            exit_action = self._check_exit(ctx, up_mid, down_mid, self.stop_loss_pct)
+            if exit_action is not None:
+                if exit_action is not HOLD:
+                    self._stopped_out = True
+                return exit_action
             return HOLD
+
+        # Buy order expired without filling — reset entry state
+        self._check_expired_entry(ctx)
 
         # No re-entry after stop-loss — churning destroys Sharpe via fees
-        if self._exited:
+        if self._stopped_out:
             return HOLD
 
-        # Already entered and haven't exited — wait
-        if self._entry_side is not None:
+        # Only one entry per session
+        if self._entry_count > 0:
             return HOLD
 
         # Timing guards
-        if ctx.elapsed_fraction < self.min_elapsed:
-            return HOLD
-        if ctx.elapsed_fraction >= self.no_new_after:
+        if self._check_timing_guards(ctx, self.min_elapsed, self.no_new_after):
             return HOLD
 
         # --- Compute model probability ---
@@ -244,8 +215,9 @@ class PoissonKelly(Strategy):
                          self._up_jumps, self._down_jumps))
             return HOLD
 
-        self._entry_side = "up" if side == "buy_up" else "down"
+        self._entry_count += 1
         self._entry_midpoint = midpoint
+        self._last_trade_tick = ctx.tick_index
 
         # Bet full session cash (sizing handled externally via session_cash_ratio)
         dollars = ctx.position.cash
@@ -256,7 +228,8 @@ class PoissonKelly(Strategy):
                      self._up_jumps, self._down_jumps,
                      ctx.elapsed_fraction * 100))
 
-        return TradeAction(side=side, amount=dollars, price=midpoint)
+        return TradeAction(side=side, amount=dollars, price=midpoint,
+                           expiration_seconds=10)
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]

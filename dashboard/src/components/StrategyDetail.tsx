@@ -33,17 +33,17 @@ export function StrategyDetail() {
   const now = Date.now();
   const cutoff24h = now - 24 * 60 * 60 * 1000;
   const cutoff1h = now - 60 * 60 * 1000;
-  const tradedWithTime = sessions.filter((s) => s.trades > 0);
-  const pnl24h = tradedWithTime
+  const resolvedWithTrades = sessions.filter((s) => s.trades > 0 && !s._active);
+  const pnl24h = resolvedWithTrades
     .filter((s) => new Date(s.timestamp).getTime() >= cutoff24h)
     .reduce((sum, s) => sum + s.pnl, 0);
-  const pnl1h = tradedWithTime
+  const pnl1h = resolvedWithTrades
     .filter((s) => new Date(s.timestamp).getTime() >= cutoff1h)
     .reduce((sum, s) => sum + s.pnl, 0);
 
   const tradedSessions = sessions.filter((s) => s.trades > 0 || s._active);
   let cumPnl = 0;
-  const equityCurve = tradedSessions.map((s) => {
+  const equityCurve = resolvedWithTrades.map((s) => {
     cumPnl += s.pnl;
     return { ...s, cumPnl };
   });
@@ -134,7 +134,11 @@ export function StrategyDetail() {
               </thead>
               <tbody>
                 {Object.entries(version_summary)
-                  .sort(([, a], [, b]) => b.last.localeCompare(a.last))
+                  .sort(([ka], [kb]) => {
+                    if (ka === "unknown") return 1;
+                    if (kb === "unknown") return -1;
+                    return Number(kb) - Number(ka);
+                  })
                   .map(([version, v]) => (
                   <tr key={version} className={version === stats.current_version ? "bg-accent/[0.08]" : ""}>
                     <td>
@@ -213,6 +217,14 @@ export function StrategyDetail() {
                       }`}>
                         {s._active ? "ACTIVE" : s.outcome}
                       </span>
+                      {s._active && s._tick_index != null && (
+                        <ActiveTimer
+                          tickIndex={s._tick_index}
+                          elapsedSeconds={s._elapsed_seconds ?? null}
+                          windowEndUtc={s._window_end_utc ?? null}
+                          windowStartUtc={s._window_start_utc ?? null}
+                        />
+                      )}
                     </td>
                     <td>{s.trades}</td>
                     <td>
@@ -305,25 +317,69 @@ export function StrategyDetail() {
   );
 }
 
+/** Tick + time remaining for an active session */
+function ActiveTimer({
+  tickIndex,
+  elapsedSeconds,
+  windowEndUtc,
+  windowStartUtc,
+}: {
+  tickIndex: number;
+  elapsedSeconds: number | null;
+  windowEndUtc: string | null;
+  windowStartUtc: string | null;
+}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  let remaining: string | null = null;
+  if (windowEndUtc) {
+    const endMs = new Date(windowEndUtc).getTime();
+    const diffSec = Math.max(0, Math.round((endMs - now) / 1000));
+    const m = Math.floor(diffSec / 60);
+    const s = diffSec % 60;
+    remaining = `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  let elapsed: string | null = null;
+  if (elapsedSeconds != null) {
+    const m = Math.floor(elapsedSeconds / 60);
+    const s = Math.round(elapsedSeconds % 60);
+    elapsed = `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  return (
+    <div className="mt-1 text-[11px] text-dim font-mono leading-tight">
+      <span>tick {tickIndex}</span>
+      {elapsed && <span className="ml-1.5">({elapsed} elapsed)</span>}
+      {remaining && (
+        <span className="ml-1.5 text-accent">{remaining} left</span>
+      )}
+    </div>
+  );
+}
+
 /** Simple horizontal equity bar chart */
 function EquityBar({ points }: { points: Array<{ timestamp: string; pnl: number; cumPnl: number }> }) {
   if (points.length === 0) return null;
   const maxAbs = Math.max(...points.map((p) => Math.abs(p.cumPnl)), 0.01);
 
   return (
-    <div className="flex gap-px items-center h-12 bg-card rounded-md px-2 py-1 border border-border">
+    <div className="flex gap-px h-24 bg-card rounded-md px-2 py-1 border border-border">
       {points.map((p, i) => {
-        const height = Math.max(Math.abs(p.cumPnl) / maxAbs * 36, 2);
+        const h = Math.max(Math.abs(p.cumPnl) / maxAbs * 40, 1);
         return (
-          <div
-            key={i}
-            title={`${fmtDateOnly(p.timestamp)}: ${p.pnl >= 0 ? "+" : ""}${p.pnl.toFixed(2)} (cum: ${p.cumPnl >= 0 ? "+" : ""}${p.cumPnl.toFixed(2)})`}
-            className={`flex-1 min-w-0.5 max-w-3 rounded-sm opacity-80 ${p.cumPnl >= 0 ? "bg-up" : "bg-down"}`}
-            style={{
-              height,
-              alignSelf: p.cumPnl >= 0 ? "flex-end" : "flex-start",
-            }}
-          />
+          <div key={i} className="flex-1 min-w-0.5 max-w-3 flex flex-col" title={`${fmtDateOnly(p.timestamp)}: ${p.pnl >= 0 ? "+" : ""}${p.pnl.toFixed(2)} (cum: ${p.cumPnl >= 0 ? "+" : ""}${p.cumPnl.toFixed(2)})`}>
+            <div className="flex-1 flex items-end justify-center">
+              {p.cumPnl >= 0 && <div className="w-full rounded-sm opacity-80 bg-up" style={{ height: h }} />}
+            </div>
+            <div className="flex-1 flex items-start justify-center">
+              {p.cumPnl < 0 && <div className="w-full rounded-sm opacity-80 bg-down" style={{ height: h }} />}
+            </div>
+          </div>
         );
       })}
     </div>

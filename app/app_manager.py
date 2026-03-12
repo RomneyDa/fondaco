@@ -54,6 +54,7 @@ class AppManager:
         self._markets = {}  # type: Dict[str, MarketRunner]
         self._threads = {}  # type: Dict[str, threading.Thread]
         self._optimizer_process = None  # type: Optional[subprocess.Popen]
+        self._optimizer_log_fh = None  # type: Optional[Any]
 
     def start_market(self, slug_prefix, window_duration=WINDOW_DURATION_SECONDS,
                      market_type="updown", max_sessions=0):
@@ -189,6 +190,7 @@ class AppManager:
             start_new_session=True,
         )
         self._optimizer_process = process
+        self._optimizer_log_fh = log_fh
         logger.info("Optimizer started (PID %d)", process.pid)
         return {"ok": True, "pid": process.pid}
 
@@ -208,6 +210,12 @@ class AppManager:
             except Exception:
                 pass
         self._optimizer_process = None
+        if self._optimizer_log_fh is not None:
+            try:
+                self._optimizer_log_fh.close()
+            except Exception:
+                pass
+            self._optimizer_log_fh = None
         logger.info("Optimizer stopped (PID %d)", pid)
         return {"ok": True, "stopped_pid": pid}
 
@@ -296,6 +304,12 @@ class AppManager:
                 except Exception:
                     pass
 
+        if self._optimizer_log_fh is not None:
+            try:
+                self._optimizer_log_fh.close()
+            except Exception:
+                pass
+            self._optimizer_log_fh = None
         self.rtds.stop()
         self.http_session.close()
         logger.info("AppManager shutdown complete.")

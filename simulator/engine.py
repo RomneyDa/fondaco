@@ -248,6 +248,49 @@ def _convert_samples(session_dict):
         session_dict["samples"] = [Sample(s) for s in samples]
 
 
+def convert_all_samples(sessions):
+    # type: (List[Dict[str, Any]]) -> None
+    """Eagerly convert all session sample dicts to Sample objects.
+
+    Call in the parent process before forking workers so Sample objects
+    live in shared CoW memory and workers never trigger page copies.
+    """
+    for session_dict in sessions:
+        _convert_samples(session_dict)
+
+
+def pre_slice_summaries(sessions, session_summaries=None, stats_cache=None):
+    # type: (List[Dict[str, Any]], Optional[List[Dict[str, Any]]], Any) -> None
+    """Pre-compute per-session prior summaries and attach to metadata.
+
+    Without this, every variant × session combo filters the full summary
+    list in run_session(). Pre-slicing does it once per session in the
+    parent process before forking.
+
+    If stats_cache (SessionStatsCache) is provided, uses its efficient
+    bisect-based lookup. Falls back to linear scan of session_summaries.
+    """
+    for session_dict in sessions:
+        metadata = session_dict.get("metadata", {})
+        ws = metadata.get("window_start_utc", "")
+        if not ws:
+            continue
+
+        if stats_cache is not None:
+            # Efficient bisect lookup — O(log n) per session
+            # Use a large N; strategies will slice to their own lookback window
+            prior = stats_cache.prior(before=ws, n=len(stats_cache))
+            metadata["_prior_session_summaries"] = prior
+        elif session_summaries is not None:
+            try:
+                current_start = _parse_utc(ws)
+                prior = [s for s in session_summaries
+                         if s["window_start"] < current_start]
+                metadata["_prior_session_summaries"] = prior
+            except (ValueError, TypeError):
+                pass
+
+
 def _compute_kelly_metrics(results, starting_cash, compound):
     # type: (List[SessionResult], float, bool) -> Dict[str, float]
     """Compute Kelly criterion and geometric growth metrics from session results.
@@ -499,10 +542,12 @@ class Simulator:
         fees=True,
         session_cash_ratio=None,
         session_summaries=None,
+        limit_fill_margin=None,
     ):
         self.starting_cash = starting_cash
         self.execution_mode = execution_mode
         self.slippage = slippage
+        self.limit_fill_margin = limit_fill_margin
         self.compound = compound
         self.fees = fees
         self.session_cash_ratio = session_cash_ratio  # (ratio, max) or None
@@ -532,8 +577,10 @@ class Simulator:
         initial_btc = session_dict.get("initial_btc_price_usd") or 0.0
         source_file = session_dict.get("_source_file", "")
 
-        # Inject prior session summaries for strategies that need lookback
-        if self._session_summaries is not None:
+        # Inject prior session summaries for strategies that need lookback.
+        # Skip if already pre-sliced by pre_slice_summaries() in parent.
+        if (self._session_summaries is not None
+                and "_prior_session_summaries" not in metadata):
             ws = metadata.get("window_start_utc", "")
             try:
                 current_start = _parse_utc(ws)
@@ -547,12 +594,13 @@ class Simulator:
         # Compute window duration from samples
         if len(samples) >= 2:
             last = samples[-1]
-            window_duration = last.elapsed_seconds if hasattr(last, 'elapsed_seconds') else last["elapsed_seconds"]
+            window_duration = last.elapsed_seconds
         else:
             window_duration = 300.0
 
         position = Position(cash=cash)
-        executor = SimExecutor(self.execution_mode, self.slippage, fees=self.fees)
+        executor = SimExecutor(self.execution_mode, self.slippage, fees=self.fees,
+                               limit_fill_margin=self.limit_fill_margin)
         trader = Trader(strategy, executor, sim_mode=True)
         trader.start_session(metadata, position, initial_btc, window_duration,
                              reference_balance=cash)
@@ -579,7 +627,7 @@ class Simulator:
             while lo_idx < hi_idx:
                 mid_idx = (lo_idx + hi_idx) // 2
                 s = samples[mid_idx]
-                el = s.elapsed_seconds if hasattr(s, 'elapsed_seconds') else s["elapsed_seconds"]
+                el = s.elapsed_seconds
                 if el < target_elapsed:
                     lo_idx = mid_idx + 1
                 else:

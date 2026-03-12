@@ -71,6 +71,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/control/status":
             self._handle_status()
+        elif self.path.startswith("/api/control/session-stats"):
+            self._handle_session_stats()
         elif self.path == "/api/control/optimizer-status":
             self._handle_optimizer_status()
         elif self.path == "/api/control/optimizer-events":
@@ -108,6 +110,62 @@ class _Handler(BaseHTTPRequestHandler):
         if mgr is None:
             return
         self._send_json(mgr.get_status())
+
+    def _handle_session_stats(self):
+        """GET /api/control/session-stats?slug_prefix=X&last=N&before=ISO&after=ISO&session=ISO"""
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        try:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+
+            slug_prefix = (qs.get("slug_prefix") or [None])[0]
+            if not slug_prefix:
+                self._send_json({"error": "Missing 'slug_prefix' query param"}, 400)
+                return
+
+            runner = mgr.get_market(slug_prefix)
+            cache = runner._stats_cache
+
+            # Specific session lookup
+            session_ws = (qs.get("session") or [None])[0]
+            if session_ws:
+                from bisect import bisect_left
+                idx = bisect_left(cache._starts, session_ws)
+                if idx < len(cache._starts) and cache._starts[idx] == session_ws:
+                    self._send_json({"stats": [cache._entries[idx].to_dict()]})
+                else:
+                    self._send_json({"stats": []})
+                return
+
+            before = (qs.get("before") or [None])[0]
+            after = (qs.get("after") or [None])[0]
+            last_n = (qs.get("last") or [None])[0]
+
+            if before and after and last_n:
+                # Delta fetch: new entries between after and before, up to last_n
+                stats = cache.prior_delta(before=before, n=int(last_n), after=after)
+            elif before and last_n:
+                stats = cache.prior(before=before, n=int(last_n))
+            elif last_n:
+                # Last N overall
+                n = int(last_n)
+                stats = cache._entries[-n:] if n < len(cache) else cache._entries[:]
+            else:
+                # Filter by before/after or return all
+                stats = cache._entries[:]
+                if before:
+                    stats = [s for s in stats if s.window_start < before]
+                if after:
+                    stats = [s for s in stats if s.window_start > after]
+
+            self._send_json({"stats": [s.to_dict() for s in stats]})
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 404)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
 
     def _handle_stop(self):
         mgr = self._require_app_manager()

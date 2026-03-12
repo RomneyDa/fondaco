@@ -7,7 +7,7 @@ from typing import Optional
 
 import requests
 
-from core.defaults import GAMMA_API_BASE
+from core.defaults import API_TIMEOUT_DEFAULT, GAMMA_API_BASE
 from core.models import MarketMetadata
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ def fetch_market_metadata(slug_prefix: str, window_start_ts: int) -> Optional[Ma
     resp = _get_session().get(
         f"{GAMMA_API_BASE}/events",
         params={"slug": slug},
-        timeout=10,
+        timeout=API_TIMEOUT_DEFAULT,
     )
     resp.raise_for_status()
     events = resp.json()
@@ -84,7 +84,7 @@ def fetch_resolution(slug_prefix: str, window_start_ts: int) -> Optional[str]:
     resp = _get_session().get(
         f"{GAMMA_API_BASE}/events",
         params={"slug": slug},
-        timeout=10,
+        timeout=API_TIMEOUT_DEFAULT,
     )
     resp.raise_for_status()
     events = resp.json()

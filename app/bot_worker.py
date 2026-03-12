@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from core.defaults import BASE_DIR
+from core.defaults import BASE_DIR, TOKEN_DECIMALS, WINDOW_DURATION_SECONDS
 from bots import ALL_STRATEGIES
 from core.trader import ClobExecutor, Position, SimExecutor, Trade, Trader
 from core.tick_broadcast import TickSubscriber
@@ -45,8 +45,8 @@ def _trade_to_dict(trade):
         "elapsed_seconds": trade.elapsed_seconds,
         "side": trade.side,
         "price": trade.price,
-        "amount": round(trade.amount, 4),
-        "tokens": round(trade.tokens, 4),
+        "amount": round(trade.amount, TOKEN_DECIMALS),
+        "tokens": round(trade.tokens, TOKEN_DECIMALS),
         "success": trade.success,
         "order_id": trade.order_id,
         "error": trade.error,
@@ -55,18 +55,9 @@ def _trade_to_dict(trade):
     if trade.fee is not None:
         d["fee"] = round(trade.fee, 6)
     if trade.requested_tokens is not None:
-        d["requested_tokens"] = round(trade.requested_tokens, 4)
+        d["requested_tokens"] = round(trade.requested_tokens, TOKEN_DECIMALS)
     return d
 
-
-def _save_position(position_dir, slot_name, position):
-    # type: (str, str, Position) -> None
-    os.makedirs(position_dir, exist_ok=True)
-    filepath = os.path.join(position_dir, "{}.json".format(slot_name))
-    tmp = filepath + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(position.to_dict(), f)
-    os.replace(tmp, filepath)
 
 
 class BotWorker:
@@ -83,12 +74,12 @@ class BotWorker:
         session_cap=None,    # type: Optional[float]
         session_cash_ratio=None,  # type: Optional[Dict[str, float]]
         per_session=False,   # type: bool
-        window_duration=300, # type: int
+        window_duration=WINDOW_DURATION_SECONDS, # type: int
     ):
         self.strategy_name = strategy_name
         self.params = params
         self.socket_path = socket_path
-        self.cash = cash
+        self.bankroll = cash
         self.market_dir = market_dir
         self.dry_run = dry_run
         self.session_cap = session_cap
@@ -101,7 +92,6 @@ class BotWorker:
         self._workers_dir = os.path.join(market_dir, "workers")
         self._bot_trades_file = os.path.join(market_dir, "bot_trades.jsonl")
         self._bot_session_log = os.path.join(market_dir, "bot_log.jsonl")
-        self._position_dir = os.path.join(market_dir, "bot_positions")
 
         # Position and cash
         self.position = Position(cash=cash)
@@ -150,14 +140,28 @@ class BotWorker:
 
     def save_state(self):
         # type: () -> None
-        """Write worker state to disk for supervisor to read."""
-        bankroll = self.position.cash + self._session_reserve
+        """Write worker state to disk atomically.
+
+        ``bankroll`` is the single source of truth for total funds.
+        Any pending config updates (from set-cash) are preserved so
+        they aren't lost if save_state runs before the worker consumes them.
+        """
+        filepath = os.path.join(self.state_dir, "state.json")
+
+        # Preserve pending config updates written by the control server
+        pending = None
+        try:
+            with open(filepath, "r") as f:
+                existing = json.load(f)
+            pending = existing.get("pending")
+        except (OSError, json.JSONDecodeError):
+            pass
+
         state = {
             "strategy": self.strategy_name,
             "version": getattr(self.strategy, "version", None),
             "params": self.params,
-            "cash": round(self.cash, 4),
-            "live_cash": round(bankroll, 4),
+            "bankroll": round(self.bankroll, TOKEN_DECIMALS),
             "dry_run": self.dry_run,
             "session_cap": self.session_cap,
             "session_cash_ratio": self.session_cash_ratio,
@@ -166,57 +170,68 @@ class BotWorker:
             "pid": os.getpid(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        filepath = os.path.join(self.state_dir, "state.json")
+        if pending is not None:
+            state["pending"] = pending
+
         tmp = filepath + ".tmp"
         with open(tmp, "w") as f:
             json.dump(state, f, indent=2)
         os.replace(tmp, filepath)
 
-    def _reload_session_config(self):
+    def _check_config_updates(self):
         # type: () -> None
-        """Read pending updates from pending_update.json written by set-cash.
+        """Apply pending config updates embedded in state.json by set-cash.
 
-        Uses a separate file from state.json to avoid race conditions —
-        save_state() never touches pending_update.json.
+        The control server writes a ``pending`` sub-object into state.json.
+        We read it, apply it, and the next ``save_state()`` clears it
+        (by not preserving a consumed pending).
         """
-        pending_file = os.path.join(self.state_dir, "pending_update.json")
-        if not os.path.exists(pending_file):
-            return
+        filepath = os.path.join(self.state_dir, "state.json")
         try:
-            with open(pending_file, "r") as f:
-                pending = json.load(f)
-            os.remove(pending_file)
+            with open(filepath, "r") as f:
+                state = json.load(f)
         except (OSError, json.JSONDecodeError):
             return
 
-        new_cash = pending.get("cash")
-        if new_cash is not None:
-            bankroll = self.position.cash + self._session_reserve
-            self.cash = new_cash
-            self.position.cash = new_cash
+        pending = state.get("pending")
+        if not pending:
+            return
+
+        new_bankroll = pending.get("bankroll")
+        if new_bankroll is not None:
+            old = self.bankroll
+            self.bankroll = new_bankroll
+            self.position.cash = new_bankroll
             self._session_reserve = 0.0
             logger.info(
-                "[%s] Reloaded cash: $%.2f -> $%.2f",
-                self.strategy_name, bankroll, new_cash,
+                "[%s] Config update: bankroll $%.2f -> $%.2f",
+                self.strategy_name, old, new_bankroll,
             )
-        new_ratio = pending.get("session_cash_ratio")
-        new_cap = pending.get("session_cap")
         if "session_cash_ratio" in pending or "session_cap" in pending:
-            self.session_cash_ratio = new_ratio
-            self.session_cap = new_cap
+            self.session_cash_ratio = pending.get("session_cash_ratio")
+            self.session_cap = pending.get("session_cap")
             logger.info(
-                "[%s] Reloaded session config: ratio=%s cap=%s",
+                "[%s] Config update: ratio=%s cap=%s",
                 self.strategy_name, self.session_cash_ratio, self.session_cap,
             )
+
+        # Clear pending by writing state without it
+        state.pop("pending", None)
+        state["bankroll"] = round(self.bankroll, TOKEN_DECIMALS)
+        state["session_cash_ratio"] = self.session_cash_ratio
+        state["session_cap"] = self.session_cap
+        tmp = filepath + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, filepath)
 
     def restore_state(self):
         # type: () -> None
         """Restore session count from last run.
 
-        Cash is NOT restored here — the MarketRunner already handles cash
-        restoration when ``--cash`` is not explicitly provided.  Restoring
-        cash here would overwrite an explicit ``--cash`` value passed via
-        ``trade-on``.
+        Bankroll is NOT restored here — the MarketRunner reads ``bankroll``
+        from state.json and passes it as ``--cash`` when spawning the worker.
+        Restoring it here would overwrite an explicit ``--cash`` value.
         """
         filepath = os.path.join(self.state_dir, "state.json")
         if not os.path.exists(filepath):
@@ -226,8 +241,8 @@ class BotWorker:
                 state = json.load(f)
             self.session_count = state.get("session_count", 0)
             logger.info(
-                "[%s] Restored session_count=%d (cash=$%.2f from launcher)",
-                self.strategy_name, self.session_count, self.position.cash,
+                "[%s] Restored session_count=%d (bankroll=$%.2f from launcher)",
+                self.strategy_name, self.session_count, self.bankroll,
             )
         except Exception as e:
             logger.warning("[%s] Failed to restore state: %s", self.strategy_name, e)
@@ -237,8 +252,8 @@ class BotWorker:
         """Main loop — connect to tick stream, process sessions."""
         subscriber = TickSubscriber(self.socket_path)
         logger.info(
-            "[%s] Bot worker started (PID %d, cash=$%.2f, dry_run=%s, market_dir=%s)",
-            self.strategy_name, os.getpid(), self.position.cash, self.dry_run,
+            "[%s] Bot worker started (PID %d, bankroll=$%.2f, dry_run=%s, market_dir=%s)",
+            self.strategy_name, os.getpid(), self.bankroll, self.dry_run,
             self.market_dir,
         )
 
@@ -320,31 +335,20 @@ class BotWorker:
                     metadata_dict = None
                     continue
 
-                # Each session is a new market with new token IDs —
-                # any leftover tokens from a prior session are stale.
+                self._check_config_updates()
+
+                # Reset position to bankroll at session boundary.
+                # This is the core invariant: bankroll is the single
+                # source of truth, position is derived from it.
+                self.position.cash = self.bankroll
                 self.position.up_tokens = 0.0
                 self.position.down_tokens = 0.0
-
-                self._reload_session_config()
-
-                if self.per_session:
-                    self.position.cash = self.cash
-                    self.starting_cash = self.cash
-
-                # Restore any unreturned reserve from a previous session
-                # (e.g. session_end fired with trader=None, skipping _resolve)
-                if self._session_reserve > 0:
-                    self.position.cash += self._session_reserve
-                    logger.info(
-                        "[%s] Restored leftover reserve $%.2f -> cash $%.2f",
-                        self.strategy_name, self._session_reserve, self.position.cash,
-                    )
                 self._session_reserve = 0.0
                 if self.session_cash_ratio is not None:
                     ratio = self.session_cash_ratio["ratio"]
                     cap = self.session_cash_ratio["max"]
                     deploy = min(self.position.cash * ratio, cap)
-                    deploy = round(deploy, 4)
+                    deploy = round(deploy, TOKEN_DECIMALS)
                     if self.position.cash > deploy:
                         self._session_reserve = self.position.cash - deploy
                         self.position.cash = deploy
@@ -362,11 +366,12 @@ class BotWorker:
                         self.position.cash, self._session_reserve,
                     )
 
-                self.starting_cash = self.position.cash + self._session_reserve
+                self.starting_cash = self.bankroll
                 self.save_state()
                 logger.info(
-                    "[%s] Session starting: cash=$%.2f (reserve=$%.2f)",
-                    self.strategy_name, self.position.cash, self._session_reserve,
+                    "[%s] Session starting: bankroll=$%.2f deploy=$%.2f reserve=$%.2f",
+                    self.strategy_name, self.bankroll,
+                    self.position.cash, self._session_reserve,
                 )
 
             elif msg_type == "tick":
@@ -402,8 +407,6 @@ class BotWorker:
                 for fill in trader.last_tick_fills:
                     trade_dicts.append(_trade_to_dict(fill))
                     trade_count += 1
-                    if fill.success is True and not self.dry_run:
-                        _save_position(self._position_dir, self.strategy_name, self.position)
                     logger.info(
                         "[%s] Limit fill: %s @ %.2f x %.2f | order_id=%s",
                         self.strategy_name, fill.side, fill.price, fill.tokens,
@@ -414,8 +417,6 @@ class BotWorker:
                     trade_dicts.append(_trade_to_dict(trade))
                     if trade.success is not False:
                         trade_count += 1
-                        if trade.success is True and not self.dry_run:
-                            _save_position(self._position_dir, self.strategy_name, self.position)
                         logger.info(
                             "[%s] Trade executed: %s @ %.2f x %.2f | order_id=%s",
                             self.strategy_name, trade.side, trade.price,
@@ -436,8 +437,6 @@ class BotWorker:
                             "[%s] Cancelled %d pending orders at session end",
                             self.strategy_name, cancelled,
                         )
-                        if not self.dry_run:
-                            _save_position(self._position_dir, self.strategy_name, self.position)
 
                     outcome = msg.get("outcome")
                     session_filepath = msg.get("session_filepath")
@@ -459,11 +458,6 @@ class BotWorker:
                         "[%s] Cancelled %d pending orders on shutdown",
                         self.strategy_name, cancelled,
                     )
-                    if not self.dry_run:
-                        _save_position(
-                            self._position_dir, self.strategy_name,
-                            self.position,
-                        )
             except Exception as e:
                 logger.error(
                     "[%s] Failed to cancel orders on shutdown: %s",
@@ -503,12 +497,12 @@ class BotWorker:
             )
 
         # Update bankroll to reflect post-resolution cash
-        self.cash = self.position.cash
+        self.bankroll = self.position.cash
 
-        pnl = self.position.cash - self.starting_cash
+        pnl = self.bankroll - self.starting_cash
         logger.info(
-            "[%s] Session resolved: %s | Trades: %d | Cash: $%.2f | PnL: $%.2f",
-            self.strategy_name, outcome, trade_count, self.position.cash, pnl,
+            "[%s] Session resolved: %s | Trades: %d | Bankroll: $%.2f | PnL: $%.2f",
+            self.strategy_name, outcome, trade_count, self.bankroll, pnl,
         )
 
         strategy_version = getattr(self.strategy, "version", None)
@@ -518,9 +512,9 @@ class BotWorker:
             "strategy_version": strategy_version,
             "outcome": outcome,
             "trades": trade_count,
-            "cash": round(self.position.cash, 4),
-            "pnl": round(pnl, 4),
-            "credit": round(credit, 4),
+            "cash": round(self.bankroll, TOKEN_DECIMALS),
+            "pnl": round(pnl, TOKEN_DECIMALS),
+            "credit": round(credit, TOKEN_DECIMALS),
             "session_number": self.session_count,
         }
         try:
@@ -535,13 +529,11 @@ class BotWorker:
             "strategy": self.strategy_name,
             "strategy_version": strategy_version,
             "outcome": outcome,
-            "starting_cash": round(self.starting_cash, 4),
-            "final_cash": round(self.position.cash, 4),
-            "pnl": round(pnl, 4),
-            "credit": round(credit, 4),
+            "starting_cash": round(self.starting_cash, TOKEN_DECIMALS),
+            "final_cash": round(self.bankroll, TOKEN_DECIMALS),
+            "pnl": round(pnl, TOKEN_DECIMALS),
+            "credit": round(credit, TOKEN_DECIMALS),
             "trades": trade_count,
-            "up_tokens": round(self.position.up_tokens, 4),
-            "down_tokens": round(self.position.down_tokens, 4),
             "dry_run": self.dry_run,
         }
         try:
@@ -560,9 +552,9 @@ class BotWorker:
                     "strategy_version": strategy_version,
                     "params": self.params,
                     "dry_run": self.dry_run,
-                    "starting_cash": round(self.starting_cash, 4),
-                    "final_cash": round(self.position.cash, 4),
-                    "pnl": round(pnl, 4),
+                    "starting_cash": round(self.starting_cash, TOKEN_DECIMALS),
+                    "final_cash": round(self.bankroll, TOKEN_DECIMALS),
+                    "pnl": round(pnl, TOKEN_DECIMALS),
                     "outcome": outcome,
                     "trades": trade_dicts,
                 }
@@ -619,15 +611,14 @@ class BotWorker:
                         "tokens": o.tokens,
                     })
             with open(filepath, "w") as f:
-                bankroll = self.position.cash + self._session_reserve
                 json.dump({
                     "strategy": self.strategy_name,
                     "strategy_version": getattr(self.strategy, "version", None),
                     "dry_run": self.dry_run,
-                    "cash": round(bankroll, 4),
-                    "up_tokens": round(self.position.up_tokens, 4),
-                    "down_tokens": round(self.position.down_tokens, 4),
-                    "starting_cash": round(self.starting_cash, 4),
+                    "bankroll": round(self.bankroll, TOKEN_DECIMALS),
+                    "up_tokens": round(self.position.up_tokens, TOKEN_DECIMALS),
+                    "down_tokens": round(self.position.down_tokens, TOKEN_DECIMALS),
+                    "starting_cash": round(self.starting_cash, TOKEN_DECIMALS),
                     "trade_count": trade_count,
                     "trades": trade_dicts[-50:],
                     "pending_orders": pending,
@@ -670,7 +661,7 @@ def main():
     parser.add_argument("--session-cash-ratio", default=None,
                         help="ratio:max e.g. 0.25:3")
     parser.add_argument("--per-session", action="store_true")
-    parser.add_argument("--window", type=int, default=300)
+    parser.add_argument("--window", type=int, default=WINDOW_DURATION_SECONDS)
     parser.add_argument("--restore", action="store_true", help="Restore state from disk")
 
     args = parser.parse_args()

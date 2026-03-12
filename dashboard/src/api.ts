@@ -352,6 +352,10 @@ export interface StrategyStats {
     credit: number;
     session_number: number | null;
     _active?: boolean;
+    _tick_index?: number | null;
+    _elapsed_seconds?: number | null;
+    _window_end_utc?: string | null;
+    _window_start_utc?: string | null;
   }>;
   trades: TradeLogEntry[];
   resolutions: TradeLogEntry[];

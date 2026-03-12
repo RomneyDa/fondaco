@@ -26,7 +26,7 @@ class LateSniperSafe(Strategy):
 
     name = "LateSniperSafe"
     description = "Ultra-conservative late entry — only trades when outcome is virtually decided."
-    version = "2"
+    version = "4"
 
     def __init__(
         self,
@@ -42,7 +42,7 @@ class LateSniperSafe(Strategy):
         self.max_price = max_price
         self.confirm_ticks = confirm_ticks
         self.bet_fraction = bet_fraction
-        self._entered = False
+        self._entry_count = 0
         self._confirm_count = 0
         self._confirm_side = None  # type: Optional[str]
         self._params = {
@@ -54,13 +54,13 @@ class LateSniperSafe(Strategy):
         }
 
     def on_session_start(self, metadata):
-        self._entered = False
+        self._entry_count = 0
         self._confirm_count = 0
         self._confirm_side = None
 
     def on_tick(self, ctx):
         # Already entered — hold to resolution (no stop-loss needed at this confidence)
-        if self._entered:
+        if self._entry_count > 0:
             return HOLD
 
         up_mid = ctx.sample.get("up_token_midpoint")
@@ -85,7 +85,7 @@ class LateSniperSafe(Strategy):
                 self._confirm_count = 1
 
             if self._confirm_count >= self.confirm_ticks:
-                self._entered = True
+                self._entry_count += 1
                 buy_side = "buy_up" if best_side == "up" else "buy_down"
                 self.log("BUY {}: mid={:.3f} at {:.0f}% elapsed, confirmed {} ticks".format(
                     best_side.upper(), best_mid, ctx.elapsed_fraction * 100,
@@ -95,11 +95,8 @@ class LateSniperSafe(Strategy):
                     side=buy_side,
                     amount=ctx.position.cash * self.bet_fraction,
                     price=best_mid,
+                    expiration_seconds=5,
                 )
-            else:
-                self.log("confirming {}: mid={:.3f} ({}/{} ticks)".format(
-                    best_side, best_mid, self._confirm_count, self.confirm_ticks,
-                ))
         else:
             # Reset confirmation if signal drops
             self._confirm_count = 0

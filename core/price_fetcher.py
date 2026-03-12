@@ -11,7 +11,7 @@ from typing import Optional, Tuple, TYPE_CHECKING
 
 import requests
 
-from core.defaults import CLOB_API_BASE, COINBASE_BTC_URL, COINGECKO_BTC_URL
+from core.defaults import API_TIMEOUT_SHORT, CLOB_API_BASE, COINBASE_BTC_URL, COINGECKO_BTC_URL
 from core.models import PriceSample
 
 if TYPE_CHECKING:
@@ -51,14 +51,14 @@ class PriceFetcher:
                 return price
 
         try:
-            resp = self.session.get(COINBASE_BTC_URL, timeout=5)
+            resp = self.session.get(COINBASE_BTC_URL, timeout=API_TIMEOUT_SHORT)
             resp.raise_for_status()
             return float(resp.json()["data"]["amount"])
         except Exception:
             pass
 
         try:
-            resp = self.session.get(COINGECKO_BTC_URL, timeout=5)
+            resp = self.session.get(COINGECKO_BTC_URL, timeout=API_TIMEOUT_SHORT)
             resp.raise_for_status()
             return float(resp.json()["bitcoin"]["usd"])
         except Exception:
@@ -71,7 +71,7 @@ class PriceFetcher:
             resp = self.session.get(
                 f"{CLOB_API_BASE}/midpoint",
                 params={"token_id": token_id},
-                timeout=5,
+                timeout=API_TIMEOUT_SHORT,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -88,7 +88,7 @@ class PriceFetcher:
             resp = self.session.get(
                 f"{CLOB_API_BASE}/book",
                 params={"token_id": token_id},
-                timeout=5,
+                timeout=API_TIMEOUT_SHORT,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -154,5 +154,5 @@ class PriceFetcher:
 
     def close(self):
         """Close the thread pool and underlying HTTP session."""
-        self._pool.shutdown(wait=False)
+        self._pool.shutdown(wait=True)
         self.session.close()

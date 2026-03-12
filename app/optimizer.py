@@ -46,6 +46,9 @@ logger = logging.getLogger("optimizer")
 def _setup_logging():
     """Set up rotating log file for optimizer."""
     os.makedirs(OPTIMIZER_DIR, exist_ok=True)
+    # Avoid accumulating duplicate handlers on repeated calls
+    if logger.handlers:
+        return
     handler = logging.handlers.RotatingFileHandler(
         OPTIMIZER_LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=5,
     )
@@ -664,7 +667,7 @@ def run_optimizer(port, interval_minutes, lookback, min_sharpe, starting_cash,
                 name = strat["name"]
                 raw_params = strat.get("params", {})
                 params = {k: (None if v == "None" else v) for k, v in raw_params.items()}
-                cash = strat.get("starting_cash", strat.get("cash", starting_cash))
+                cash = strat.get("bankroll", starting_cash)
                 scr = strat.get("session_cash_ratio")
                 sc = strat.get("session_cap")
 

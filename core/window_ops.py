@@ -54,8 +54,9 @@ def wait_for_next_window(window_duration, is_running, on_waiting=None, after_win
 
     next_window_start = current_window_start + window_duration
 
-    # If we're in the first 3 seconds of the current window, use it
-    if now - current_window_start < 3:
+    # If we're in the first few seconds of the current window, use it
+    WINDOW_GRACE_SECONDS = 3
+    if now - current_window_start < WINDOW_GRACE_SECONDS:
         return current_window_start
 
     # Otherwise wait for the next window

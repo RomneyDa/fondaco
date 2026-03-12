@@ -72,6 +72,8 @@ class RTDSClient:
                 pass
         if self._thread is not None:
             self._thread.join(timeout=5)
+        if getattr(self, '_watchdog_thread', None) is not None:
+            self._watchdog_thread.join(timeout=5)
         logger.info("RTDS client stopped")
 
     def get_price(self, max_age_s=STALE_THRESHOLD_S):

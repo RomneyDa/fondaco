@@ -20,7 +20,8 @@ from datetime import datetime, timezone
 
 from simulator.engine import (
     Simulator, BacktestResult, load_sessions, load_session_summaries,
-    compute_kelly_sizing, KELLY_FRACTION,
+    compute_kelly_sizing, convert_all_samples, pre_slice_summaries,
+    KELLY_FRACTION,
 )
 from core.defaults import BALANCE_CACHE_FILE, DEFAULT_RATIO_MAX, MARKETS_DIR, market_backtest_log, market_sessions_dir
 from bots import ALL_STRATEGIES
@@ -29,27 +30,31 @@ from bots import ALL_STRATEGIES
 # -- Process pool worker globals & functions --
 _worker_sim = None   # type: Optional[Simulator]
 _worker_sessions = None  # type: Optional[list]
+# Module-level sessions set in parent before fork — inherited via CoW,
+# never pickled. This is the key optimization: avoids serializing ~50MB+
+# of session data per worker.
+_shared_sessions = None  # type: Optional[list]
 
 
-def _init_worker(starting_cash, execution_mode, slippage, session_summaries, sessions, fees):
-    # type: (float, str, float, list, list, bool) -> None
-    """Initializer for each worker process — sets up Simulator and sessions once.
+def _init_worker(starting_cash, execution_mode, slippage, fees, limit_fill_margin):
+    # type: (float, str, float, bool, Optional[float]) -> None
+    """Initializer for each worker process — sets up Simulator once.
 
-    P1: Session summaries (tiny, ~few KB) are pre-built in the parent and
-    passed here instead of all_sessions (~580 MB). Only the --recent subset
-    of sessions is passed.
-    Phase 1 always runs with compound=False to get clean per-session returns.
+    Sessions are inherited from the parent via fork CoW (_shared_sessions),
+    not passed as initargs (which would pickle them per worker).
+    Prior session stats are pre-sliced into session metadata by the parent,
+    so the Simulator doesn't need session_summaries.
     """
     global _worker_sim, _worker_sessions
     _worker_sim = Simulator(
         starting_cash=starting_cash,
         execution_mode=execution_mode,
         slippage=slippage,
-        session_summaries=session_summaries,
         compound=False,  # Phase 1: flat cash for clean returns
         fees=fees,
+        limit_fill_margin=limit_fill_margin,
     )
-    _worker_sessions = sessions
+    _worker_sessions = _shared_sessions
 
 
 def _run_one(strategy):
@@ -67,6 +72,69 @@ def _run_batch(variants):
     for strategy in variants:
         results.append(_worker_sim.run_backtest(strategy, _worker_sessions))
     return results
+
+
+def _run_variants_parallel(variants, sessions, starting_cash, execution_mode,
+                           slippage, fees, label="", limit_fill_margin=None):
+    # type: (list, list, float, str, float, bool, str, Optional[float]) -> list
+    """Run strategy variants in parallel across worker processes.
+
+    Sessions are shared via fork CoW (_shared_sessions) — never pickled.
+    Prior session stats are pre-sliced into session metadata by the caller.
+    Only lightweight config (scalars) goes through initargs.
+    """
+    global _shared_sessions
+
+    total = len(variants)
+    if total == 0:
+        return []
+    if total == 1:
+        sim = Simulator(
+            starting_cash=starting_cash,
+            execution_mode=execution_mode,
+            slippage=slippage,
+            compound=False,
+            fees=fees,
+            limit_fill_margin=limit_fill_margin,
+        )
+        return [sim.run_backtest(variants[0], sessions)]
+
+    num_workers = min(total, os.cpu_count() or 1)
+    if label:
+        print("  {}: {} variants × {} sessions across {} workers...".format(
+            label, total, len(sessions), num_workers,
+        ))
+    else:
+        print("Running {} variants across {} workers...".format(total, num_workers))
+
+    # Set module-level sessions for fork CoW inheritance (no pickling)
+    _shared_sessions = sessions
+    pool_initargs = (starting_cash, execution_mode, slippage, fees, limit_fill_margin)
+
+    # P7: Batch variants for better CPU cache locality
+    batch_size = max(1, total // (num_workers * 2))
+    fork_ctx = multiprocessing.get_context("fork")
+    if batch_size > 1 and total > num_workers * 2:
+        batches = [variants[i:i + batch_size] for i in range(0, total, batch_size)]
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            mp_context=fork_ctx,
+            initializer=_init_worker,
+            initargs=pool_initargs,
+        ) as pool:
+            batch_results = list(pool.map(_run_batch, batches))
+        results = []
+        for batch in batch_results:
+            results.extend(batch)
+        return results
+    else:
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            mp_context=fork_ctx,
+            initializer=_init_worker,
+            initargs=pool_initargs,
+        ) as pool:
+            return list(pool.map(_run_one, variants))
 
 
 def parse_param_overrides(param_args):
@@ -406,6 +474,13 @@ def main():
         help="Half-spread for midpoint_slippage mode (default: 0.02)",
     )
     parser.add_argument(
+        "--limit-fill-margin",
+        type=float,
+        default=None,
+        help="Midpoint margin for GTC/GTD fill simulation (default: same as --slippage). "
+             "Higher = harder to fill, more realistic.",
+    )
+    parser.add_argument(
         "--cash",
         type=str,
         default="100",
@@ -434,6 +509,15 @@ def main():
         default=[],
         metavar="KEY=v1,v2,...",
         help="Override param grid values (repeatable). e.g. --param min_elapsed=0.4,0.5,0.6",
+    )
+    parser.add_argument(
+        "--screen",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Two-stage screening: quick pass on 1/3 of sessions to find top N, "
+             "then validate on full session set. Dramatically faster for large grids. "
+             "Example: --screen 50 keeps top 50 from screening pass.",
     )
     parser.add_argument(
         "--no-fees",
@@ -469,6 +553,9 @@ def main():
     # Session summaries (for strategy lookback) are loaded separately and
     # don't require full sample data.
     sessions = load_sessions(args.data_dir, recent=args.recent)
+    # Eagerly convert sample dicts → Sample objects before forking workers.
+    # Workers share these via CoW instead of each triggering page copies.
+    convert_all_samples(sessions)
     if not sessions:
         print("No resolved sessions found in: {}".format(args.data_dir))
         sys.exit(1)
@@ -496,18 +583,14 @@ def main():
     # Rank by Sharpe to find the best risk-adjusted edge.
     print("\n── Phase 1: Strategy Selection (Sharpe on flat cash) ──")
 
-    # P1: Load session summaries separately (tiny, ~few KB).
-    # These provide lookback data for strategies without loading full sample data.
+    # Build session stats cache from ALL sessions on disk (not just --recent).
+    # Strategies need lookback into sessions before the --recent window.
+    # Stats are lightweight (~200 bytes each) so thousands fit in memory.
+    from core.session_cache import SessionStatsCache
     session_summaries = load_session_summaries(args.data_dir)
-
-    sim = Simulator(
-        starting_cash=starting_cash,
-        execution_mode=args.execution,
-        slippage=args.slippage,
-        session_summaries=session_summaries,
-        compound=False,  # flat cash for clean returns
-        fees=fees,
-    )
+    stats_cache = SessionStatsCache.from_summaries(session_summaries)
+    # Pre-compute per-session prior stats once (avoids V×S list scans in workers)
+    pre_slice_summaries(sessions, stats_cache=stats_cache)
 
     # Parse --param overrides
     grid_overrides = parse_param_overrides(args.param) if args.param else None
@@ -520,46 +603,53 @@ def main():
 
     total_variants = len(all_variants)
 
-    # Run grid search — parallelize when there are multiple variants
-    if total_variants <= 1:
-        all_results = [sim.run_backtest(v, sessions) for v in all_variants]
-    else:
-        num_workers = min(total_variants, os.cpu_count() or 1)
-        print("Running {} variants across {} workers...".format(
-            total_variants, num_workers,
+    # Warn on large grids
+    if total_variants > 1000:
+        print("\n  WARNING: {} variants is very large. Consider:".format(total_variants))
+        print("    --screen 50     (two-stage screening, ~3-5x faster)")
+        print("    --param KEY=v1,v2  (narrow specific params)")
+        print("    --strategy X     (one strategy at a time)\n")
+
+    screen_top = args.screen
+
+    # Two-stage screening: quick pass on subset, validate top N on full set
+    if screen_top and len(sessions) >= 6 and total_variants > screen_top * 2:
+        screen_n = max(3, len(sessions) // 3)
+        screen_sessions = sessions[-screen_n:]  # most recent subset
+        print("Screening: {} variants × {} sessions (of {})...".format(
+            total_variants, len(screen_sessions), len(sessions),
         ))
 
-        pool_initargs = (starting_cash, args.execution, args.slippage,
-                         session_summaries, sessions, fees)
+        screen_results = _run_variants_parallel(
+            all_variants, screen_sessions, starting_cash, args.execution,
+            args.slippage, fees, label="Screen pass",
+            limit_fill_margin=args.limit_fill_margin,
+        )
 
-        # P7: Batch variants for better CPU cache locality.
-        # Each worker runs a batch of variants over the same sessions,
-        # keeping session data hot in cache.
-        batch_size = max(1, total_variants // (num_workers * 2))
-        if batch_size > 1 and total_variants > num_workers * 2:
-            batches = []
-            for i in range(0, total_variants, batch_size):
-                batches.append(all_variants[i:i + batch_size])
-            fork_ctx = multiprocessing.get_context("fork")
-            with ProcessPoolExecutor(
-                max_workers=num_workers,
-                mp_context=fork_ctx,
-                initializer=_init_worker,
-                initargs=pool_initargs,
-            ) as pool:
-                batch_results = list(pool.map(_run_batch, batches))
-            all_results = []
-            for batch in batch_results:
-                all_results.extend(batch)
-        else:
-            fork_ctx = multiprocessing.get_context("fork")
-            with ProcessPoolExecutor(
-                max_workers=num_workers,
-                mp_context=fork_ctx,
-                initializer=_init_worker,
-                initargs=pool_initargs,
-            ) as pool:
-                all_results = list(pool.map(_run_one, all_variants))
+        # Keep top N by Sharpe from screening.
+        # Results are in the same order as all_variants, so pair them by index.
+        indexed = list(enumerate(screen_results))
+        indexed.sort(key=lambda x: x[1].sharpe, reverse=True)
+        top_indices = sorted(idx for idx, _ in indexed[:screen_top])
+        survivors = [all_variants[i] for i in top_indices]
+        eliminated = total_variants - len(survivors)
+        print("Screened: kept {} / {} variants (eliminated {})".format(
+            len(survivors), total_variants, eliminated,
+        ))
+
+        # Full validation on all sessions
+        all_results = _run_variants_parallel(
+            survivors, sessions, starting_cash, args.execution,
+            args.slippage, fees, label="Full pass",
+            limit_fill_margin=args.limit_fill_margin,
+        )
+    else:
+        # Standard: run all variants on all sessions
+        all_results = _run_variants_parallel(
+            all_variants, sessions, starting_cash, args.execution,
+            args.slippage, fees,
+            limit_fill_margin=args.limit_fill_margin,
+        )
 
     print("Tested {} strategy variants across {} strategies".format(
         total_variants, len(strategy_names),

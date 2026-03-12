@@ -16,8 +16,17 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.defaults import (
+    BPS_DIVISOR,
     CLOB_MIN_ORDER_TOKENS,
+    DEFAULT_EXPIRATION_SECONDS,
+    MAX_TOKEN_PRICE,
+    PRICE_DECIMALS,
+    TICK_SIZE,
+    TOKEN_DECIMALS,
+    TOKEN_DUST_BUFFER,
+    TOKEN_FLOOR_DIVISOR,
     TRADE_CUTOFF_SECONDS,
+    WEI_DIVISOR,
     compute_taker_fee,
 )
 
@@ -35,10 +44,10 @@ class TradeAction:
     side: str  # buy_up, buy_down, sell_up, sell_down, hold
     amount: float = 0.0  # dollars for buys, token count for sells
     price: Optional[float] = None  # if set → GTC limit order; if None → FAK (current behavior)
-    expiration_seconds: Optional[float] = None  # TTL in seconds; None=GTC, set=GTD
+    expiration_seconds: Optional[float] = DEFAULT_EXPIRATION_SECONDS  # TTL; default 30s GTD
 
 
-HOLD = TradeAction(side="hold", amount=0.0)
+HOLD = TradeAction(side="hold", amount=0.0, expiration_seconds=None)
 
 
 @dataclass
@@ -90,7 +99,7 @@ class Position:
             dollars = min(amount, self.cash)
             if dollars <= 0:
                 return 0.0, 0.0
-            tokens = round(dollars / price, 4)
+            tokens = round(dollars / price, TOKEN_DECIMALS)
             if tokens < CLOB_MIN_ORDER_TOKENS:
                 return 0.0, 0.0
             cost = tokens * price
@@ -98,7 +107,7 @@ class Position:
 
         if side in ("sell_up", "sell_down"):
             available = self.up_tokens if side == "sell_up" else self.down_tokens
-            tokens = math.floor(min(amount, available) * 10000) / 10000
+            tokens = math.floor(min(amount, available) * TOKEN_FLOOR_DIVISOR) / TOKEN_FLOOR_DIVISOR
             if tokens <= 0:
                 return 0.0, 0.0
             proceeds = tokens * price
@@ -128,7 +137,7 @@ class Position:
             self.down_tokens -= tokens
             self.cash += tokens * price
 
-        if self.cash < -0.01 or self.up_tokens < -0.0001 or self.down_tokens < -0.0001:
+        if self.cash < -TOKEN_DUST_BUFFER or self.up_tokens < -1 / TOKEN_FLOOR_DIVISOR or self.down_tokens < -1 / TOKEN_FLOOR_DIVISOR:
             logger.error(
                 "POSITION INTEGRITY VIOLATION: cash=%.4f up=%.4f down=%.4f "
                 "after %s %.4f tokens @ %.4f",
@@ -302,11 +311,16 @@ class Executor(ABC):
 class SimExecutor(Executor):
     """Executes trades against historical sample data for backtesting."""
 
-    def __init__(self, execution_mode="book", slippage=0.02, fees=True):
-        # type: (str, float, bool) -> None
+    def __init__(self, execution_mode="book", slippage=0.02, fees=True,
+                 limit_fill_margin=None):
+        # type: (str, float, bool, Optional[float]) -> None
         self.execution_mode = execution_mode
         self.slippage = slippage
         self.fees = fees
+        # Margin the midpoint must cross beyond the limit price before a
+        # GTC/GTD order fills.  Defaults to slippage if not set explicitly,
+        # but can be tuned independently (e.g. --limit-fill-margin 0.03).
+        self.limit_fill_margin = limit_fill_margin if limit_fill_margin is not None else slippage
         self._sim_order_counter = 0
 
     def execute_trade(self, action, tick_index, metadata, sample, position):
@@ -316,7 +330,7 @@ class SimExecutor(Executor):
 
         price = self._get_execution_price(action.side, sample)
         if price is not None:
-            price = min(round(price, 2), 0.99)
+            price = min(round(price, PRICE_DECIMALS), MAX_TOKEN_PRICE)
         tokens, dollars = position.compute_trade_size(action.side, price, action.amount)
         if tokens <= 0:
             return None
@@ -372,7 +386,7 @@ class SimExecutor(Executor):
         if action.side == "hold" or action.amount <= 0 or action.price is None:
             return None
 
-        price = round(action.price, 2)
+        price = round(action.price, PRICE_DECIMALS)
         if price <= 0 or price >= 1.0:
             return None
 
@@ -415,15 +429,21 @@ class SimExecutor(Executor):
 
     def check_fills(self, open_orders, sample, position):
         # type: (List[OpenOrder], Dict[str, Any], Position) -> List[Trade]
-        """Sim fill model: buy at P fills when midpoint <= P, sell at P fills when midpoint >= P.
+        """Sim fill model with slippage margin for realistic GTC fill rates.
 
-        When we post a buy limit at price P, we're offering to buy at P. Market
-        makers will sell to us when fair value (midpoint) is at or below P.
-        Conversely, sell limits at P fill when midpoint >= P.
+        A limit order doesn't fill the instant the midpoint touches the limit
+        price — the market must move *through* the price to find a counterparty.
+        We model this by requiring the midpoint to cross the limit price by
+        ``self.slippage`` (default 0.02), which brings sim fill rates in line
+        with the ~50% observed in production.
+
+        Buy at P fills when midpoint <= P - slippage.
+        Sell at P fills when midpoint >= P + slippage.
         """
         fills = []
         remaining = []
         current_elapsed = sample.get("elapsed_seconds", 0.0)
+        margin = self.limit_fill_margin
 
         for order in open_orders:
             # GTD expiration: if past deadline, unreserve and discard
@@ -441,11 +461,15 @@ class SimExecutor(Executor):
 
             filled = False
             if order.side in ("buy_up", "buy_down"):
-                # Buy limit fills when midpoint <= our price (we're overpaying vs fair value)
-                filled = midpoint <= order.price
+                # Buy limit fills when midpoint moves below our price by margin
+                filled = midpoint <= order.price - margin
             elif order.side in ("sell_up", "sell_down"):
-                # Sell limit fills when midpoint >= our price (we're underselling vs fair value)
-                filled = midpoint >= order.price
+                # Sell limit fills when midpoint moves above our price by margin.
+                # Cap the required threshold at 0.99 — the midpoint can't
+                # exceed 0.99, so sell limits near the ceiling would otherwise
+                # become unfillable in simulation.
+                threshold = min(order.price + margin, MAX_TOKEN_PRICE)
+                filled = midpoint >= threshold
 
             if filled:
                 # Apply the trade to position (funds were already reserved)
@@ -494,7 +518,7 @@ class SimExecutor(Executor):
 
 
 FILL_CHECK_INTERVAL = 0.5  # seconds between polling order status
-AUTO_EXIT_MIDPOINT_THRESHOLD = 0.99  # sell when midpoint >= this to avoid claiming
+AUTO_EXIT_MIDPOINT_THRESHOLD = MAX_TOKEN_PRICE  # sell when midpoint >= this
 SELL_COOLDOWN_SECONDS = 5.0  # min time between sell attempts for the same token
 
 
@@ -527,11 +551,11 @@ class ClobExecutor(Executor):
         self._last_sell_fail.pop(token_id, None)
 
     def _refresh_balance_allowance(self, token_id):
-        # type: (str) -> None
+        # type: (str) -> Optional[float]
         """Refresh CLOB's cached conditional token balance after a fill.
 
-        Retries up to 3 times — if this fails, sells will get
-        'not enough balance / allowance' errors.
+        Returns the on-chain token balance (in tokens, not wei) so callers
+        can reconcile the internal position, or None on failure.
         """
         from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
 
@@ -543,7 +567,7 @@ class ClobExecutor(Executor):
                         token_id=token_id,
                     )
                 )
-                # Log what the CLOB thinks we have after refresh
+                # Read back actual on-chain balance
                 try:
                     ba = self.client.get_balance_allowance(
                         BalanceAllowanceParams(
@@ -551,13 +575,16 @@ class ClobExecutor(Executor):
                             token_id=token_id,
                         )
                     )
+                    raw = ba.get("balance")
                     logger.info(
                         "CLOB balance after refresh: token=%s balance=%s allowance=%s",
-                        token_id[:12], ba.get("balance"), ba.get("allowance"),
+                        token_id[:12], raw, ba.get("allowance"),
                     )
+                    if raw is not None:
+                        return int(float(raw)) / WEI_DIVISOR
                 except Exception:
                     pass
-                return
+                return None
             except Exception as e:
                 logger.warning(
                     "Refresh balance allowance attempt %d/3 failed: %s",
@@ -569,6 +596,45 @@ class ClobExecutor(Executor):
             "Sells may fail with 'not enough balance / allowance'.",
             token_id,
         )
+        return None
+
+    def _reconcile_sell_balance(self, action_side, token_id, position):
+        # type: (str, str, Position) -> None
+        """Cap internal position to on-chain balance before selling.
+
+        Multiple workers share one wallet, so the on-chain balance may be
+        lower than any single worker's position tracker thinks.  Capping
+        prevents 'not enough balance / allowance' rejections.
+
+        Tiny buffer (0.01 tokens) covers float↔fixed-point rounding only.
+        Concurrent worker races can't be solved with a buffer (min order
+        is 5 tokens) — we accept the occasional failure and retry next tick.
+        """
+        on_chain = self._refresh_balance_allowance(token_id)
+        if on_chain is None:
+            return
+
+        # Buffer for float↔6-decimal fixed-point rounding
+        safe_balance = max(0.0, on_chain - TOKEN_DUST_BUFFER)
+
+        if action_side in ("sell_up", "buy_up"):
+            tracked = position.up_tokens
+            if tracked > safe_balance:
+                logger.warning(
+                    "Position desync: tracked %.4f up_tokens but on-chain has %.4f "
+                    "(safe=%.4f). Capping to safe balance.",
+                    tracked, on_chain, safe_balance,
+                )
+                position.up_tokens = safe_balance
+        else:
+            tracked = position.down_tokens
+            if tracked > safe_balance:
+                logger.warning(
+                    "Position desync: tracked %.4f down_tokens but on-chain has %.4f "
+                    "(safe=%.4f). Capping to safe balance.",
+                    tracked, on_chain, safe_balance,
+                )
+                position.down_tokens = safe_balance
 
     def execute_trade(self, action, tick_index, metadata, sample, position):
         # type: (TradeAction, int, Dict[str, Any], Dict[str, Any], Position) -> Optional[Trade]
@@ -622,10 +688,10 @@ class ClobExecutor(Executor):
         if order_side == "SELL" and self._check_sell_cooldown(token_id):
             return None
 
-        # Pre-sell refresh: ensure the CLOB has an up-to-date view of our
-        # conditional token balance before attempting the sell.
+        # Pre-sell: refresh balance and reconcile internal position to
+        # on-chain reality (handles multi-worker wallet sharing).
         if order_side == "SELL":
-            self._refresh_balance_allowance(token_id)
+            self._reconcile_sell_balance(action.side, token_id, position)
 
         exec_price = sample.get(price_key)
         other_price = sample.get(other_side_key)
@@ -646,7 +712,7 @@ class ClobExecutor(Executor):
             self._log_trade(trade)
             return trade
 
-        price = min(round(exec_price, 2), 0.99)
+        price = min(round(exec_price, PRICE_DECIMALS), MAX_TOKEN_PRICE)
         if price <= 0 or price >= 1.0:
             trade = Trade(
                 tick_index=tick_index, side=action.side, price=price, amount=0,
@@ -695,7 +761,7 @@ class ClobExecutor(Executor):
                 side=order_side,
             )
             options = PartialCreateOrderOptions(
-                tick_size="0.01",
+                tick_size=TICK_SIZE,
                 neg_risk=False,
             )
             signed_order = self.client.create_order(order_args, options)
@@ -830,11 +896,12 @@ class ClobExecutor(Executor):
         if order_side == "SELL" and self._check_sell_cooldown(token_id):
             return None
 
-        # Pre-sell refresh: ensure the CLOB sees our tokens
+        # Pre-sell: refresh balance and reconcile internal position to
+        # on-chain reality (handles multi-worker wallet sharing).
         if order_side == "SELL":
-            self._refresh_balance_allowance(token_id)
+            self._reconcile_sell_balance(action.side, token_id, position)
 
-        price = round(action.price, 2)
+        price = round(action.price, PRICE_DECIMALS)
         if price <= 0 or price >= 1.0:
             return None
 
@@ -867,7 +934,7 @@ class ClobExecutor(Executor):
                 )
             order_args = OrderArgs(**order_args_kwargs)
             options = PartialCreateOrderOptions(
-                tick_size="0.01",
+                tick_size=TICK_SIZE,
                 neg_risk=False,
             )
             signed_order = self.client.create_order(order_args, options)
@@ -1341,7 +1408,7 @@ class Trader:
         # Drain strategy decision log buffer
         tick_logs = getattr(self.strategy, "_tick_logs", None)
         if tick_logs:
-            if self._capture_decision_log:
+            if self._capture_decision_log and len(self._decision_log) < 5000:
                 self._decision_log.append({
                     "tick": self._tick_index,
                     "msgs": list(tick_logs),
@@ -1438,7 +1505,7 @@ class Trader:
         ctx.tick_index = tick_idx
         ctx.sample = sample
         # Use attribute access on Sample objects (faster than dict .get())
-        elapsed_seconds = sample.elapsed_seconds if hasattr(sample, 'elapsed_seconds') else sample.get("elapsed_seconds", 0.0)
+        elapsed_seconds = sample.elapsed_seconds
         elapsed_frac = elapsed_seconds / self._window_duration if self._window_duration > 0 else 0.0
         if elapsed_frac > 1.0:
             elapsed_frac = 1.0

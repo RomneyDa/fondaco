@@ -32,6 +32,26 @@ TRADE_CUTOFF_SECONDS = 5           # Stop all trades this many seconds before se
 DEFAULT_RATIO_MAX = 100            # Default max $ per session in --session-cash-ratio
 OPTIMIZER_MAX_RATIO = 0.12         # Optimizer may never set session-cash-ratio above 12%
 
+# Price/token precision
+PRICE_DECIMALS = 2                 # Decimal places for prices on the CLOB
+TOKEN_DECIMALS = 4                 # Decimal places for token quantities
+TOKEN_FLOOR_DIVISOR = 10 ** TOKEN_DECIMALS  # 10000; used for floor rounding tokens
+MAX_TOKEN_PRICE = 0.99             # Max price for orders (avoid near-certainty edge cases)
+TICK_SIZE = "0.01"                 # CLOB tick size string (passed to order creation)
+TOKEN_DUST_BUFFER = 0.01           # Float↔fixed-point rounding buffer for token balances
+WEI_DIVISOR = 1_000_000            # Divisor to convert on-chain wei to token units (6 decimals)
+
+# Basis points
+BPS_DIVISOR = 10_000.0             # Multiply by this to convert fractional returns to bps
+
+# HTTP timeouts (seconds)
+API_TIMEOUT_SHORT = 5              # External price APIs (Coinbase, CoinGecko, CLOB)
+API_TIMEOUT_DEFAULT = 10           # Internal/control API calls, RPC, market discovery
+API_TIMEOUT_LONG = 30              # Long-running control API operations
+
+# Default order expiration
+DEFAULT_EXPIRATION_SECONDS = 30.0  # Default TTL for limit orders (GTD)
+
 # CLOB taker fee (crypto up/down markets)
 # Ref: https://docs.polymarket.com/trading/fees
 # Crypto: feeRate=0.25, exponent=2.  Max effective fee = 1.56% at price 0.50.

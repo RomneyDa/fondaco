@@ -25,6 +25,7 @@ from core.defaults import (
     BALANCE_CACHE_FILE,
     BASE_DIR,
     POLL_INTERVAL_SECONDS,
+    TOKEN_DECIMALS,
     WINDOW_DURATION_SECONDS,
     market_data_dir,
     market_sessions_dir,
@@ -41,6 +42,7 @@ from core.price_fetcher import PriceFetcher
 from core.session_recorder import SessionRecorder
 from bots import ALL_STRATEGIES, get_strategies_for_market
 from core.tick_broadcast import TickBroadcaster
+from core.session_cache import SessionStatsCache
 from core.trader import Trade
 from core.window_ops import (
     wait_for_next_window,
@@ -67,6 +69,17 @@ class WorkerInfo:
     session_cash_ratio: Optional[Dict[str, float]]
     process: Optional[subprocess.Popen]
     started_at: str
+    log_fh: Optional[Any] = None  # file handle for worker log
+
+    def close_log(self):
+        # type: () -> None
+        """Close the log file handle if open."""
+        if self.log_fh is not None:
+            try:
+                self.log_fh.close()
+            except Exception:
+                pass
+            self.log_fh = None
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +92,7 @@ def _save_balance_cache(cash, slug_prefix, session_count):
     os.makedirs(os.path.dirname(BALANCE_CACHE_FILE), exist_ok=True)
     with open(BALANCE_CACHE_FILE, "w") as f:
         json.dump({
-            "cash": round(cash, 4),
+            "cash": round(cash, TOKEN_DECIMALS),
             "slug_prefix": slug_prefix,
             "session_count": session_count,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -148,6 +161,11 @@ class MarketRunner:
         self._stop_after_session = False
         self.session_count = 0
 
+        # Session stats cache — loads all existing sessions on startup,
+        # updated in-memory after each session resolves. Bots receive stats
+        # via the session_start broadcast. File written for dashboard only.
+        self._stats_cache = self._init_stats_cache()
+
         # Worker processes (protected by lock)
         self._lock = threading.Lock()
         self._workers = []  # type: List[WorkerInfo]
@@ -158,6 +176,20 @@ class MarketRunner:
         if not self._valid_strategies:
             # Fall back to all strategies if market type unknown
             self._valid_strategies = ALL_STRATEGIES
+
+    def _init_stats_cache(self):
+        # type: () -> SessionStatsCache
+        """Build session stats cache from all existing session files on disk."""
+        from simulator.engine import load_session_summaries
+        sessions_dir = market_sessions_dir(self.slug_key)
+        if os.path.isdir(sessions_dir):
+            summaries = load_session_summaries(sessions_dir)
+            cache = SessionStatsCache.from_summaries(summaries)
+            if len(cache) > 0:
+                logger.info("[%s] Stats cache: %d sessions loaded",
+                            self.slug_key, len(cache))
+            return cache
+        return SessionStatsCache()
 
     def request_stop(self):
         # type: () -> None
@@ -200,8 +232,19 @@ class MarketRunner:
                 try:
                     with open(state_file, "r") as f:
                         saved = json.load(f)
-                    # Prefer live_cash (actual bankroll) over cash (baseline)
-                    cash = saved.get("live_cash") or saved.get("cash")
+                    cash = saved.get("bankroll")
+                    if cash is None:
+                        # One-time migration from old state format.
+                        # Safe to remove this block after 2026-03-12.
+                        cash = saved.get("live_cash") or saved.get("cash")
+                        if cash is not None:
+                            saved["bankroll"] = cash
+                            tmp = state_file + ".tmp"
+                            with open(tmp, "w") as f:
+                                json.dump(saved, f, indent=2)
+                            os.replace(tmp, state_file)
+                            logger.info("[%s/%s] Migrated state.json to bankroll field",
+                                        self.slug_key, strategy_name)
                     logger.info(
                         "[%s/%s] Using saved cash from last run: $%.2f",
                         self.slug_key, strategy_name, cash,
@@ -219,7 +262,7 @@ class MarketRunner:
 
         with self._lock:
             self._kill_worker_by_name(strategy_name)
-            process = self._spawn_worker(
+            process, log_fh = self._spawn_worker(
                 strategy_name, parsed_params, starting_cash,
                 dry_run, per_session, session_cap, session_cash_ratio,
             )
@@ -233,6 +276,7 @@ class MarketRunner:
                 session_cash_ratio=session_cash_ratio,
                 process=process,
                 started_at=datetime.now(timezone.utc).isoformat(),
+                log_fh=log_fh,
             )
             self._workers.append(worker)
 
@@ -287,7 +331,7 @@ class MarketRunner:
             "[%s] Spawned worker %s (PID %d), logging to %s",
             self.slug_key, strategy_name, process.pid, log_file,
         )
-        return process
+        return process, log_fh
 
     def _kill_worker_by_name(self, strategy_name):
         # type: (str) -> None
@@ -307,6 +351,7 @@ class MarketRunner:
                             w.process.kill()
                         except Exception:
                             pass
+                w.close_log()
             else:
                 remaining.append(w)
         self._workers = remaining
@@ -331,6 +376,7 @@ class MarketRunner:
                             w.process.kill()
                         except Exception:
                             pass
+                w.close_log()
             self._workers.clear()
 
     def _read_worker_state(self, strategy_name):
@@ -341,6 +387,15 @@ class MarketRunner:
                 return json.load(f)
         except (OSError, json.JSONDecodeError):
             return None
+
+    @staticmethod
+    def _state_bankroll(state, fallback):
+        # type: (Optional[Dict[str, Any]], float) -> float
+        """Extract bankroll from a worker state dict."""
+        if not state:
+            return fallback
+        bankroll = state.get("bankroll")
+        return bankroll if bankroll is not None else fallback
 
     def _read_worker_live_trades(self, strategy_name):
         # type: (str) -> Optional[Dict[str, Any]]
@@ -403,8 +458,8 @@ class MarketRunner:
         for w in target:
             pending = {}
             if cash is not None:
-                pending["cash"] = round(cash, 4)
-                w.cash = round(cash, 4)
+                pending["bankroll"] = round(cash, TOKEN_DECIMALS)
+                w.cash = round(cash, TOKEN_DECIMALS)
             if session_cash_ratio is not None:
                 pending["session_cash_ratio"] = session_cash_ratio
                 pending["session_cap"] = None
@@ -421,13 +476,20 @@ class MarketRunner:
                 w.session_cap = None
                 w.session_cash_ratio = None
             try:
-                pending_file = os.path.join(self._workers_dir, w.strategy_name, "pending_update.json")
-                tmp = pending_file + ".tmp"
+                # Write pending config into state.json atomically.
+                # The worker reads and clears it at the next session boundary.
+                state_file = os.path.join(self._workers_dir, w.strategy_name, "state.json")
+                state = {}
+                if os.path.exists(state_file):
+                    with open(state_file, "r") as f:
+                        state = json.load(f)
+                state["pending"] = pending
+                tmp = state_file + ".tmp"
                 with open(tmp, "w") as f:
-                    json.dump(pending, f, indent=2)
-                os.replace(tmp, pending_file)
+                    json.dump(state, f, indent=2)
+                os.replace(tmp, state_file)
                 if cash is not None:
-                    logger.info("[%s/%s] Pending cash update: $%.4f",
+                    logger.info("[%s/%s] Pending bankroll update: $%.4f",
                                 self.slug_key, w.strategy_name, cash)
                 else:
                     logger.info("[%s/%s] Pending session limits update",
@@ -536,34 +598,24 @@ class MarketRunner:
             for w in self._workers:
                 alive = w.process is not None and w.process.poll() is None
                 state = self._read_worker_state(w.strategy_name)
-                live_cash = state.get("live_cash", state.get("cash", w.cash)) if state else w.cash
-                # Check for pending cash update (set-cash not yet picked up by worker)
-                pending_file = os.path.join(self._workers_dir, w.strategy_name, "pending_update.json")
-                pending_cash = None
-                try:
-                    if os.path.exists(pending_file):
-                        with open(pending_file, "r") as f:
-                            pending = json.load(f)
-                        pending_cash = pending.get("cash")
-                except (OSError, json.JSONDecodeError):
-                    pass
-                # When a pending cash reset exists, use it for both cash and bankroll
-                # so the dashboard reflects the reset immediately
-                if pending_cash is not None:
-                    live_cash = pending_cash
-                bankroll = pending_cash if pending_cash is not None else w.cash
+                bankroll = self._state_bankroll(state, w.cash)
+                # Check for pending bankroll update (set-cash not yet picked up by worker)
+                pending = state.get("pending", {}) if state else {}
+                pending_bankroll = pending.get("bankroll")
+                if pending_bankroll is not None:
+                    bankroll = pending_bankroll
                 info = {
                     "name": w.strategy_name,
                     "params": w.params,
                     "dry_run": w.dry_run,
-                    "cash": round(live_cash, 4),
-                    "bankroll": round(bankroll, 4),
-                    "starting_cash": round(w.cash, 4),
+                    "cash": round(bankroll, TOKEN_DECIMALS),
+                    "bankroll": round(bankroll, TOKEN_DECIMALS),
+                    "starting_cash": round(w.cash, TOKEN_DECIMALS),
                     "pid": w.process.pid if w.process else None,
                     "alive": alive,
                 }
                 if w.session_cap is not None:
-                    info["session_cap"] = round(w.session_cap, 4)
+                    info["session_cap"] = round(w.session_cap, TOKEN_DECIMALS)
                 if w.session_cash_ratio is not None:
                     info["session_cash_ratio"] = w.session_cash_ratio
                 flag_file = os.path.join(self._workers_dir, w.strategy_name, "auto_exit.flag")
@@ -625,7 +677,9 @@ class MarketRunner:
         finally:
             self._kill_all_workers()
             self._broadcaster.stop()
-            self._sample_pool.shutdown(wait=False)
+            self._sample_pool.shutdown(wait=True)
+            # Only shut down the fetcher's thread pool; don't close the shared HTTP session
+            self.fetcher._pool.shutdown(wait=True)
             logger.info("[%s] MarketRunner stopped. %d sessions completed.",
                         self.slug_key, self.session_count)
 
@@ -645,16 +699,16 @@ class MarketRunner:
                 if workers:
                     first = workers[0]
                     state = self._read_worker_state(first.strategy_name)
-                    first_cash = state.get("cash", first.cash) if state else first.cash
+                    first_cash = self._state_bankroll(state, first.cash)
                     trading_info = {
                         "enabled": True,
                         "strategy": first.strategy_name,
-                        "cash": round(first_cash, 4),
+                        "cash": round(first_cash, TOKEN_DECIMALS),
                         "strategies": [
                             {
                                 "name": w.strategy_name,
                                 "cash": round(
-                                    (self._read_worker_state(w.strategy_name) or {}).get("cash", w.cash),
+                                    self._state_bankroll(self._read_worker_state(w.strategy_name), w.cash),
                                     4,
                                 ),
                             }
@@ -710,6 +764,12 @@ class MarketRunner:
         self._live_trades_cache.clear()
 
         metadata_dict = asdict(metadata)
+        # Inject prior session stats so bots get lookback data via
+        # the broadcast — no disk reads needed in worker processes.
+        ws = metadata.window_start_utc if hasattr(metadata, 'window_start_utc') else ""
+        if ws and len(self._stats_cache) > 0:
+            prior = self._stats_cache.prior(before=ws, n=len(self._stats_cache))
+            metadata_dict["_prior_session_summaries"] = [s.to_dict() for s in prior]
         self._broadcaster.broadcast({
             "type": "session_start",
             "metadata": metadata_dict,
@@ -741,6 +801,19 @@ class MarketRunner:
         self.recorder.clear_live_session()
         self._live_trades_cache.clear()
         filepath = self.recorder.save_session(session)
+
+        # Update in-memory session stats cache with the newly resolved session.
+        # Dashboard reads stats via the control server HTTP endpoint.
+        if session.outcome and session.initial_btc_price_usd and session.final_btc_price_usd:
+            ws = metadata.window_start_utc if hasattr(metadata, 'window_start_utc') else ""
+            self._stats_cache.add(
+                window_start=ws,
+                outcome=session.outcome,
+                initial_btc=session.initial_btc_price_usd,
+                final_btc=session.final_btc_price_usd,
+                source_file=filepath or "",
+            )
+
         logger.info(
             "[%s] Saved: %s | Outcome: %s | Samples: %d | Errors: %d",
             self.slug_key, filepath, session.outcome,
@@ -830,9 +903,10 @@ class MarketRunner:
                         )
                     except Exception as e:
                         session.error_count += 1
-                        session.errors.append(
-                            "{}: {}".format(datetime.now(timezone.utc).isoformat(), e)
-                        )
+                        if len(session.errors) < 500:
+                            session.errors.append(
+                                "{}: {}".format(datetime.now(timezone.utc).isoformat(), e)
+                            )
                         logger.warning("[%s] Sample error: %s", self.slug_key, e)
                 else:
                     still_pending.append(f)
@@ -864,11 +938,12 @@ class MarketRunner:
             else:
                 live = self._live_trades_cache.get(w.strategy_name)
             state = self._read_worker_state(w.strategy_name)
-            state_cash = state.get("live_cash", state.get("cash", w.cash)) if state else w.cash
+            state_cash = self._state_bankroll(state, w.cash)
+            live_bankroll = live.get("bankroll", state_cash) if live else state_cash
             info = {
                 "name": w.strategy_name,
                 "dry_run": w.dry_run,
-                "cash": live.get("cash", state_cash) if live else state_cash,
+                "cash": live_bankroll,
                 "bankroll": state_cash,
                 "up_tokens": live.get("up_tokens", 0) if live else 0,
                 "down_tokens": live.get("down_tokens", 0) if live else 0,
