@@ -31,20 +31,10 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s — %(message)s"
-LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claim-server.log")
+from core.logging_setup import setup_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format=LOG_FORMAT,
-    datefmt=LOG_DATEFMT,
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_FILE),
-    ],
-)
-logger = logging.getLogger("claim-server")
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claim-server.log")
+logger = setup_logging("claim-server", log_file=LOG_FILE)
 
 # Shared state for the claim function — set in main(), read by the handler.
 _claim_ctx = {

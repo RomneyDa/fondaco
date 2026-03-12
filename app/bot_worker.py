@@ -18,7 +18,6 @@ independently without affecting the data stream.
 import argparse
 import json
 import logging
-import logging.handlers
 import os
 import signal
 import sys
@@ -672,17 +671,13 @@ def main():
     os.makedirs(log_dir, exist_ok=True)
 
     # Worker stdout/stderr is redirected to worker.log by the parent process,
-    # so only use the RotatingFileHandler here (no StreamHandler) to avoid
-    # every log line appearing twice in the file.
-    log_handler = logging.handlers.RotatingFileHandler(
-        os.path.join(log_dir, "worker.log"),
-        maxBytes=5 * 1024 * 1024, backupCount=2,
-    )
-    log_handler.setLevel(logging.DEBUG)
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[log_handler],
+    # so disable the stderr StreamHandler to avoid every log line appearing
+    # twice in the file.
+    from core.logging_setup import setup_logging
+    setup_logging(
+        "bot_worker",
+        log_file=os.path.join(log_dir, "worker.log"),
+        include_stderr=False,
     )
 
     session_cash_ratio = None

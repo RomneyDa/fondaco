@@ -19,7 +19,6 @@ Usage:
 import argparse
 import json
 import logging
-import logging.handlers
 import os
 import signal
 import sys
@@ -40,18 +39,8 @@ from bots import ALL_STRATEGIES
 
 os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.handlers.RotatingFileHandler(
-            APP_LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3,
-        ),
-    ],
-)
-logging.getLogger().handlers[0].setLevel(logging.INFO)
-logger = logging.getLogger(__name__)
+from core.logging_setup import setup_logging
+logger = setup_logging("app", log_file=APP_LOG_FILE)
 
 
 # ---------------------------------------------------------------------------
