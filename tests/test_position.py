@@ -212,3 +212,84 @@ class TestSerialization:
     def test_to_dict_fields(self):
         d = Position(cash=1.0, up_tokens=2.0, down_tokens=3.0).to_dict()
         assert set(d.keys()) == {"cash", "up_tokens", "down_tokens"}
+
+
+# ---------------------------------------------------------------------------
+# reserve_for_order
+# ---------------------------------------------------------------------------
+
+
+class TestReserveForOrder:
+    def test_buy_up_reserves_cash(self):
+        pos = Position(cash=100.0)
+        dollars, tokens = pos.reserve_for_order("buy_up", 0.20, 50.0)
+        assert dollars == pytest.approx(10.0)  # 50 * 0.20
+        assert tokens == 0.0
+        assert pos.cash == pytest.approx(90.0)
+
+    def test_buy_down_reserves_cash(self):
+        pos = Position(cash=100.0)
+        dollars, tokens = pos.reserve_for_order("buy_down", 0.30, 100.0)
+        assert dollars == pytest.approx(30.0)
+        assert pos.cash == pytest.approx(70.0)
+
+    def test_sell_up_reserves_tokens(self):
+        pos = Position(cash=0.0, up_tokens=50.0)
+        dollars, tokens = pos.reserve_for_order("sell_up", 0.60, 20.0)
+        assert dollars == 0.0
+        assert tokens == 20.0
+        assert pos.up_tokens == pytest.approx(30.0)
+
+    def test_sell_down_reserves_tokens(self):
+        pos = Position(cash=0.0, down_tokens=50.0)
+        dollars, tokens = pos.reserve_for_order("sell_down", 0.70, 15.0)
+        assert dollars == 0.0
+        assert tokens == 15.0
+        assert pos.down_tokens == pytest.approx(35.0)
+
+    def test_unknown_side_noop(self):
+        pos = Position(cash=100.0, up_tokens=10.0)
+        dollars, tokens = pos.reserve_for_order("unknown", 0.50, 10.0)
+        assert dollars == 0.0
+        assert tokens == 0.0
+        assert pos.cash == 100.0
+
+
+# ---------------------------------------------------------------------------
+# unreserve_for_order
+# ---------------------------------------------------------------------------
+
+
+class TestUnreserveForOrder:
+    def test_buy_restores_cash(self):
+        pos = Position(cash=80.0)
+        pos.unreserve_for_order("buy_up", 20.0, 0.0)
+        assert pos.cash == pytest.approx(100.0)
+
+    def test_sell_up_restores_tokens(self):
+        pos = Position(cash=0.0, up_tokens=30.0)
+        pos.unreserve_for_order("sell_up", 0.0, 20.0)
+        assert pos.up_tokens == pytest.approx(50.0)
+
+    def test_sell_down_restores_tokens(self):
+        pos = Position(cash=0.0, down_tokens=35.0)
+        pos.unreserve_for_order("sell_down", 0.0, 15.0)
+        assert pos.down_tokens == pytest.approx(50.0)
+
+    def test_reserve_unreserve_roundtrip(self):
+        """Reserve then unreserve should restore original state."""
+        pos = Position(cash=100.0, up_tokens=50.0, down_tokens=30.0)
+        # Reserve a buy
+        d, t = pos.reserve_for_order("buy_up", 0.25, 40.0)
+        assert pos.cash == pytest.approx(90.0)
+        # Cancel — unreserve
+        pos.unreserve_for_order("buy_up", d, t)
+        assert pos.cash == pytest.approx(100.0)
+        assert pos.up_tokens == 50.0
+        assert pos.down_tokens == 30.0
+
+    def test_reserve_unreserve_sell_roundtrip(self):
+        pos = Position(cash=0.0, up_tokens=50.0)
+        d, t = pos.reserve_for_order("sell_up", 0.60, 20.0)
+        pos.unreserve_for_order("sell_up", d, t)
+        assert pos.up_tokens == pytest.approx(50.0)

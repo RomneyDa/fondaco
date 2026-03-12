@@ -26,35 +26,12 @@ ticks). max_buy_price=0.40 sweet spot. Half-Kelly f*=0.60 → cash_pct=30%.
 from typing import Any, Dict, List, Optional
 
 from core.trader import HOLD, TradeAction, TickContext
-from core.strategies.base import Strategy
+from core.strategies.base import Param, Strategy
 from core.volatility import compute_session_volatility
 
 
 class GapFader(Strategy):
-    """Buy dips in undecided markets, sell on take-profit, repeat.
-
-    Phase 1 (observation): Collect token midpoints during the first
-    ``observe_seconds`` to compute the average gap.
-    Phase 2 (trading): If average gap < gap_threshold, buy whichever token
-    dips below ``max_buy_price * time_decay * vol_boost``. Sell on
-    take-profit. Repeat up to ``max_entries`` times.
-
-    Params:
-        observe_seconds: seconds to observe gap at session start
-        gap_threshold: max average |up_mid - down_mid| to activate
-        max_buy_price: base max price to buy (always < 0.50)
-        take_profit_pct: sell when midpoint rises this fraction above entry
-        stop_loss_pct: sell when midpoint drops this fraction below entry
-        max_entries: maximum buy entries per session
-        cooldown_ticks: minimum ticks between trades (buy or sell)
-        no_new_after: stop new entries after this elapsed fraction
-        vol_lookback: number of prior sessions for volatility estimate
-        min_vol_sessions: minimum sessions required for vol estimate
-        vol_boost_scale: how much volatility raises max_buy_price
-        vol_baseline_bps: "normal" session volatility in bps
-        time_decay_power: exponent controlling how fast max_buy_price
-            decays with elapsed time (higher = steeper decay)
-    """
+    """Buy dips in undecided markets, sell on take-profit, repeat."""
 
     name = "GapFader"
     description = (
@@ -62,53 +39,31 @@ class GapFader(Strategy):
         "take-profit. Multiple round-trips per session, scaled by "
         "volatility and elapsed time."
     )
-    version = "3"
+    version = "4"
     requires_full_session = True
 
-    def __init__(
-        self,
-        observe_seconds=15.0,
-        gap_threshold=0.12,
-        max_buy_price=0.40,
-        take_profit_pct=0.40,
-        stop_loss_pct=0.30,
-        max_entries=3,
-        cooldown_ticks=36,
-        no_new_after=0.85,
-        vol_lookback=5,
-        min_vol_sessions=3,
-        vol_boost_scale=0.0,
-        vol_baseline_bps=5.0,
-        time_decay_power=1.0,
-    ):
-        self.observe_seconds = observe_seconds
-        self.gap_threshold = gap_threshold
-        self.max_buy_price = max_buy_price
-        self.take_profit_pct = take_profit_pct
-        self.stop_loss_pct = stop_loss_pct
-        self.max_entries = max_entries
-        self.cooldown_ticks = cooldown_ticks
-        self.no_new_after = no_new_after
-        self.vol_lookback = vol_lookback
-        self.min_vol_sessions = min_vol_sessions
-        self.vol_boost_scale = vol_boost_scale
-        self.vol_baseline_bps = vol_baseline_bps
-        self.time_decay_power = time_decay_power
-        self._params = {
-            "observe_seconds": observe_seconds,
-            "gap_threshold": gap_threshold,
-            "max_buy_price": max_buy_price,
-            "take_profit_pct": take_profit_pct,
-            "stop_loss_pct": stop_loss_pct,
-            "max_entries": max_entries,
-            "cooldown_ticks": cooldown_ticks,
-            "no_new_after": no_new_after,
-            "vol_lookback": vol_lookback,
-            "min_vol_sessions": min_vol_sessions,
-            "vol_boost_scale": vol_boost_scale,
-            "vol_baseline_bps": vol_baseline_bps,
-            "time_decay_power": time_decay_power,
-        }
+    # --- Tunable params ---
+    gap_threshold = Param(default=0.12, min=0.08, max=0.18)
+    max_buy_price = Param(default=0.40, min=0.35, max=0.48)
+    take_profit_pct = Param(default=0.40, min=0.25, max=0.50)
+    stop_loss_pct = Param(default=0.30, min=0.15, max=0.40)
+    max_entries = Param(default=3, min=1, max=5)
+    time_decay_power = Param(default=1.0, min=0.5, max=2.0)
+
+    # --- Fixed params ---
+    observe_seconds = Param(default=15.0, tunable=False)
+    cooldown_ticks = Param(default=36, tunable=False)
+    no_new_after = Param(default=0.85, tunable=False)
+    vol_lookback = Param(default=5, tunable=False)
+    min_vol_sessions = Param(default=3, tunable=False)
+    vol_boost_scale = Param(default=0.0, tunable=False)
+    vol_baseline_bps = Param(default=5.0, tunable=False)
+
+    def __init__(self, **kwargs):
+        defs = self.param_defs()
+        for name, p in defs.items():
+            setattr(self, name, kwargs.get(name, p.default))
+        self._params = {name: getattr(self, name) for name in defs}
 
         # Per-session state
         self._gap_samples = []  # type: List[float]
@@ -285,14 +240,3 @@ class GapFader(Strategy):
         return TradeAction(side=side, amount=dollars, price=price,
                            expiration_seconds=10)
 
-    def param_grid(self):
-        # type: () -> Dict[str, List[Any]]
-        # 3 × 3 × 3 × 2 × 2 × 2 = 216 combos
-        return {
-            "gap_threshold": [0.10, 0.12, 0.15],
-            "max_buy_price": [0.38, 0.40, 0.42],
-            "take_profit_pct": [0.35, 0.40, 0.45],
-            "stop_loss_pct": [0.25, 0.30],
-            "max_entries": [2, 3],
-            "time_decay_power": [0.8, 1.0],
-        }

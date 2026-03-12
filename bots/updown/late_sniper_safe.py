@@ -82,11 +82,3 @@ class LateSniperSafe(Strategy):
             self._confirm_side = None
 
         return HOLD
-
-    def param_grid(self):
-        return {
-            "min_elapsed": [0.80, 0.83, 0.85, 0.87, 0.90],
-            "confidence_threshold": [0.88, 0.90, 0.92, 0.94],
-            "max_price": [0.96, 0.97, 0.98],
-            "confirm_ticks": [18, 36, 54],
-        }

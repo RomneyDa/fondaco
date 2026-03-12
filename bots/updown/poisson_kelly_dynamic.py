@@ -29,7 +29,7 @@ from core.defaults import BPS_DIVISOR
 from core.math_utils import norm_cdf
 from core.volatility import compute_signed_volatility
 from core.trader import HOLD, TradeAction, TickContext
-from core.strategies.base import Strategy
+from core.strategies.base import Param, Strategy
 
 
 # Reference session-level BTC volatility (std dev of 5-min returns in bps).
@@ -38,90 +38,42 @@ _TYPICAL_SESSION_VOL_BPS = 15.0
 
 
 class PoissonKellyDynamic(Strategy):
-    """Poisson jump model with dynamic volatility and trend adaptation.
-
-    Pure signal generator: detects directional edge via Poisson model with
-    parameters adapted to recent market conditions. Bets full session cash;
-    position sizing handled externally via session_cash_ratio.
-
-    Allows multiple entries per session with cooldown and edge escalation.
-    After a stop-loss, the model can re-enter if new data supports it.
-    The Poisson model naturally handles remaining time — as the session
-    progresses, Skellam variance shrinks, requiring stronger displacement
-    for the same edge threshold.
-
-    Params:
-        jump_bps: base jump threshold (scaled by vol regime)
-        min_jumps: minimum total jumps before allowing entry (warmup)
-        min_elapsed: earliest entry point (elapsed fraction)
-        no_new_after: latest entry point (elapsed fraction)
-        edge_min: minimum edge (p_model - market_price) for entry
-        edge_step: additional edge required per prior entry (anti-churn)
-        max_price: don't buy tokens above this midpoint
-        max_entries: maximum buy entries per session
-        cooldown_ticks: minimum ticks between any two trades
-        stop_loss_pct: base stop-loss fraction (scaled by vol regime)
-        lookback: number of prior sessions for adaptation
-        vol_scale: strength of volatility adaptation (0=off, 1=full)
-        trend_strength: strength of trend bias on p_up (0=off)
-    """
+    """Poisson jump model with dynamic volatility and trend adaptation."""
 
     name = "PoissonKellyDynamic"
     description = (
         "Poisson jump model with volatility-adapted jump threshold and "
         "trend bias from recent sessions. External Kelly sizing."
     )
-    version = "4"
+    version = "5"
     requires_full_session = True
 
-    def __init__(
-        self,
-        jump_bps=0.18,
-        min_jumps=8,
-        min_elapsed=0.65,
-        no_new_after=0.95,
-        edge_min=0.10,
-        edge_step=0.03,
-        max_price=0.90,
-        max_entries=3,
-        cooldown_ticks=72,
-        stop_loss_pct=0.10,
-        lookback=30,
-        vol_scale=0.5,
-        trend_strength=0.04,
-    ):
-        self.jump_bps = jump_bps
-        self.min_jumps = min_jumps
-        self.min_elapsed = min_elapsed
-        self.no_new_after = no_new_after
-        self.edge_min = edge_min
-        self.edge_step = edge_step
-        self.max_price = max_price
-        self.max_entries = max_entries
-        self.cooldown_ticks = cooldown_ticks
-        self.stop_loss_pct = stop_loss_pct
-        self.lookback = lookback
-        self.vol_scale = vol_scale
-        self.trend_strength = trend_strength
-        self._params = {
-            "jump_bps": jump_bps,
-            "min_jumps": min_jumps,
-            "min_elapsed": min_elapsed,
-            "no_new_after": no_new_after,
-            "edge_min": edge_min,
-            "edge_step": edge_step,
-            "max_price": max_price,
-            "max_entries": max_entries,
-            "cooldown_ticks": cooldown_ticks,
-            "stop_loss_pct": stop_loss_pct,
-            "lookback": lookback,
-            "vol_scale": vol_scale,
-            "trend_strength": trend_strength,
-        }
+    # --- Tunable params ---
+    jump_bps = Param(default=0.18, min=0.10, max=0.25)
+    min_elapsed = Param(default=0.65, min=0.50, max=0.80)
+    edge_min = Param(default=0.10, min=0.05, max=0.15)
+    edge_step = Param(default=0.03, min=0.0, max=0.06)
+    max_price = Param(default=0.90, min=0.80, max=0.96)
+    max_entries = Param(default=3, min=1, max=10)
+    stop_loss_pct = Param(default=0.10, min=0.05, max=0.15)
+    vol_scale = Param(default=0.5, min=0.0, max=1.0)
+    trend_strength = Param(default=0.04, min=0.0, max=0.08)
+
+    # --- Fixed params ---
+    min_jumps = Param(default=8, tunable=False)
+    no_new_after = Param(default=0.95, tunable=False)
+    cooldown_ticks = Param(default=72, tunable=False)
+    lookback = Param(default=30, tunable=False)
+
+    def __init__(self, **kwargs):
+        defs = self.param_defs()
+        for name, p in defs.items():
+            setattr(self, name, kwargs.get(name, p.default))
+        self._params = {name: getattr(self, name) for name in defs}
 
         # Adapted parameters (computed at session start from history)
-        self._effective_jump_bps = jump_bps
-        self._effective_stop_loss = stop_loss_pct
+        self._effective_jump_bps = self.jump_bps
+        self._effective_stop_loss = self.stop_loss_pct
         self._trend_bias = 0.0  # applied to p_up: positive = bullish
 
         # Cache for live trading disk reads
@@ -404,16 +356,3 @@ class PoissonKellyDynamic(Strategy):
         return TradeAction(side=side, amount=dollars, price=midpoint,
                            expiration_seconds=10)
 
-    def param_grid(self):
-        # type: () -> Dict[str, List[Any]]
-        # 3*3*3*2*3*2*3*2 = 648 combos
-        return {
-            "jump_bps": [0.15, 0.18, 0.20],
-            "min_elapsed": [0.60, 0.65, 0.70],
-            "edge_min": [0.08, 0.10, 0.12],
-            "edge_step": [0.0, 0.03],
-            "max_entries": [1, 10],
-            "stop_loss_pct": [0.08, 0.10],
-            "vol_scale": [0.0, 0.5, 1.0],
-            "trend_strength": [0.0, 0.04],
-        }
