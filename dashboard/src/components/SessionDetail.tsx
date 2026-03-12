@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { fetchSession, fetchSessionTrading, archiveSession } from "../api";
+import { fetchSession, fetchSessionTrading, fetchSessionStats, archiveSession } from "../api";
+import type { SessionStat } from "../api";
 import type { BotTrade, SessionData } from "../types";
 import { SessionCharts } from "./SessionCharts";
 import { TradeTable } from "./TradeTable";
@@ -13,6 +14,7 @@ export function SessionDetail() {
   const [session, setSession] = useState<SessionData | null>(null);
   const [trading, setTrading] = useState<any | null>(null);
   const [archiving, setArchiving] = useState(false);
+  const [stat, setStat] = useState<SessionStat | null>(null);
 
   useEffect(() => {
     if (prefix && file) {
@@ -20,6 +22,15 @@ export function SessionDetail() {
       fetchSessionTrading(prefix, file).then(setTrading);
     }
   }, [prefix, file]);
+
+  // Fetch computed session stat once we have the window_start
+  useEffect(() => {
+    if (prefix && session?.metadata?.window_start_utc) {
+      fetchSessionStats(prefix, { session: session.metadata.window_start_utc }).then((stats) => {
+        if (stats.length > 0) setStat(stats[0]);
+      });
+    }
+  }, [prefix, session?.metadata?.window_start_utc]);
 
   if (!session) return <p className="text-dim text-sm">Loading...</p>;
 
@@ -132,6 +143,36 @@ export function SessionDetail() {
           </button>
         </div>
       </div>
+
+      {/* Market stats */}
+      {stat && (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3 mb-6">
+          <div className="bg-card border border-border rounded-lg px-4 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-dim mb-1">BTC Return</div>
+            <div className={`text-base font-semibold tabular-nums ${stat.return_bps > 0 ? "text-up" : stat.return_bps < 0 ? "text-down" : ""}`}>
+              {stat.return_bps >= 0 ? "+" : ""}{(stat.return_bps / 100).toFixed(2)}%
+            </div>
+          </div>
+          <div className="bg-card border border-border rounded-lg px-4 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-dim mb-1">Return (bps)</div>
+            <div className={`text-base font-semibold tabular-nums ${stat.return_bps > 0 ? "text-up" : stat.return_bps < 0 ? "text-down" : ""}`}>
+              {stat.return_bps >= 0 ? "+" : ""}{stat.return_bps.toFixed(1)}
+            </div>
+          </div>
+          <div className="bg-card border border-border rounded-lg px-4 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-dim mb-1">Volatility</div>
+            <div className="text-base font-semibold tabular-nums">
+              {stat.abs_return_bps.toFixed(1)} bps
+            </div>
+          </div>
+          {session.samples?.length > 0 && (
+            <div className="bg-card border border-border rounded-lg px-4 py-3">
+              <div className="text-[11px] uppercase tracking-wide text-dim mb-1">Samples</div>
+              <div className="text-base font-semibold">{session.samples.length}</div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Chart */}
       <div className="mb-6">

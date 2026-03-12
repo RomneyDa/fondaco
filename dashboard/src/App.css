@@ -14,6 +14,19 @@
   --font-mono: "SF Mono", "Fira Code", monospace;
 }
 
+/* ---- Scrollbars ---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--color-dim); }
+
 /* ---- Global resets ---- */
 *, *::before, *::after { box-sizing: border-box; }
 

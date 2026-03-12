@@ -322,8 +322,8 @@ class SimExecutor(Executor):
     """Executes trades against historical sample data for backtesting."""
 
     def __init__(self, execution_mode="book", slippage=0.02, fees=True,
-                 limit_fill_margin=None):
-        # type: (str, float, bool, Optional[float]) -> None
+                 limit_fill_margin=None, latency_ms=0):
+        # type: (str, float, bool, Optional[float], int) -> None
         self.execution_mode = execution_mode
         self.slippage = slippage
         self.fees = fees
@@ -331,6 +331,8 @@ class SimExecutor(Executor):
         # GTC/GTD order fills.  Defaults to slippage if not set explicitly,
         # but can be tuned independently (e.g. --limit-fill-margin 0.03).
         self.limit_fill_margin = limit_fill_margin if limit_fill_margin is not None else slippage
+        self.latency_ms = latency_ms
+        self._latency_seconds = latency_ms / 1000.0
         self._sim_order_counter = 0
 
     def execute_trade(self, action, tick_index, metadata, sample, position):
@@ -1269,6 +1271,9 @@ class Trader:
         self._sim_ctx = None  # type: Optional[TickContext]
         # Cache strategy's on_tick method to avoid attribute lookup per tick
         self._on_tick = strategy.on_tick
+        # Deferred action queue for latency simulation (sim mode only).
+        # Each entry: (execute_after_elapsed, action, reserved_dollars, reserved_tokens)
+        self._deferred_actions = []  # type: List[Tuple[float, TradeAction, float, float]]
     def start_session(self, metadata, position, initial_btc_price, window_duration,
                       reference_balance=None, capture_decision_log=False):
         # type: (Dict[str, Any], Position, float, float, Optional[float], bool) -> None
@@ -1284,6 +1289,7 @@ class Trader:
         self._decision_log = []
         self._open_orders = []
         self._last_tick_fills = []
+        self._deferred_actions = []
         self.strategy._tick_logs = []
         self.strategy.on_session_start(metadata)
         # Pre-allocate reusable TickContext for sim mode
@@ -1494,8 +1500,12 @@ class Trader:
 
         Skips live-only overhead: no auto-exit file check, no defensive
         Position copy, reuses a pre-allocated TickContext. Still handles
-        tick logs, limit orders, and guardrails correctly.
+        tick logs, limit orders, guardrails, and latency simulation.
         """
+        # Execute deferred actions whose latency window has elapsed
+        if self._deferred_actions:
+            self._process_deferred_actions(sample)
+
         # Check fills on pending limit orders
         if self._open_orders:
             try:
@@ -1565,6 +1575,30 @@ class Trader:
                                      price=action.price,
                                      expiration_seconds=action.expiration_seconds)
 
+        # Latency simulation: defer execution by latency_ms
+        latency_s = self.executor._latency_seconds
+        if latency_s > 0:
+            target_elapsed = elapsed_seconds + latency_s
+            # Reserve funds immediately to prevent double-spending
+            if action.side.startswith("buy"):
+                reserved_dollars = action.amount
+                self._position.cash -= reserved_dollars
+                reserved_tokens = 0.0
+            elif action.side.startswith("sell"):
+                reserved_dollars = 0.0
+                token_attr = "up_tokens" if "up" in action.side else "down_tokens"
+                available = getattr(self._position, token_attr)
+                reserved_tokens = min(action.amount, available)
+                setattr(self._position, token_attr, available - reserved_tokens)
+            else:
+                reserved_dollars = 0.0
+                reserved_tokens = 0.0
+            self._deferred_actions.append(
+                (target_elapsed, action, reserved_dollars, reserved_tokens)
+            )
+            self._tick_index = tick_idx + 1
+            return None
+
         # Route: limit order vs FAK
         trade = None
         if action.price is not None:
@@ -1593,6 +1627,60 @@ class Trader:
         self._tick_index = tick_idx + 1
         return trade
 
+    def _process_deferred_actions(self, sample):
+        # type: (Any) -> None
+        """Execute deferred actions whose latency window has elapsed.
+
+        When --latency is set, FAK trades and limit order placements are
+        queued with a target elapsed_seconds. On each tick we check if
+        the target time has been reached and execute using the current
+        tick's prices (simulating the order arriving at the exchange after
+        the network round-trip).
+        """
+        if not self._deferred_actions:
+            return
+        current_elapsed = sample.elapsed_seconds
+        remaining = []
+        for target_elapsed, action, reserved_dollars, reserved_tokens in self._deferred_actions:
+            if current_elapsed < target_elapsed:
+                remaining.append((target_elapsed, action, reserved_dollars, reserved_tokens))
+                continue
+            # Unreserve first, then let the executor re-compute size at current prices
+            self._position.unreserve_for_order(action.side, reserved_dollars, reserved_tokens)
+            if action.price is not None:
+                # Limit order placement (deferred)
+                self._replace_order_on_token(action)
+                try:
+                    order = self.executor.place_limit_order(
+                        action, self._tick_index, self._metadata, sample, self._position,
+                    )
+                    if order is not None:
+                        self._open_orders.append(order)
+                except NotImplementedError:
+                    action = TradeAction(side=action.side, amount=action.amount)
+                    trade = self.executor.execute_trade(
+                        action, self._tick_index, self._metadata, sample, self._position,
+                    )
+                    if trade is not None:
+                        trade.strategy_version = getattr(self.strategy, "version", None)
+                        self._trades.append(trade)
+            else:
+                # FAK execution at current tick's prices
+                trade = self.executor.execute_trade(
+                    action, self._tick_index, self._metadata, sample, self._position,
+                )
+                if trade is not None:
+                    trade.strategy_version = getattr(self.strategy, "version", None)
+                    self._trades.append(trade)
+        self._deferred_actions = remaining
+
+    def _cancel_deferred_actions(self):
+        # type: () -> None
+        """Cancel all deferred actions and unreserve funds."""
+        for _, action, reserved_dollars, reserved_tokens in self._deferred_actions:
+            self._position.unreserve_for_order(action.side, reserved_dollars, reserved_tokens)
+        self._deferred_actions = []
+
     def _replace_order_on_token(self, action):
         # type: (TradeAction) -> None
         """Cancel any existing pending order on the same token before placing a new one."""
@@ -1618,6 +1706,7 @@ class Trader:
     def end_session(self, outcome):
         # type: (Optional[str]) -> List[Trade]
         """Cancel pending orders, resolve position, and return the list of trades."""
+        self._cancel_deferred_actions()
         self.cancel_all_pending()
         self._position.resolve(outcome)
         return list(self._trades)

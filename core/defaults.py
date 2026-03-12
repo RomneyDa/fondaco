@@ -49,6 +49,9 @@ API_TIMEOUT_SHORT = 5              # External price APIs (Coinbase, CoinGecko, C
 API_TIMEOUT_DEFAULT = 10           # Internal/control API calls, RPC, market discovery
 API_TIMEOUT_LONG = 30              # Long-running control API operations
 
+# Latency simulation
+DEFAULT_LATENCY_MS = 200               # Simulated API round-trip (ms) for backtests
+
 # Default order expiration
 DEFAULT_EXPIRATION_SECONDS = 30.0  # Default TTL for limit orders (GTD)
 

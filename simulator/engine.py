@@ -543,11 +543,13 @@ class Simulator:
         session_cash_ratio=None,
         session_summaries=None,
         limit_fill_margin=None,
+        latency_ms=0,
     ):
         self.starting_cash = starting_cash
         self.execution_mode = execution_mode
         self.slippage = slippage
         self.limit_fill_margin = limit_fill_margin
+        self.latency_ms = latency_ms
         self.compound = compound
         self.fees = fees
         self.session_cash_ratio = session_cash_ratio  # (ratio, max) or None
@@ -600,7 +602,8 @@ class Simulator:
 
         position = Position(cash=cash)
         executor = SimExecutor(self.execution_mode, self.slippage, fees=self.fees,
-                               limit_fill_margin=self.limit_fill_margin)
+                               limit_fill_margin=self.limit_fill_margin,
+                               latency_ms=self.latency_ms)
         trader = Trader(strategy, executor, sim_mode=True)
         trader.start_session(metadata, position, initial_btc, window_duration,
                              reference_balance=cash)

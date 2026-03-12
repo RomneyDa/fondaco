@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { fetchStrategyStats } from "../api";
-import type { StrategyStats, VersionSummary } from "../api";
+import { fetchStrategyStats, fetchSessionStats } from "../api";
+import type { StrategyStats, VersionSummary, SessionStat } from "../api";
 import { fmtTimeOnly, fmtDateOnly } from "../utils/formatTime";
 import { PnlCard } from "./PnlCard";
 
@@ -9,6 +9,7 @@ export function StrategyDetail() {
   const { market, strategy } = useParams<{ market: string; strategy: string }>();
   const [data, setData] = useState<StrategyStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [statsMap, setStatsMap] = useState<Map<string, SessionStat>>(new Map());
 
   useEffect(() => {
     if (!market || !strategy) return;
@@ -16,6 +17,12 @@ export function StrategyDetail() {
     fetchStrategyStats(market, strategy).then((d) => {
       setData(d);
       setLoading(false);
+    });
+    // Fetch session stats for BTC return data
+    fetchSessionStats(market).then((stats) => {
+      const m = new Map<string, SessionStat>();
+      for (const s of stats) m.set(s.window_start, s);
+      setStatsMap(m);
     });
     const interval = setInterval(() => {
       fetchStrategyStats(market!, strategy!).then((d) => {
@@ -193,6 +200,7 @@ export function StrategyDetail() {
                   <th>#</th>
                   <th>Ver</th>
                   <th>Outcome</th>
+                  <th>BTC</th>
                   <th>Trades</th>
                   <th>PnL</th>
                   <th>Credit</th>
@@ -200,7 +208,10 @@ export function StrategyDetail() {
                 </tr>
               </thead>
               <tbody>
-                {[...tradedSessions].reverse().map((s, i) => (
+                {[...tradedSessions].reverse().map((s, i) => {
+                  const ws = s._window_start_utc || s.timestamp;
+                  const st = statsMap.get(ws);
+                  return (
                   <tr key={i}>
                     <td className="font-mono text-xs">
                       <span className="text-dim mr-1.5 text-[11px]">{fmtDateOnly(s.timestamp)}</span>
@@ -226,6 +237,13 @@ export function StrategyDetail() {
                         />
                       )}
                     </td>
+                    <td className="font-mono text-xs tabular-nums">
+                      {st ? (
+                        <span className={st.return_bps > 0 ? "text-up" : st.return_bps < 0 ? "text-down" : "text-dim"}>
+                          {st.return_bps >= 0 ? "+" : ""}{(st.return_bps / 100).toFixed(2)}%
+                        </span>
+                      ) : "\u2014"}
+                    </td>
                     <td>{s.trades}</td>
                     <td>
                       <span className={s.pnl > 0 ? "text-up" : s.pnl < 0 ? "text-down" : ""}>
@@ -235,7 +253,8 @@ export function StrategyDetail() {
                     <td>{s.credit > 0 ? `+${s.credit.toFixed(2)}` : "\u2014"}</td>
                     <td>{s.cash != null ? `$${s.cash.toFixed(2)}` : "\u2014"}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -317,12 +336,11 @@ export function StrategyDetail() {
   );
 }
 
-/** Tick + time remaining for an active session */
+/** Tick + time remaining for an active session, interpolated between polls */
 function ActiveTimer({
   tickIndex,
   elapsedSeconds,
   windowEndUtc,
-  windowStartUtc,
 }: {
   tickIndex: number;
   elapsedSeconds: number | null;
@@ -330,11 +348,27 @@ function ActiveTimer({
   windowStartUtc: string | null;
 }) {
   const [now, setNow] = useState(Date.now());
+  const [fetchedAt] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
+  // Interpolate tick count: ticks arrive ~1/sec, so estimate how many ticks
+  // have passed since this data was fetched
+  const secSinceFetch = (now - fetchedAt) / 1000;
+  const estimatedTick = tickIndex + Math.floor(secSinceFetch);
+
+  // Elapsed: use server value + time since fetch
+  let elapsedStr: string | null = null;
+  if (elapsedSeconds != null) {
+    const totalElapsed = elapsedSeconds + secSinceFetch;
+    const m = Math.floor(totalElapsed / 60);
+    const s = Math.floor(totalElapsed % 60);
+    elapsedStr = `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  // Time remaining from window end
   let remaining: string | null = null;
   if (windowEndUtc) {
     const endMs = new Date(windowEndUtc).getTime();
@@ -344,17 +378,10 @@ function ActiveTimer({
     remaining = `${m}:${s.toString().padStart(2, "0")}`;
   }
 
-  let elapsed: string | null = null;
-  if (elapsedSeconds != null) {
-    const m = Math.floor(elapsedSeconds / 60);
-    const s = Math.round(elapsedSeconds % 60);
-    elapsed = `${m}:${s.toString().padStart(2, "0")}`;
-  }
-
   return (
     <div className="mt-1 text-[11px] text-dim font-mono leading-tight">
-      <span>tick {tickIndex}</span>
-      {elapsed && <span className="ml-1.5">({elapsed} elapsed)</span>}
+      <span>tick {estimatedTick}</span>
+      {elapsedStr && <span className="ml-1.5">({elapsedStr} elapsed)</span>}
       {remaining && (
         <span className="ml-1.5 text-accent">{remaining} left</span>
       )}

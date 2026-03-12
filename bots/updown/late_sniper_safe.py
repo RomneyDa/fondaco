@@ -3,55 +3,34 @@
 from typing import Any, Dict, List, Optional
 
 from core.trader import HOLD, TradeAction
-from core.strategies.base import Strategy
+from core.strategies.base import Param, Strategy
 
 
 class LateSniperSafe(Strategy):
-    """Conservative variant of LateSniper that targets ~0% failure rate.
-
-    Enters very late in the window (last ~45s) when midpoint is extremely high,
-    meaning the outcome is essentially decided. Requires sustained high midpoint
-    over a confirmation window to avoid entering on momentary spikes.
-
-    Trades less often and profits less per trade, but almost never picks the
-    wrong side.
-
-    Params:
-        min_elapsed: minimum elapsed fraction before considering entry (default 0.78)
-        confidence_threshold: minimum midpoint to treat as confident (default 0.93)
-        max_price: don't buy above this price (default 0.96)
-        confirm_ticks: midpoint must stay above threshold for this many ticks (default 54 ~3s)
-        bet_fraction: fraction of cash to bet
-    """
+    """Ultra-conservative late entry — only trades when outcome is virtually decided."""
 
     name = "LateSniperSafe"
     description = "Ultra-conservative late entry — only trades when outcome is virtually decided."
-    version = "4"
+    version = "5"
 
-    def __init__(
-        self,
-        min_elapsed=0.85,
-        confidence_threshold=0.9,
-        max_price=0.98,
-        confirm_ticks=18,
-        bet_fraction=1.0,
-    ):
-        self.min_elapsed = min_elapsed
-        self.min_elapsed_hint = min_elapsed
-        self.confidence_threshold = confidence_threshold
-        self.max_price = max_price
-        self.confirm_ticks = confirm_ticks
-        self.bet_fraction = bet_fraction
+    # --- Tunable params ---
+    min_elapsed = Param(default=0.85, min=0.75, max=0.92)
+    confidence_threshold = Param(default=0.9, min=0.85, max=0.96)
+    max_price = Param(default=0.98, min=0.95, max=0.99)
+    confirm_ticks = Param(default=18, min=9, max=72)
+
+    # --- Fixed params ---
+    bet_fraction = Param(default=1.0, tunable=False)
+
+    def __init__(self, **kwargs):
+        defs = self.param_defs()
+        for name, p in defs.items():
+            setattr(self, name, kwargs.get(name, p.default))
+        self._params = {name: getattr(self, name) for name in defs}
+        self.min_elapsed_hint = self.min_elapsed
         self._entry_count = 0
         self._confirm_count = 0
         self._confirm_side = None  # type: Optional[str]
-        self._params = {
-            "min_elapsed": min_elapsed,
-            "confidence_threshold": confidence_threshold,
-            "max_price": max_price,
-            "confirm_ticks": confirm_ticks,
-            "bet_fraction": bet_fraction,
-        }
 
     def on_session_start(self, metadata):
         self._entry_count = 0

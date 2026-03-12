@@ -26,6 +26,7 @@ New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 
 - **Auth:** `.env` has `POLYMARKET_PRIVATE_KEY`, derives Safe via Polygon RPC, caches in `.cache/auth.json`
 - **Strategies:** base class at `core/strategies/base.py`, implementations at `bots/updown/`, registries at `bots/__init__.py`. Import from `bots`, not `core.strategies`.
 - **`requires_full_session = True`** when strategy accumulates state from tick 0 (jump counts, warmup windows, running sums)
+- **No magic numbers** — numeric constants belong in `core/defaults.py` with a descriptive name and comment, then import where needed. Never inline raw numbers in logic or CLI defaults.
 
 ## Quick Reference
 
@@ -48,6 +49,16 @@ Common bugs found across strategies. Avoid these when writing or modifying any s
 - **Use `_held_side()` and `_has_position()` from base class.** Don't reimplement — they're on `Strategy` in `core/strategies/base.py`.
 - **Add `no_new_after` guard.** Strategies that can enter late should stop new entries at ~95% elapsed. The CLOB orderbook gets deleted before the window officially ends — late entries hit "orderbook does not exist" errors.
 - **Sell retry: use tick-based cooldown, not one-shot flags.** One-shot (`_exit_sell_attempted = True`) abandons tokens if the sell fails. Throttled retry (`if ctx.tick_index - self._last_sell_tick < 36: return HOLD`) retries on new ticks at updated prices.
+
+## Latency Simulation
+
+`--latency MS` models the network round-trip to the CLOB API (~190-200ms measured). When set, the strategy decides on tick T's data but the order executes at tick T+delay's prices — the first tick where `elapsed_seconds >= decision_time + latency_ms/1000`.
+
+Cash (for buys) and tokens (for sells) are reserved immediately when deferred, so strategies can't double-spend while orders are in-flight. Deferred actions that haven't executed by session end are cancelled and funds unreserved.
+
+Usage: `uv run python -m simulator.backtest btc-updown-5m --strategy <name> --latency 200 --recent 30`
+
+Compare results with and without `--latency 200` to see how sensitive a strategy is to execution delay. Strategies that degrade significantly under latency rely on stale prices and may underperform in production.
 
 ## Backtest Speed & Iterative Optimization
 

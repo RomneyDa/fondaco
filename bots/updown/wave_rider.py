@@ -28,90 +28,43 @@ from typing import Any, Dict, List, Optional
 
 from core.defaults import BPS_DIVISOR
 from core.trader import HOLD, TradeAction, TickContext
-from core.strategies.base import Strategy
+from core.strategies.base import Param, Strategy
 from core.volatility import compute_session_volatility
 
 
 class WaveRider(Strategy):
-    """Buy trend-direction tokens on pullback dips within a session.
-
-    Phase 1: Accumulate BTC price data to identify session trend direction.
-    Phase 2: Once trend is established, wait for pullbacks (BTC retracing
-    against the trend). Buy the trend-direction token at the dip price.
-    Hold to take-profit, stop-loss, or resolution.
-
-    Uses prior session volatility to scale pullback threshold: high-vol
-    sessions have deeper pullbacks, so we wait for more. Low-vol sessions
-    have shallower pullbacks, so we use tighter thresholds.
-
-    Params:
-        trend_window: ticks to establish trend direction
-        trend_threshold_bps: min BTC displacement (bps) to declare a trend
-        pullback_bps: base pullback depth (bps) to trigger entry
-        vol_lookback: number of prior sessions for volatility estimate
-        min_vol_sessions: minimum sessions required for vol estimate
-        vol_pullback_scale: multiply session vol std by this for pullback
-        min_elapsed: earliest entry as elapsed fraction
-        no_new_after: stop new entries after this fraction
-        max_price: don't buy tokens above this midpoint
-        max_entries: maximum entries per session
-        stop_loss_pct: sell if midpoint drops this fraction below entry
-        take_profit_pct: sell if midpoint rises this fraction above entry
-        cooldown_ticks: min ticks between trades
-    """
+    """Buy trend-direction tokens on pullback dips within a session."""
 
     name = "WaveRider"
     description = (
         "Identifies session trend, buys on pullback dips at better prices. "
         "Volatility from recent sessions calibrates pullback thresholds."
     )
-    version = "5"
+    version = "6"
     requires_full_session = True
 
-    def __init__(
-        self,
-        trend_window=100,
-        trend_threshold_bps=2.0,
-        pullback_bps=0.3,
-        vol_lookback=5,
-        min_vol_sessions=3,
-        vol_pullback_scale=0.3,
-        min_elapsed=0.28,
-        no_new_after=0.95,
-        max_price=0.70,
-        max_entries=1,
-        stop_loss_pct=0.30,       # type: Optional[float]
-        take_profit_pct=None,     # type: Optional[float]
-        cooldown_ticks=72,
-    ):
-        self.trend_window = trend_window
-        self.trend_threshold_bps = trend_threshold_bps
-        self.pullback_bps = pullback_bps
-        self.vol_lookback = vol_lookback
-        self.min_vol_sessions = min_vol_sessions
-        self.vol_pullback_scale = vol_pullback_scale
-        self.min_elapsed = min_elapsed
-        self.no_new_after = no_new_after
-        self.max_price = max_price
-        self.max_entries = max_entries
-        self.stop_loss_pct = stop_loss_pct
-        self.take_profit_pct = take_profit_pct
-        self.cooldown_ticks = cooldown_ticks
-        self._params = {
-            "trend_window": trend_window,
-            "trend_threshold_bps": trend_threshold_bps,
-            "pullback_bps": pullback_bps,
-            "vol_lookback": vol_lookback,
-            "min_vol_sessions": min_vol_sessions,
-            "vol_pullback_scale": vol_pullback_scale,
-            "min_elapsed": min_elapsed,
-            "no_new_after": no_new_after,
-            "max_price": max_price,
-            "max_entries": max_entries,
-            "stop_loss_pct": stop_loss_pct,
-            "take_profit_pct": take_profit_pct,
-            "cooldown_ticks": cooldown_ticks,
-        }
+    # --- Tunable params ---
+    trend_threshold_bps = Param(default=2.0, min=1.0, max=4.0)
+    pullback_bps = Param(default=0.3, min=0.1, max=1.5)
+    min_elapsed = Param(default=0.28, min=0.15, max=0.40)
+    max_price = Param(default=0.70, min=0.50, max=0.80)
+    max_entries = Param(default=1, min=1, max=4)
+    stop_loss_pct = Param(default=0.30, min=0.05, max=0.35, nullable=True)
+    take_profit_pct = Param(default=None, min=0.10, max=0.40, nullable=True)
+
+    # --- Fixed params (not tuned by optimizer) ---
+    trend_window = Param(default=100, min=60, max=200, tunable=False)
+    no_new_after = Param(default=0.95, tunable=False)
+    cooldown_ticks = Param(default=72, tunable=False)
+    vol_lookback = Param(default=5, tunable=False)
+    min_vol_sessions = Param(default=3, tunable=False)
+    vol_pullback_scale = Param(default=0.3, tunable=False)
+
+    def __init__(self, **kwargs):
+        defs = self.param_defs()
+        for name, p in defs.items():
+            setattr(self, name, kwargs.get(name, p.default))
+        self._params = {name: getattr(self, name) for name in defs}
 
         # Per-session state
         self._btc_prices = []  # type: List[float]
@@ -260,17 +213,3 @@ class WaveRider(Strategy):
 
         return HOLD
 
-    def param_grid(self):
-        # type: () -> Dict[str, List[Any]]
-        return {
-            "trend_window": [80, 100, 150],
-            "trend_threshold_bps": [1.5, 2.0, 2.5, 3.0],
-            "pullback_bps": [0.2, 0.3, 0.5, 1.0],
-            "min_elapsed": [0.20, 0.25, 0.28, 0.32],
-            "no_new_after": [0.90, 0.95],
-            "max_price": [0.55, 0.60, 0.65, 0.70],
-            "max_entries": [2, 3],
-            "stop_loss_pct": [0.08, 0.10, 0.12],
-            "take_profit_pct": [None, 0.20],
-            "cooldown_ticks": [54, 72],
-        }

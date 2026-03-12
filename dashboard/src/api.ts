@@ -82,6 +82,35 @@ export async function fetchSessionList(
   return sessions;
 }
 
+export interface SessionStat {
+  window_start: string;
+  outcome: string;
+  initial_btc: number;
+  final_btc: number;
+  return_bps: number;
+  abs_return_bps: number;
+  source_file: string;
+}
+
+export async function fetchSessionStats(
+  prefix: string,
+  params?: { last?: number; before?: string; after?: string; session?: string }
+): Promise<SessionStat[]> {
+  try {
+    const qs = new URLSearchParams();
+    if (params?.last) qs.set("last", String(params.last));
+    if (params?.before) qs.set("before", params.before);
+    if (params?.after) qs.set("after", params.after);
+    if (params?.session) qs.set("session", params.session);
+    const res = await fetch(`/api/sessions/${prefix}/stats?${qs.toString()}`);
+    if (!res.ok) return [];
+    const { stats } = (await res.json()) as { stats: SessionStat[] };
+    return stats;
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchSessionSummaries(
   prefix: string,
   limit: number = 100

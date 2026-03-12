@@ -21,60 +21,36 @@ from typing import Any, Dict, List, Optional
 from core.defaults import BPS_DIVISOR
 from core.math_utils import norm_cdf
 from core.trader import HOLD, TradeAction, TickContext
-from core.strategies.base import Strategy
+from core.strategies.base import Param, Strategy
 
 
 class PoissonKelly(Strategy):
-    """Poisson jump counting for up/down binary markets.
-
-    Pure signal generator: detects directional edge via Poisson model,
-    then bets full session cash. Position sizing is handled externally
-    by session_cash_ratio (computed via Kelly criterion on backtest returns).
-
-    Params:
-        jump_bps: minimum BTC move (in basis points) to count as a jump event
-        min_jumps: minimum total jumps observed before allowing entry (warmup)
-        min_elapsed: don't consider entry before this elapsed fraction
-        no_new_after: stop new entries after this elapsed fraction
-        edge_min: minimum edge (p_model - market_price) required for entry
-        max_price: don't buy tokens above this midpoint (caps downside)
-        stop_loss_pct: sell if midpoint drops this fraction below entry price
-    """
+    """Poisson jump counting for up/down binary markets."""
 
     name = "PoissonKelly"
     description = (
         "Models BTC price as a Poisson jump process, estimates win probability "
         "via Skellam distribution. External Kelly sizing via session_cash_ratio."
     )
-    version = "8"
+    version = "9"
     requires_full_session = True
 
-    def __init__(
-        self,
-        jump_bps=0.18,
-        min_jumps=8,
-        min_elapsed=0.65,
-        no_new_after=0.95,
-        edge_min=0.10,
-        max_price=0.90,
-        stop_loss_pct=0.10,
-    ):
-        self.jump_bps = jump_bps
-        self.min_jumps = min_jumps
-        self.min_elapsed = min_elapsed
-        self.no_new_after = no_new_after
-        self.edge_min = edge_min
-        self.max_price = max_price
-        self.stop_loss_pct = stop_loss_pct
-        self._params = {
-            "jump_bps": jump_bps,
-            "min_jumps": min_jumps,
-            "min_elapsed": min_elapsed,
-            "no_new_after": no_new_after,
-            "edge_min": edge_min,
-            "max_price": max_price,
-            "stop_loss_pct": stop_loss_pct,
-        }
+    # --- Tunable params ---
+    jump_bps = Param(default=0.18, min=0.10, max=0.30)
+    min_elapsed = Param(default=0.65, min=0.50, max=0.80)
+    edge_min = Param(default=0.10, min=0.05, max=0.20)
+    max_price = Param(default=0.90, min=0.80, max=0.96)
+    stop_loss_pct = Param(default=0.10, min=0.05, max=0.15)
+
+    # --- Fixed params ---
+    min_jumps = Param(default=8, tunable=False)
+    no_new_after = Param(default=0.95, tunable=False)
+
+    def __init__(self, **kwargs):
+        defs = self.param_defs()
+        for name, p in defs.items():
+            setattr(self, name, kwargs.get(name, p.default))
+        self._params = {name: getattr(self, name) for name in defs}
 
         # Per-session state
         self._prev_btc = 0.0
@@ -231,13 +207,3 @@ class PoissonKelly(Strategy):
         return TradeAction(side=side, amount=dollars, price=midpoint,
                            expiration_seconds=10)
 
-    def param_grid(self):
-        # type: () -> Dict[str, List[Any]]
-        return {
-            "jump_bps": [0.15, 0.18, 0.20],
-            "min_elapsed": [0.60, 0.65, 0.70, 0.75],
-            "no_new_after": [0.90, 0.95],
-            "edge_min": [0.08, 0.10, 0.12, 0.15],
-            "stop_loss_pct": [0.08, 0.10, 0.12],
-            "max_price": [0.85, 0.90, 0.95],
-        }

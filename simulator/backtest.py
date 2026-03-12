@@ -22,7 +22,7 @@ from simulator.engine import (
     compute_kelly_sizing, convert_all_samples, pre_slice_summaries,
     KELLY_FRACTION,
 )
-from core.defaults import BALANCE_CACHE_FILE, DEFAULT_RATIO_MAX, MARKETS_DIR, market_backtest_log, market_sessions_dir
+from core.defaults import BALANCE_CACHE_FILE, DEFAULT_LATENCY_MS, DEFAULT_RATIO_MAX, MARKETS_DIR, market_backtest_log, market_sessions_dir
 from bots import ALL_STRATEGIES
 
 
@@ -35,8 +35,9 @@ _worker_sessions = None  # type: Optional[list]
 _shared_sessions = None  # type: Optional[list]
 
 
-def _init_worker(starting_cash, execution_mode, slippage, fees, limit_fill_margin):
-    # type: (float, str, float, bool, Optional[float]) -> None
+def _init_worker(starting_cash, execution_mode, slippage, fees, limit_fill_margin,
+                  latency_ms):
+    # type: (float, str, float, bool, Optional[float], int) -> None
     """Initializer for each worker process — sets up Simulator once.
 
     Sessions are inherited from the parent via fork CoW (_shared_sessions),
@@ -52,6 +53,7 @@ def _init_worker(starting_cash, execution_mode, slippage, fees, limit_fill_margi
         compound=False,  # Phase 1: flat cash for clean returns
         fees=fees,
         limit_fill_margin=limit_fill_margin,
+        latency_ms=latency_ms,
     )
     _worker_sessions = _shared_sessions
 
@@ -74,8 +76,9 @@ def _run_batch(variants):
 
 
 def _run_variants_parallel(variants, sessions, starting_cash, execution_mode,
-                           slippage, fees, label="", limit_fill_margin=None):
-    # type: (list, list, float, str, float, bool, str, Optional[float]) -> list
+                           slippage, fees, label="", limit_fill_margin=None,
+                           latency_ms=0):
+    # type: (list, list, float, str, float, bool, str, Optional[float], int) -> list
     """Run strategy variants in parallel across worker processes.
 
     Sessions are shared via fork CoW (_shared_sessions) — never pickled.
@@ -95,6 +98,7 @@ def _run_variants_parallel(variants, sessions, starting_cash, execution_mode,
             compound=False,
             fees=fees,
             limit_fill_margin=limit_fill_margin,
+            latency_ms=latency_ms,
         )
         return [sim.run_backtest(variants[0], sessions)]
 
@@ -108,7 +112,8 @@ def _run_variants_parallel(variants, sessions, starting_cash, execution_mode,
 
     # Set module-level sessions for fork CoW inheritance (no pickling)
     _shared_sessions = sessions
-    pool_initargs = (starting_cash, execution_mode, slippage, fees, limit_fill_margin)
+    pool_initargs = (starting_cash, execution_mode, slippage, fees, limit_fill_margin,
+                     latency_ms)
 
     # P7: Batch variants for better CPU cache locality
     batch_size = max(1, total // (num_workers * 2))
@@ -172,9 +177,12 @@ def build_variants(strategy_cls, grid_overrides=None):
     grid = strategy_cls().param_grid()
 
     if grid_overrides:
-        # Validate override keys exist in grid or constructor
+        # Validate override keys exist in param_defs or constructor signature
         import inspect
         sig_params = set(inspect.signature(strategy_cls.__init__).parameters.keys()) - {"self"}
+        # Also accept Param descriptor names (for **kwargs constructors)
+        if hasattr(strategy_cls, 'param_defs'):
+            sig_params |= set(strategy_cls.param_defs().keys())
         for key in grid_overrides:
             if key not in sig_params:
                 print("Unknown param '{}' for {}. Available: {}".format(
@@ -416,6 +424,7 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
             "strategy": args.strategy,
             "execution": args.execution,
             "slippage": args.slippage,
+            "latency_ms": args.latency,
             "starting_cash": args.cash,
             "kelly_fraction": getattr(args, "kelly_fraction", KELLY_FRACTION),
             "optimize": optimize,
@@ -519,6 +528,16 @@ def main():
              "Example: --screen 50 keeps top 50 from screening pass.",
     )
     parser.add_argument(
+        "--latency",
+        type=int,
+        default=DEFAULT_LATENCY_MS,
+        metavar="MS",
+        help="Simulated API latency in milliseconds (default: 200). Defers trade "
+             "execution by this duration — the strategy decides on tick T's data "
+             "but the order fills at tick T+delay's prices. Models the ~200ms "
+             "network round-trip to the CLOB. Use --latency 0 to disable.",
+    )
+    parser.add_argument(
         "--no-fees",
         dest="fees",
         action="store_false",
@@ -562,8 +581,10 @@ def main():
     fees = args.fees
     kelly_mult = args.kelly_fraction
     print("Loaded {} resolved sessions from {}".format(len(sessions), args.data_dir))
-    print("Execution: {} (slippage={})  Starting cash: ${}  Fees: {}".format(
+    latency_str = "  Latency: {}ms".format(args.latency) if args.latency > 0 else ""
+    print("Execution: {} (slippage={})  Starting cash: ${}  Fees: {}{}".format(
         args.execution, args.slippage, starting_cash, "on" if fees else "off",
+        latency_str,
     ))
 
     # Select strategies
@@ -623,6 +644,7 @@ def main():
             all_variants, screen_sessions, starting_cash, args.execution,
             args.slippage, fees, label="Screen pass",
             limit_fill_margin=args.limit_fill_margin,
+            latency_ms=args.latency,
         )
 
         # Keep top N by Sharpe from screening.
@@ -641,6 +663,7 @@ def main():
             survivors, sessions, starting_cash, args.execution,
             args.slippage, fees, label="Full pass",
             limit_fill_margin=args.limit_fill_margin,
+            latency_ms=args.latency,
         )
     else:
         # Standard: run all variants on all sessions
@@ -648,6 +671,7 @@ def main():
             all_variants, sessions, starting_cash, args.execution,
             args.slippage, fees,
             limit_fill_margin=args.limit_fill_margin,
+            latency_ms=args.latency,
         )
 
     print("Tested {} strategy variants across {} strategies".format(
