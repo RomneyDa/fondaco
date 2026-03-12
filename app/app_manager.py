@@ -202,17 +202,17 @@ class AppManager:
         try:
             os.kill(pid, signal.SIGTERM)
             self._optimizer_process.wait(timeout=15)
-        except Exception as e:
+        except (OSError, subprocess.TimeoutExpired) as e:
             logger.warning("Failed to stop optimizer gracefully: %s", e)
             try:
                 self._optimizer_process.kill()
-            except Exception:
+            except OSError:
                 pass
         self._optimizer_process = None
         if self._optimizer_log_fh is not None:
             try:
                 self._optimizer_log_fh.close()
-            except Exception:
+            except OSError:
                 pass
             self._optimizer_log_fh = None
         logger.info("Optimizer stopped (PID %d)", pid)
@@ -297,16 +297,16 @@ class AppManager:
             try:
                 os.kill(self._optimizer_process.pid, signal.SIGTERM)
                 self._optimizer_process.wait(timeout=10)
-            except Exception:
+            except (OSError, subprocess.TimeoutExpired):
                 try:
                     self._optimizer_process.kill()
-                except Exception:
+                except OSError:
                     pass
 
         if self._optimizer_log_fh is not None:
             try:
                 self._optimizer_log_fh.close()
-            except Exception:
+            except OSError:
                 pass
             self._optimizer_log_fh = None
         self.rtds.stop()
@@ -338,7 +338,7 @@ class AppManager:
                 with open(tmp, "w") as f:
                     json.dump(state, f, indent=2)
                 os.replace(tmp, APP_STATE_FILE)
-            except Exception:
+            except OSError:
                 logger.exception("Failed to save app state")
 
     def restore(self):

@@ -72,7 +72,7 @@ class WorkerInfo:
         if self.log_fh is not None:
             try:
                 self.log_fh.close()
-            except Exception:
+            except OSError:
                 pass
             self.log_fh = None
 
@@ -244,7 +244,7 @@ class MarketRunner:
                         "[%s/%s] Using saved cash from last run: $%.2f",
                         self.slug_key, strategy_name, cash,
                     )
-                except Exception:
+                except (OSError, json.JSONDecodeError, KeyError, ValueError):
                     pass
             if cash is None:
                 cash = 100.0
@@ -340,11 +340,11 @@ class MarketRunner:
                     try:
                         os.kill(w.process.pid, signal.SIGTERM)
                         w.process.wait(timeout=10)
-                    except Exception as e:
+                    except (OSError, subprocess.TimeoutExpired) as e:
                         logger.warning("Failed to kill worker %s: %s", w.strategy_name, e)
                         try:
                             w.process.kill()
-                        except Exception:
+                        except OSError:
                             pass
                 w.close_log()
             else:
@@ -360,7 +360,7 @@ class MarketRunner:
                                 self.slug_key, w.strategy_name, w.process.pid)
                     try:
                         os.kill(w.process.pid, signal.SIGTERM)
-                    except Exception:
+                    except OSError:
                         pass
             for w in self._workers:
                 if w.process:
@@ -369,7 +369,7 @@ class MarketRunner:
                     except subprocess.TimeoutExpired:
                         try:
                             w.process.kill()
-                        except Exception:
+                        except OSError:
                             pass
                 w.close_log()
             self._workers.clear()
@@ -415,7 +415,7 @@ class MarketRunner:
                     if w.process and w.process.poll() is None:
                         try:
                             os.kill(w.process.pid, signal.SIGTERM)
-                        except Exception:
+                        except OSError:
                             pass
                 for w in self._workers:
                     if w.process:
@@ -424,7 +424,7 @@ class MarketRunner:
                         except subprocess.TimeoutExpired:
                             try:
                                 w.process.kill()
-                            except Exception:
+                            except OSError:
                                 pass
                 self._workers.clear()
                 logger.info("[%s] All workers killed.", self.slug_key)
@@ -489,7 +489,7 @@ class MarketRunner:
                 else:
                     logger.info("[%s/%s] Pending session limits update",
                                 self.slug_key, w.strategy_name)
-            except Exception as e:
+            except (OSError, json.JSONDecodeError, ValueError) as e:
                 logger.warning("Failed to write pending update for %s: %s", w.strategy_name, e)
         self._save_strategies_config()
 
@@ -547,7 +547,7 @@ class MarketRunner:
             with open(tmp, "w") as f:
                 json.dump(configs, f, indent=2)
             os.replace(tmp, self._strategies_file)
-        except Exception:
+        except OSError:
             logger.exception("Failed to save strategies config")
 
     def restore_strategies(self):

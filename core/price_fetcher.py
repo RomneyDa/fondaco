@@ -54,14 +54,14 @@ class PriceFetcher:
             resp = self.session.get(COINBASE_BTC_URL, timeout=API_TIMEOUT_SHORT)
             resp.raise_for_status()
             return float(resp.json()["data"]["amount"])
-        except Exception:
+        except (requests.RequestException, ValueError, KeyError):
             pass
 
         try:
             resp = self.session.get(COINGECKO_BTC_URL, timeout=API_TIMEOUT_SHORT)
             resp.raise_for_status()
             return float(resp.json()["bitcoin"]["usd"])
-        except Exception:
+        except (requests.RequestException, ValueError, KeyError):
             logger.warning("Failed to fetch BTC price from all sources")
             return None
 
@@ -79,7 +79,7 @@ class PriceFetcher:
             if mid is not None:
                 return float(mid)
             return None
-        except Exception:
+        except (requests.RequestException, ValueError, KeyError):
             return None
 
     def get_token_book_top(self, token_id: str) -> Tuple[Optional[float], Optional[float]]:
@@ -97,7 +97,7 @@ class PriceFetcher:
             best_bid = max(float(b["price"]) for b in bids) if bids else None
             best_ask = min(float(a["price"]) for a in asks) if asks else None
             return best_bid, best_ask
-        except Exception:
+        except (requests.RequestException, ValueError, KeyError):
             return None, None
 
     def take_sample(

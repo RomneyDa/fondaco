@@ -68,7 +68,7 @@ class RTDSClient:
         if self._ws is not None:
             try:
                 self._ws.close()
-            except Exception:
+            except OSError:
                 pass
         if self._thread is not None:
             self._thread.join(timeout=5)
@@ -125,7 +125,7 @@ class RTDSClient:
                 if ws is not None:
                     try:
                         ws.close()
-                    except Exception:
+                    except OSError:
                         pass
             else:
                 # Reconnect loop is sleeping — wake it up
@@ -195,7 +195,7 @@ class RTDSClient:
                 if "data" in payload:
                     for tick in payload["data"]:
                         self._handle_tick(tick)
-            except Exception as e:
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
                 logger.debug("RTDS message parse error: %s", e)
 
         def on_error(ws, error):

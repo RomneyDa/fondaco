@@ -41,7 +41,7 @@ def claim_background(private_key, safe_address):
                     "Background claim: %d submitted, %d failed (~$%.2f)",
                     s, f, val,
                 )
-        except Exception as e:
+        except (OSError, ValueError, KeyError, RuntimeError) as e:
             logger.debug("Background claim thread error: %s", e)
 
     t = threading.Thread(target=_run, daemon=True, name="claim-redeemable")

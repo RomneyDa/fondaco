@@ -54,7 +54,7 @@ def derive_safe_address(private_key):
             if "result" in result and len(result["result"]) >= 42:
                 decoded = decode(["address"], bytes.fromhex(result["result"][2:]))
                 return decoded[0]
-        except Exception:
+        except (requests.RequestException, ValueError, KeyError):
             continue
 
     raise RuntimeError("Failed to derive Safe address from any Polygon RPC")

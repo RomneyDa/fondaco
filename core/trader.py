@@ -29,6 +29,17 @@ from core.defaults import (
     compute_taker_fee,
 )
 
+try:
+    from py_clob_client.exceptions import PolyApiException
+except ImportError:
+    PolyApiException = None  # type: ignore[assignment,misc]
+
+# Exception tuple for CLOB API operations (PolyApiException when available,
+# plus common parsing/value errors that can surface from response handling).
+_CLOB_ERRORS = tuple(
+    e for e in (PolyApiException, ValueError, KeyError, TypeError) if e is not None
+)  # type: Tuple[type, ...]
+
 logger = logging.getLogger(__name__)
 
 
@@ -580,10 +591,10 @@ class ClobExecutor(Executor):
                     )
                     if raw is not None:
                         return int(float(raw)) / WEI_DIVISOR
-                except Exception:
+                except (ValueError, KeyError, TypeError):
                     pass
                 return None
-            except Exception as e:
+            except _CLOB_ERRORS as e:
                 logger.warning(
                     "Refresh balance allowance attempt %d/3 failed: %s",
                     attempt + 1, e,
@@ -865,7 +876,7 @@ class ClobExecutor(Executor):
                 d["strategy"] = self.strategy_name
             with open(self.trade_log_file, "a") as f:
                 f.write(json.dumps(d, default=str) + "\n")
-        except Exception as e:
+        except OSError as e:
             logger.error("CRITICAL: Failed to log trade to %s: %s", self.trade_log_file, e)
 
     def place_limit_order(self, action, tick_index, metadata, sample, position):
@@ -1101,7 +1112,7 @@ class ClobExecutor(Executor):
                     # LIVE or other — keep tracking
                     remaining.append(order)
 
-            except Exception as e:
+            except _CLOB_ERRORS as e:
                 logger.warning(
                     "Failed to check order %s: %s (will retry)",
                     order.order_id, e,
@@ -1123,7 +1134,7 @@ class ClobExecutor(Executor):
                 "GTC order cancelled: %s (order_id=%s)", order.side, order.order_id,
             )
             return True
-        except Exception as e:
+        except _CLOB_ERRORS as e:
             logger.error("Failed to cancel order %s: %s", order.order_id, e)
             return False
 
@@ -1187,7 +1198,7 @@ class ClobExecutor(Executor):
                     # LIVE — needs cancelling
                     to_cancel.append(order)
 
-            except Exception as e:
+            except _CLOB_ERRORS as e:
                 logger.warning(
                     "Failed to check order %s before cancel: %s",
                     order.order_id, e,
@@ -1199,14 +1210,14 @@ class ClobExecutor(Executor):
             cancel_ids = [o.order_id for o in to_cancel]
             try:
                 self.client.cancel_orders(cancel_ids)
-            except Exception as e:
+            except _CLOB_ERRORS as e:
                 logger.error(
                     "Batch cancel failed: %s. Falling back to individual.", e,
                 )
                 for order in to_cancel:
                     try:
                         self.client.cancel(order.order_id)
-                    except Exception as e2:
+                    except _CLOB_ERRORS as e2:
                         logger.error(
                             "Individual cancel %s failed: %s",
                             order.order_id, e2,

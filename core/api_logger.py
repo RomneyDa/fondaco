@@ -147,5 +147,5 @@ def _write_entry(host: str, ts: datetime, entry: dict):
         with _write_lock:
             with open(filepath, "a") as f:
                 f.write(line)
-    except Exception as e:
+    except OSError as e:
         logger.warning(f"Failed to write API log entry: {e}")

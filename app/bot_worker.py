@@ -240,7 +240,7 @@ class BotWorker:
                 "[%s] Restored session_count=%d (bankroll=$%.2f from launcher)",
                 self.strategy_name, self.session_count, self.bankroll,
             )
-        except Exception as e:
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
             logger.warning("[%s] Failed to restore state: %s", self.strategy_name, e)
 
     def run(self):
@@ -513,7 +513,7 @@ class BotWorker:
         try:
             with open(self._bot_session_log, "a") as f:
                 f.write(json.dumps(summary) + "\n")
-        except Exception as e:
+        except OSError as e:
             logger.warning("Failed to log session: %s", e)
 
         resolution_record = {
@@ -532,7 +532,7 @@ class BotWorker:
         try:
             with open(self._bot_trades_file, "a") as f:
                 f.write(json.dumps(resolution_record) + "\n")
-        except Exception as e:
+        except OSError as e:
             logger.warning("Failed to log resolution: %s", e)
 
         if session_filepath and trade_count > 0:
@@ -556,7 +556,7 @@ class BotWorker:
                 with open(sidecar_path, "w") as f:
                     json.dump(sidecar, f, indent=2)
                 logger.info("Trading sidecar saved: %s", sidecar_path)
-            except Exception as e:
+            except OSError as e:
                 logger.warning("Failed to save sidecar: %s", e)
 
         # Auto-claim disabled — relayer rate limit (~100/day) means claims
@@ -616,7 +616,7 @@ class BotWorker:
                     "trades": trade_dicts[-50:],
                     "pending_orders": pending,
                 }, f)
-        except Exception:
+        except OSError:
             pass
 
 

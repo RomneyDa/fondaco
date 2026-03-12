@@ -69,13 +69,13 @@ class TickBroadcaster:
             for c in self._clients:
                 try:
                     c.close()
-                except Exception:
+                except OSError:
                     pass
             self._clients.clear()
         if self._server:
             try:
                 self._server.close()
-            except Exception:
+            except OSError:
                 pass
         try:
             os.unlink(self.socket_path)
@@ -103,7 +103,7 @@ class TickBroadcaster:
                 self._clients.remove(c)
                 try:
                     c.close()
-                except Exception:
+                except OSError:
                     pass
             if dead:
                 logger.debug(
@@ -130,7 +130,7 @@ class TickBroadcaster:
                         except (BrokenPipeError, ConnectionResetError, OSError):
                             try:
                                 conn.close()
-                            except Exception:
+                            except OSError:
                                 pass
                             continue
                     with self._lock:
@@ -161,13 +161,13 @@ class TickBroadcaster:
                     _, _, errored = select.select([], [c], [c], 0)
                     if errored:
                         dead.append(c)
-                except Exception:
+                except (OSError, ValueError):
                     dead.append(c)
             for c in dead:
                 self._clients.remove(c)
                 try:
                     c.close()
-                except Exception:
+                except OSError:
                     pass
             if dead:
                 logger.debug(
@@ -208,7 +208,7 @@ class TickSubscriber:
         if self._sock:
             try:
                 self._sock.close()
-            except Exception:
+            except OSError:
                 pass
             self._sock = None
 

@@ -178,7 +178,7 @@ def fetch_redeemable_positions(safe_address, http_session=None):
         if not isinstance(positions, list):
             return []
         return positions
-    except Exception as e:
+    except (requests.RequestException, ValueError, KeyError) as e:
         logger.warning("Failed to fetch redeemable positions: %s", e)
         return []
     finally:
@@ -222,7 +222,7 @@ def _poll_transaction(transaction_id, max_polls=10):
                         return True
                     if state == "STATE_FAILED":
                         return False
-        except Exception:
+        except (OSError, ValueError, KeyError):
             pass
         time.sleep(2)
     return False
@@ -309,7 +309,7 @@ def _redeem_positions(private_key, condition_ids, wait_for_confirm=True):
                     failed += 1
             else:
                 succeeded += 1
-        except Exception as e:
+        except (OSError, ValueError, KeyError, RuntimeError) as e:
             logger.error("Redeem failed for %s: %s", cond_id, e)
             failed += 1
 
@@ -342,6 +342,6 @@ def claim_redeemable(private_key, safe_address, wait_for_confirm=True, http_sess
             private_key, condition_ids, wait_for_confirm=wait_for_confirm,
         )
         return (succeeded, failed, total_value)
-    except Exception as e:
+    except (requests.RequestException, OSError, ValueError, KeyError, RuntimeError) as e:
         logger.error("Claim error: %s", e)
         return (0, 0, 0.0)

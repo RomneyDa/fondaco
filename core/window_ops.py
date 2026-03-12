@@ -11,6 +11,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+import requests
+
 from core.market_discovery import fetch_market_metadata, fetch_resolution
 
 logger = logging.getLogger(__name__)
@@ -82,7 +84,7 @@ def fetch_metadata_with_retry(slug_prefix, window_ts, max_retries=5):
             metadata = fetch_market_metadata(slug_prefix, window_ts)
             if metadata:
                 return metadata
-        except Exception as e:
+        except (requests.RequestException, ValueError, KeyError) as e:
             logger.warning("Metadata fetch attempt %d failed: %s", attempt + 1, e)
         time.sleep(2)
     return None
@@ -106,7 +108,7 @@ def wait_for_resolution(slug_prefix, window_ts, timeout, poll_interval, is_runni
             outcome = fetch_resolution(slug_prefix, window_ts)
             if outcome:
                 return outcome
-        except Exception as e:
+        except (requests.RequestException, ValueError, KeyError) as e:
             logger.warning("Resolution check error: %s", e)
         time.sleep(poll_interval)
 

@@ -80,7 +80,7 @@ def _log_event(event_type, **kwargs):
     try:
         with open(OPTIMIZER_EVENTS_FILE, "a") as f:
             f.write(json.dumps(entry, default=str) + "\n")
-    except Exception as e:
+    except OSError as e:
         logger.warning("Failed to write event: %s", e)
 
 
@@ -92,7 +92,7 @@ def _write_status(status):
         with open(tmp, "w") as f:
             json.dump(status, f, indent=2)
         os.replace(tmp, OPTIMIZER_STATUS_FILE)
-    except Exception as e:
+    except (OSError, TypeError) as e:
         logger.warning("Failed to write status: %s", e)
 
 
@@ -128,7 +128,7 @@ def _fetch_status(port):
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
+    except (urllib.error.URLError, OSError, ValueError) as e:
         logger.error("Failed to fetch status: %s", e)
         return None
 
@@ -144,7 +144,7 @@ def _control_request(port, endpoint, body=None):
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
+    except (urllib.error.URLError, OSError, ValueError) as e:
         logger.error("Control request failed (%s): %s", endpoint, e)
         return None
 
@@ -284,7 +284,7 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
     try:
         baseline_strategy = strategy_cls(**current_params) if current_params else strategy_cls()
         baseline_strategy._params = current_params or {}
-    except Exception as e:
+    except (TypeError, ValueError, KeyError) as e:
         logger.error("[%s/%s] Failed to create baseline strategy: %s",
                      slug_key, strategy_name, e)
         return "skip", {"reason": "baseline_error", "error": str(e)}
@@ -316,7 +316,7 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
     # Step 2: Run full param grid (with edge refinement iterations)
     try:
         grid = strategy_cls().param_grid()
-    except Exception as e:
+    except (TypeError, ValueError, KeyError) as e:
         logger.error("[%s/%s] Failed to get param_grid: %s", slug_key, strategy_name, e)
         return "skip", {"reason": "variant_error", "error": str(e)}
 
@@ -344,7 +344,7 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
 
         try:
             variants = build_variants(strategy_cls, grid_overrides=current_grid)
-        except Exception as e:
+        except (TypeError, ValueError, KeyError) as e:
             logger.error("[%s/%s] Failed to build variants (%s): %s",
                          slug_key, strategy_name, iter_label, e)
             if best is None:
@@ -386,7 +386,7 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
             try:
                 r = sim.run_backtest(v, sessions)
                 results.append(r)
-            except Exception as e:
+            except (TypeError, ValueError, KeyError, ZeroDivisionError) as e:
                 logger.debug("[%s/%s] Variant failed: %s", slug_key, strategy_name, e)
 
         total_variants_tested += len(results)
