@@ -9,6 +9,10 @@ dependencies = [
     "py-builder-relayer-client>=0.0.1",
     "websocket-client>=1.9.0",
     "curl-cffi>=0.14.0",
+    "python-dotenv>=1.2.1",
+    "eth-account>=0.13.7",
+    "eth-abi>=5.2.0",
+    "eth-utils>=5.3.1",
 ]
 
 [project.optional-dependencies]
