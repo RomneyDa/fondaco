@@ -15,7 +15,6 @@ import os
 import sys
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict
 from datetime import datetime, timezone
 
 from simulator.engine import (

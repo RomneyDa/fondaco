@@ -4,7 +4,7 @@ Shared base class and utilities live in core/strategies/.
 Concrete strategy implementations live here, grouped by market type.
 """
 
-from typing import Dict, Type
+from typing import Dict
 
 from bots.updown import STRATEGIES as UPDOWN_STRATEGIES
 

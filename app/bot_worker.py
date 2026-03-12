@@ -20,16 +20,13 @@ import json
 import logging
 import os
 import signal
-import sys
-import time
-from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from core.defaults import BASE_DIR, TOKEN_DECIMALS, WINDOW_DURATION_SECONDS
+from core.defaults import TOKEN_DECIMALS, WINDOW_DURATION_SECONDS
 from bots import ALL_STRATEGIES
 from core.trader import ClobExecutor, Position, SimExecutor, Trade, Trader
 from core.tick_broadcast import TickSubscriber
@@ -261,7 +258,6 @@ class BotWorker:
         trade_dicts = []  # type: List[Dict[str, Any]]
         trade_count = 0
         trader_initialized = False
-        skip_session = False
 
         for msg in subscriber.messages(is_running=lambda: self.running):
             if not self.running:
@@ -306,7 +302,6 @@ class BotWorker:
                 trader_initialized = False
                 trade_dicts = []
                 trade_count = 0
-                skip_session = False
 
                 # On mid-session rejoin, restore trade state from previous
                 # live_trades.json so sidecars and trade counts stay accurate.
@@ -330,7 +325,6 @@ class BotWorker:
                         "waiting for next session",
                         self.strategy_name,
                     )
-                    skip_session = True
                     metadata_dict = None
                     continue
 

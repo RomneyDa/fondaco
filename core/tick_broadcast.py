@@ -158,7 +158,7 @@ class TickBroadcaster:
             for c in self._clients:
                 try:
                     # select for writability with zero timeout
-                    _, writable, errored = select.select([], [c], [c], 0)
+                    _, _, errored = select.select([], [c], [c], 0)
                     if errored:
                         dead.append(c)
                 except Exception:

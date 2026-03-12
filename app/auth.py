@@ -11,7 +11,6 @@ from typing import Any, Dict, Optional
 
 from core.auth_shared import (
     POLYGON_CHAIN_ID,
-    CTF_EXCHANGE,
     derive_safe_address as _derive_safe_address_from_key,
 )
 from core.defaults import BASE_DIR, CLOB_API_BASE

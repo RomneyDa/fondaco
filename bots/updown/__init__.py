@@ -1,6 +1,6 @@
 """Strategies for Polymarket crypto up/down prediction markets."""
 
-from typing import Dict, Type
+from typing import Dict
 
 from bots.updown.late_sniper import LateSniper
 from bots.updown.poisson_kelly import PoissonKelly

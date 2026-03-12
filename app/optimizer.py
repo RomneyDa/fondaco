@@ -9,10 +9,8 @@ import argparse
 import json
 import logging
 import logging.handlers
-import math
 import os
 import signal
-import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -20,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from core.defaults import BASE_DIR, DEFAULT_RATIO_MAX, MARKETS_DIR, OPTIMIZER_MAX_RATIO, market_sessions_dir
+from core.defaults import BASE_DIR, DEFAULT_RATIO_MAX, OPTIMIZER_MAX_RATIO, market_sessions_dir
 from simulator.engine import Simulator, BacktestResult, load_sessions, load_session_summaries, compute_kelly_sizing, KELLY_FRACTION
 from simulator.backtest import build_variants, format_params
 from bots import ALL_STRATEGIES

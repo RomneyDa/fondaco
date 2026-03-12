@@ -7,7 +7,7 @@ import math
 import os
 import pickle
 from datetime import datetime, timezone
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 # Re-export core types from core.trader for backward compatibility.

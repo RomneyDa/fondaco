@@ -11,12 +11,11 @@ import math
 import os
 import time
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.defaults import (
-    BPS_DIVISOR,
     CLOB_MIN_ORDER_TOKENS,
     DEFAULT_EXPIRATION_SECONDS,
     MAX_TOKEN_PRICE,
@@ -397,7 +396,6 @@ class SimExecutor(Executor):
         # For buys, floor to integer (same as ClobExecutor)
         if action.side in ("buy_up", "buy_down"):
             tokens = math.floor(tokens)
-            dollars = tokens * price
             if tokens < CLOB_MIN_ORDER_TOKENS:
                 return None
 

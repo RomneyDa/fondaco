@@ -29,21 +29,16 @@ from core.defaults import (
     WINDOW_DURATION_SECONDS,
     market_data_dir,
     market_sessions_dir,
-    market_live_dir,
     market_socket_path,
     market_workers_dir,
     market_strategies_file,
-    market_trades_file,
-    market_session_log,
 )
-from core import market_discovery
 from core.models import SessionData
 from core.price_fetcher import PriceFetcher
 from core.session_recorder import SessionRecorder
 from bots import ALL_STRATEGIES, get_strategies_for_market
 from core.tick_broadcast import TickBroadcaster
 from core.session_cache import SessionStatsCache
-from core.trader import Trade
 from core.window_ops import (
     wait_for_next_window,
     fetch_metadata_with_retry,

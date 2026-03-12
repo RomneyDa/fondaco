@@ -13,13 +13,12 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from core.api_logger import LoggingSession
 from core.defaults import (
     APP_STATE_FILE,
     DEFAULT_CONTROL_PORT,
-    MARKETS_DIR,
     WINDOW_DURATION_SECONDS,
 )
 from core import market_discovery
