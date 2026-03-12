@@ -7,6 +7,7 @@ authenticating with Polymarket's CLOB API.
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, Optional
 
 from core.auth_shared import (
@@ -26,6 +27,9 @@ POLY_GNOSIS_SAFE = 2
 
 AUTH_CACHE_FILE = os.path.join(BASE_DIR, ".cache", "auth.json")
 
+# Auth cache TTL — re-derive credentials if cache is older than this (seconds).
+AUTH_CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+
 
 # ---------------------------------------------------------------------------
 # Auth cache
@@ -34,14 +38,27 @@ AUTH_CACHE_FILE = os.path.join(BASE_DIR, ".cache", "auth.json")
 
 def _load_auth_cache(eoa_address):
     # type: (str) -> Optional[Dict[str, Any]]
-    """Load cached auth data if it matches the current EOA."""
+    """Load cached auth data if it matches the current EOA.
+
+    Returns None (forcing re-derivation) if the cache file is missing,
+    corrupt, does not match the current EOA, or is older than
+    AUTH_CACHE_TTL_SECONDS.
+    """
     try:
+        # Check file age before reading contents
+        file_age = time.time() - os.path.getmtime(AUTH_CACHE_FILE)
+        if file_age > AUTH_CACHE_TTL_SECONDS:
+            logger.warning(
+                "Auth cache is %.0f hours old (TTL=%ds), will re-derive.",
+                file_age / 3600, AUTH_CACHE_TTL_SECONDS,
+            )
+            return None
         with open(AUTH_CACHE_FILE, "r") as f:
             data = json.load(f)
         if data.get("eoa_address", "").lower() == eoa_address.lower():
             return data
-    except (OSError, json.JSONDecodeError, KeyError):
-        pass
+    except (OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
+        logger.warning("Auth cache unreadable or corrupt, will re-derive: %s", exc)
     return None
 
 

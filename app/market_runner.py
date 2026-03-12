@@ -98,8 +98,13 @@ def _load_balance_cache():
     # type: () -> Optional[Dict[str, Any]]
     try:
         with open(BALANCE_CACHE_FILE, "r") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
+            data = json.load(f)
+        if not isinstance(data, dict) or "cash" not in data:
+            logger.warning("Balance cache corrupt (missing 'cash' key), ignoring.")
+            return None
+        return data
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Balance cache unreadable, ignoring: %s", exc)
         return None
 
 
@@ -244,8 +249,9 @@ class MarketRunner:
                         "[%s/%s] Using saved cash from last run: $%.2f",
                         self.slug_key, strategy_name, cash,
                     )
-                except (OSError, json.JSONDecodeError, KeyError, ValueError):
-                    pass
+                except (OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
+                    logger.warning("[%s/%s] Failed to read saved state, will use default: %s",
+                                   self.slug_key, strategy_name, exc)
             if cash is None:
                 cash = 100.0
                 logger.info(
@@ -380,7 +386,10 @@ class MarketRunner:
         try:
             with open(state_file, "r") as f:
                 return json.load(f)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            if os.path.exists(state_file):
+                logger.warning("Worker state file corrupt for %s, ignoring: %s",
+                               strategy_name, exc)
             return None
 
     @staticmethod
@@ -398,7 +407,10 @@ class MarketRunner:
         try:
             with open(trades_file, "r") as f:
                 return json.load(f)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            if os.path.exists(trades_file):
+                logger.warning("Live trades file corrupt for %s, ignoring: %s",
+                               strategy_name, exc)
             return None
 
     def disable_trading(self, strategy_name=None):
@@ -476,8 +488,13 @@ class MarketRunner:
                 state_file = os.path.join(self._workers_dir, w.strategy_name, "state.json")
                 state = {}
                 if os.path.exists(state_file):
-                    with open(state_file, "r") as f:
-                        state = json.load(f)
+                    try:
+                        with open(state_file, "r") as f:
+                            state = json.load(f)
+                    except (OSError, json.JSONDecodeError, ValueError) as exc:
+                        logger.warning("Worker state corrupt for %s, starting fresh: %s",
+                                       w.strategy_name, exc)
+                        state = {}
                 state["pending"] = pending
                 tmp = state_file + ".tmp"
                 with open(tmp, "w") as f:
@@ -559,7 +576,7 @@ class MarketRunner:
         try:
             with open(self._strategies_file, "r") as f:
                 configs = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, json.JSONDecodeError, ValueError) as e:
             logger.error("[%s] Failed to read strategies config: %s", self.slug_key, e)
             return
         if not configs:
