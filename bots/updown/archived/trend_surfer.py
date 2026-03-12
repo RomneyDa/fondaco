@@ -110,7 +110,7 @@ class TrendSurfer(Strategy):
         "Buys cross-session BTC trend direction with dynamic sizing: "
         "scales bet with volatility, token price, and trend strength."
     )
-    version = "1"
+    version = "2"
     requires_full_session = False
 
     def __init__(
@@ -317,7 +317,8 @@ class TrendSurfer(Strategy):
                         current_mid, self._entry_midpoint,
                         (1.0 - current_mid / self._entry_midpoint) * 100))
                     self._entry_midpoint = 0.0
-                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
+                    return TradeAction(side=sell_side, amount=tokens, price=current_mid,
+                                       expiration_seconds=10)
 
             return HOLD
 
@@ -362,7 +363,8 @@ class TrendSurfer(Strategy):
             self._should_buy, price, final_fraction,
             self.base_bet_fraction, self._bet_multiplier, price_discount, dollars))
 
-        return TradeAction(side=self._should_buy, amount=dollars, price=price)
+        return TradeAction(side=self._should_buy, amount=dollars, price=price,
+                           expiration_seconds=10)
 
     def param_grid(self):
         # type: () -> Dict[str, List[Any]]
