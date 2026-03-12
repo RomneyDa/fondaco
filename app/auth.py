@@ -9,12 +9,14 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
+from core.auth_shared import (
+    POLYGON_CHAIN_ID,
+    CTF_EXCHANGE,
+    derive_safe_address as _derive_safe_address_from_key,
+)
 from core.defaults import BASE_DIR, CLOB_API_BASE
 
 logger = logging.getLogger(__name__)
-
-# Polygon mainnet chain ID
-POLYGON_CHAIN_ID = 137
 
 # Polymarket signature types: 0=EOA, 1=POLY_PROXY, 2=POLY_GNOSIS_SAFE
 # Browser-wallet users (MetaMask) get a Gnosis Safe proxy on Polygon where
@@ -22,9 +24,6 @@ POLYGON_CHAIN_ID = 137
 # validates the signature against the Safe, and pass the Safe address as
 # the 'funder' so orders draw from that balance.
 POLY_GNOSIS_SAFE = 2
-
-# CTF Exchange contract on Polygon — used to derive the user's Safe address.
-CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
 
 AUTH_CACHE_FILE = os.path.join(BASE_DIR, ".cache", "auth.json")
 
@@ -66,50 +65,6 @@ def _clear_auth_cache():
 
 
 # ---------------------------------------------------------------------------
-# Safe address derivation
-# ---------------------------------------------------------------------------
-
-
-def _derive_safe_address(private_key, eoa_address):
-    # type: (str, str) -> str
-    """Derive the Polymarket Gnosis Safe address via Polygon RPC.
-
-    Calls CTFExchange.getSafeAddress(address) to get the deterministic
-    CREATE2 Safe address where Polymarket deposits live.
-    """
-    import requests as _requests
-    from eth_abi import encode, decode
-    from eth_utils import keccak
-
-    fn_selector = keccak(b"getSafeAddress(address)")[:4]
-    calldata = "0x" + fn_selector.hex() + encode(["address"], [eoa_address]).hex()
-
-    rpc_urls = [
-        "https://polygon-bor-rpc.publicnode.com",
-        "https://polygon.llamarpc.com",
-    ]
-    for rpc_url in rpc_urls:
-        try:
-            resp = _requests.post(
-                rpc_url,
-                json={
-                    "jsonrpc": "2.0",
-                    "method": "eth_call",
-                    "params": [{"to": CTF_EXCHANGE, "data": calldata}, "latest"],
-                    "id": 1,
-                },
-                timeout=10,
-            )
-            result = resp.json()
-            if "result" in result and len(result["result"]) >= 42:
-                decoded = decode(["address"], bytes.fromhex(result["result"][2:]))
-                return decoded[0]
-        except Exception:
-            continue
-    raise RuntimeError("Failed to derive Safe address from any Polygon RPC")
-
-
-# ---------------------------------------------------------------------------
 # Main auth entry point
 # ---------------------------------------------------------------------------
 
@@ -136,7 +91,7 @@ def get_auth(private_key, force_refresh=False):
 
     # Derive Safe address
     logger.info("Deriving Safe address via Polygon RPC...")
-    safe_address = _derive_safe_address(private_key, eoa_address)
+    safe_address = _derive_safe_address_from_key(private_key)
     logger.info("Safe wallet: %s", safe_address)
 
     # Create API creds

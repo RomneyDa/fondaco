@@ -20,10 +20,16 @@ Optional env vars:
 import json
 import logging
 import os
+import random
 import sys
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# Add project root to sys.path so claim-server wrappers can import from core/
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s — %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
@@ -194,7 +200,8 @@ def main():
         except Exception:
             logger.exception("Claim cycle failed")
 
-        time.sleep(interval)
+        jitter = random.uniform(-0.25, 0.25) * interval
+        time.sleep(interval + jitter)
 
 
 if __name__ == "__main__":
