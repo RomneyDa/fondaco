@@ -1,7 +1,41 @@
 """Shared test fixtures."""
 
+import logging
+import logging.handlers
+
 import pytest
 from core.trader import Position, TickContext
+
+
+@pytest.fixture(autouse=True)
+def _isolate_logging():
+    """Prevent tests from writing to production log files.
+
+    App modules configure the root logger with file handlers at import time.
+    Remove those during tests so output doesn't pollute data/app.log.
+    """
+    root = logging.getLogger()
+    original_handlers = root.handlers[:]
+    root.handlers = [
+        h for h in root.handlers
+        if not isinstance(h, logging.FileHandler)
+    ]
+    yield
+    root.handlers = original_handlers
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_integrity_violation(caplog):
+    """Fail any test that triggers a POSITION INTEGRITY VIOLATION."""
+    with caplog.at_level(logging.ERROR, logger="core.trader"):
+        yield
+    for record in caplog.records:
+        if "POSITION INTEGRITY VIOLATION" in record.message:
+            pytest.fail(
+                "Test triggered a POSITION INTEGRITY VIOLATION: {}".format(
+                    record.message
+                )
+            )
 
 
 @pytest.fixture
@@ -41,6 +75,7 @@ def make_tick_ctx(
     sample=None,
     tick_index=0,
     elapsed_fraction=0.5,
+    elapsed_seconds=None,
     initial_btc_price=97000.0,
     history=None,
     metadata=None,
@@ -60,6 +95,8 @@ def make_tick_ctx(
             "down_token_best_bid": 0.49,
             "down_token_best_ask": 0.51,
         }
+    if elapsed_seconds is None:
+        elapsed_seconds = elapsed_fraction * 300.0
     return TickContext(
         tick_index=tick_index,
         sample=sample,
@@ -68,4 +105,5 @@ def make_tick_ctx(
         metadata=metadata or {},
         initial_btc_price=initial_btc_price,
         elapsed_fraction=elapsed_fraction,
+        elapsed_seconds=elapsed_seconds,
     )

@@ -55,6 +55,7 @@ class TradeAction:
     amount: float = 0.0  # dollars for buys, token count for sells
     price: Optional[float] = None  # if set → GTC limit order; if None → FAK (current behavior)
     expiration_seconds: Optional[float] = DEFAULT_EXPIRATION_SECONDS  # TTL; default 30s GTD
+    cancel_after_s: Optional[float] = None  # soft cancel: we cancel the order after this many seconds
 
 
 HOLD = TradeAction(side="hold", amount=0.0, expiration_seconds=None)
@@ -73,6 +74,8 @@ class OpenOrder:
     tick_placed: int
     token_id: Optional[str] = None
     expiration: Optional[float] = None  # sim: elapsed_seconds deadline; live: unix timestamp
+    cancel_after_s: Optional[float] = None  # soft cancel timeout (seconds)
+    time_placed: Optional[float] = None  # sim: elapsed_seconds; live: unix timestamp
 
 
 @dataclass
@@ -219,13 +222,13 @@ class TickContext:
     """
     __slots__ = (
         'tick_index', 'sample', 'history', 'position', 'metadata',
-        'initial_btc_price', 'elapsed_fraction', 'max_buy_amount',
-        'loss_limit_hit', 'open_orders',
+        'initial_btc_price', 'elapsed_fraction', 'elapsed_seconds',
+        'max_buy_amount', 'loss_limit_hit', 'open_orders',
     )
 
     def __init__(self, tick_index, sample, history, position, metadata,
-                 initial_btc_price, elapsed_fraction, max_buy_amount=0.0,
-                 loss_limit_hit=False, open_orders=None):
+                 initial_btc_price, elapsed_fraction, elapsed_seconds=0.0,
+                 max_buy_amount=0.0, loss_limit_hit=False, open_orders=None):
         self.tick_index = tick_index
         self.sample = sample
         self.history = history
@@ -233,6 +236,7 @@ class TickContext:
         self.metadata = metadata
         self.initial_btc_price = initial_btc_price
         self.elapsed_fraction = elapsed_fraction
+        self.elapsed_seconds = elapsed_seconds
         self.max_buy_amount = max_buy_amount
         self.loss_limit_hit = loss_limit_hit
         self.open_orders = open_orders if open_orders is not None else []
@@ -426,6 +430,7 @@ class SimExecutor(Executor):
             expiration = current_elapsed + action.expiration_seconds
 
         self._sim_order_counter += 1
+        current_elapsed = sample.get("elapsed_seconds", 0.0)
         return OpenOrder(
             order_id="sim-{}".format(self._sim_order_counter),
             side=action.side,
@@ -436,6 +441,8 @@ class SimExecutor(Executor):
             tokens_reserved=tokens_reserved,
             tick_placed=tick_index,
             expiration=expiration,
+            cancel_after_s=action.cancel_after_s,
+            time_placed=current_elapsed,
         )
 
     def check_fills(self, open_orders, sample, position):
@@ -1025,6 +1032,8 @@ class ClobExecutor(Executor):
                 tick_placed=tick_index,
                 token_id=token_id,
                 expiration=expiration,
+                cancel_after_s=action.cancel_after_s,
+                time_placed=time.time(),
             )
 
         except Exception as e:
@@ -1291,6 +1300,7 @@ class Trader:
         self._last_tick_fills = []
         self._deferred_actions = []
         self.strategy._tick_logs = []
+        metadata["_window_duration"] = window_duration
         self.strategy.on_session_start(metadata)
         # Pre-allocate reusable TickContext for sim mode
         if self._sim_mode:
@@ -1303,6 +1313,7 @@ class Trader:
                 metadata=metadata,
                 initial_btc_price=initial_btc_price,
                 elapsed_fraction=0.0,
+                elapsed_seconds=0.0,
                 max_buy_amount=position.cash,
                 loss_limit_hit=False,
                 open_orders=[],
@@ -1332,7 +1343,8 @@ class Trader:
                 return HOLD
             if action.amount > cash:
                 action = TradeAction(side=action.side, amount=cash, price=action.price,
-                                     expiration_seconds=action.expiration_seconds)
+                                     expiration_seconds=action.expiration_seconds,
+                                     cancel_after_s=action.cancel_after_s)
 
         return action
 
@@ -1383,8 +1395,15 @@ class Trader:
             except NotImplementedError:
                 pass
 
+        # 1b. Auto-cancel orders past their soft cancel_after_s timeout
+        if self._open_orders:
+            self._cancel_expired_soft(
+                time.time() if not self._sim_mode else sample.get("elapsed_seconds", 0.0)
+            )
+
+        elapsed_s = sample["elapsed_seconds"]
         elapsed_frac = (
-            sample["elapsed_seconds"] / self._window_duration
+            elapsed_s / self._window_duration
             if self._window_duration > 0 else 0.0
         )
         elapsed_frac = min(elapsed_frac, 1.0)
@@ -1412,6 +1431,7 @@ class Trader:
             metadata=self._metadata,
             initial_btc_price=self._initial_btc_price,
             elapsed_fraction=elapsed_frac,
+            elapsed_seconds=elapsed_s,
             max_buy_amount=self._position.cash,
             loss_limit_hit=False,
             open_orders=orders,
@@ -1518,6 +1538,10 @@ class Trader:
             except NotImplementedError:
                 pass
 
+        # Auto-cancel orders past their soft cancel_after_s timeout
+        if self._open_orders:
+            self._cancel_expired_soft(sample.elapsed_seconds)
+
         # Update the reusable context in-place (no allocation)
         ctx = self._sim_ctx
         tick_idx = self._tick_index
@@ -1529,6 +1553,7 @@ class Trader:
         if elapsed_frac > 1.0:
             elapsed_frac = 1.0
         ctx.elapsed_fraction = elapsed_frac
+        ctx.elapsed_seconds = elapsed_seconds
         ctx.max_buy_amount = self._position.cash
         if self._open_orders:
             ctx.open_orders = list(self._open_orders)
@@ -1573,7 +1598,8 @@ class Trader:
             if action.amount > cash:
                 action = TradeAction(side=action.side, amount=cash,
                                      price=action.price,
-                                     expiration_seconds=action.expiration_seconds)
+                                     expiration_seconds=action.expiration_seconds,
+                                     cancel_after_s=action.cancel_after_s)
 
         # Latency simulation: defer execution by latency_ms
         latency_s = self.executor._latency_seconds
@@ -1680,6 +1706,25 @@ class Trader:
         for _, action, reserved_dollars, reserved_tokens in self._deferred_actions:
             self._position.unreserve_for_order(action.side, reserved_dollars, reserved_tokens)
         self._deferred_actions = []
+
+    def _cancel_expired_soft(self, current_time):
+        # type: (float) -> None
+        """Cancel open orders that have exceeded their cancel_after_s timeout.
+
+        current_time is elapsed_seconds (sim) or time.time() (live).
+        """
+        remaining = []
+        for order in self._open_orders:
+            if (order.cancel_after_s is not None
+                    and order.time_placed is not None
+                    and current_time - order.time_placed >= order.cancel_after_s):
+                try:
+                    self.executor.cancel_order(order, self._position)
+                except NotImplementedError:
+                    pass
+            else:
+                remaining.append(order)
+        self._open_orders = remaining
 
     def _replace_order_on_token(self, action):
         # type: (TradeAction) -> None

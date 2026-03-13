@@ -144,7 +144,7 @@ class TestRunBacktest:
         assert result.strategy_name == "AlwaysBuyUp"
         assert len(result.sessions) == 2
 
-    def test_win_rate(self):
+    def test_entry_and_win_rate(self):
         sim = Simulator(starting_cash=100.0, execution_mode="midpoint", slippage=0.0)
         sessions = [
             _make_session(outcome="Up"),
@@ -153,7 +153,9 @@ class TestRunBacktest:
         ]
         strategy = AlwaysBuyUp(bet_fraction=1.0)
         result = sim.run_backtest(strategy, sessions)
-        # 2 wins out of 3 sessions
+        # AlwaysBuyUp trades every session: entry_rate = 3/3
+        assert result.entry_rate == pytest.approx(1.0)
+        # 2 wins out of 3 traded sessions: win_rate = 2/3
         assert result.win_rate == pytest.approx(2.0 / 3.0)
 
     def test_empty_sessions(self):
@@ -162,6 +164,7 @@ class TestRunBacktest:
         result = sim.run_backtest(strategy, [])
         assert result.num_sessions == 0
         assert result.total_pnl == 0.0
+        assert result.entry_rate == 0.0
         assert result.win_rate == 0.0
         assert result.sharpe == 0.0
 

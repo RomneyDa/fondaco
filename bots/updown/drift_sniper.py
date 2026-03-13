@@ -8,7 +8,7 @@ Uses the actual underlying signal rather than the derivative (token midpoint).
 from typing import Any, Dict, List, Optional
 
 from core.defaults import BPS_DIVISOR
-from core.math_utils import ols_slope_bps
+from core.math_utils import ols_slope_bps_timed
 from core.trader import HOLD, TradeAction
 from core.strategies.base import Param, Strategy
 
@@ -18,13 +18,13 @@ class DriftSniper(Strategy):
 
     name = "DriftSniper"
     description = "Buys when BTC price drifts significantly from session start with confirming velocity."
-    version = "7"
+    version = "9"
     requires_full_session = True
 
     # --- Tunable params ---
     return_threshold_bps = Param(default=4.0, min=2.0, max=15.0)
-    velocity_window = Param(default=36, min=18, max=180)
-    min_velocity_bps = Param(default=0.02, min=0.01, max=0.05)
+    velocity_window_ms = Param(default=2000, min=1000, max=10000)
+    min_velocity_bps_s = Param(default=0.36, min=0.18, max=0.91)
     min_elapsed = Param(default=0.50, min=0.20, max=0.70)
     max_price = Param(default=0.92, min=0.85, max=0.96)
     stop_loss_pct = Param(default=0.06, min=0.04, max=0.15, nullable=True)
@@ -34,21 +34,18 @@ class DriftSniper(Strategy):
     bet_fraction = Param(default=1.0, tunable=False)
 
     def __init__(self, **kwargs):
-        defs = self.param_defs()
-        for name, p in defs.items():
-            setattr(self, name, kwargs.get(name, p.default))
-        self._params = {name: getattr(self, name) for name in defs}
+        super().__init__(**kwargs)
+        self._reset_state()
 
+    def _reset_state(self):
         self._btc_prices = []  # type: List[float]
+        self._btc_times = []  # type: List[float]
         self._entry_midpoint = 0.0
         self._entry_count = 0
-        self._last_sell_tick = -999
+        self._last_sell_time_s = -999.0
 
     def on_session_start(self, metadata):
-        self._btc_prices = []
-        self._entry_midpoint = 0.0
-        self._entry_count = 0
-        self._last_sell_tick = -999
+        self._reset_state()
 
     def on_tick(self, ctx):
         btc = ctx.sample.get("btc_price_usd")
@@ -57,6 +54,7 @@ class DriftSniper(Strategy):
 
         if btc is not None and btc > 0:
             self._btc_prices.append(btc)
+            self._btc_times.append(ctx.elapsed_seconds)
 
         if up_mid is None or down_mid is None:
             return HOLD
@@ -79,7 +77,8 @@ class DriftSniper(Strategy):
             return HOLD
 
         # Need initial BTC price and enough history
-        if ctx.initial_btc_price <= 0 or len(self._btc_prices) < self.velocity_window:
+        window_s = self.velocity_window_ms / 1000.0
+        if ctx.initial_btc_price <= 0 or ctx.elapsed_seconds < window_s:
             return HOLD
 
         # BTC return from session start
@@ -89,12 +88,14 @@ class DriftSniper(Strategy):
         if abs(btc_return_bps) < self.return_threshold_bps:
             return HOLD
 
-        # Velocity must confirm direction
-        velocity = ols_slope_bps(self._btc_prices, self.velocity_window)
+        # Velocity must confirm direction — OLS over time window
+        cutoff = ctx.elapsed_seconds - window_s
+        idx = next((i for i in range(len(self._btc_times)) if self._btc_times[i] >= cutoff), len(self._btc_times))
+        velocity = ols_slope_bps_timed(self._btc_times[idx:], self._btc_prices[idx:])
         if velocity is None:
             return HOLD
 
-        if abs(velocity) < self.min_velocity_bps:
+        if abs(velocity) < self.min_velocity_bps_s:
             return HOLD
 
         # Return and velocity must agree on direction
@@ -106,26 +107,28 @@ class DriftSniper(Strategy):
             if up_mid <= self.max_price:
                 self._entry_count += 1
                 self._entry_midpoint = up_mid
-                self.log("BUY UP: btc_ret={:.1f}bps vel={:.3f}bps/tick mid={:.3f} at {:.0f}%".format(
+                self.log("BUY UP: btc_ret={:.1f}bps vel={:.3f}bps/s mid={:.3f} at {:.0f}%".format(
                     btc_return_bps, velocity, up_mid, ctx.elapsed_fraction * 100,
                 ))
                 return TradeAction(
                     side="buy_up",
                     amount=ctx.position.cash * self.bet_fraction,
                     price=up_mid,
-                                    )
+                    cancel_after_s=10,
+                )
         else:
             if down_mid <= self.max_price:
                 self._entry_count += 1
                 self._entry_midpoint = down_mid
-                self.log("BUY DOWN: btc_ret={:.1f}bps vel={:.3f}bps/tick mid={:.3f} at {:.0f}%".format(
+                self.log("BUY DOWN: btc_ret={:.1f}bps vel={:.3f}bps/s mid={:.3f} at {:.0f}%".format(
                     btc_return_bps, velocity, down_mid, ctx.elapsed_fraction * 100,
                 ))
                 return TradeAction(
                     side="buy_down",
                     amount=ctx.position.cash * self.bet_fraction,
                     price=down_mid,
-                                    )
+                    cancel_after_s=10,
+                )
 
         return HOLD
 

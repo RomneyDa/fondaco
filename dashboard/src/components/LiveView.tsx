@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchLiveSession, archiveSession, fetchSessionList, fetchMarketPnl } from "../api";
-import type { MarketPnl } from "../api";
-import type { LivePayload } from "../types";
+import {
+  fetchLiveSession, archiveSession, fetchSessionList, fetchMarketPnl,
+  fetchStrategies, fetchSlugs, tradeBotOn, tradeBotOff, reloadBot, setAutoExit, startMarket,
+} from "../api";
+import type { MarketPnl, SlugInfo } from "../api";
+import type { BotStatus, LivePayload, MarketStatus } from "../types";
 import { isLiveStatus, isSessionData } from "../types";
 import { PnlCard } from "./PnlCard";
 import { SessionCharts } from "./SessionCharts";
@@ -13,6 +16,8 @@ import { fmtTimeOnly } from "../utils/formatTime";
 
 interface Props {
   liveData: Record<string, LivePayload>;
+  botStatus: BotStatus | null;
+  onRefresh: () => void;
 }
 
 function formatCountdown(targetUtc: string): string {
@@ -25,7 +30,7 @@ function formatCountdown(targetUtc: string): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export function LiveView({ liveData }: Props) {
+export function LiveView({ liveData, botStatus, onRefresh }: Props) {
   const { prefix } = useParams<{ prefix: string }>();
   const navigate = useNavigate();
   const [payload, setPayload] = useState<LivePayload | null>(null);
@@ -204,6 +209,15 @@ export function LiveView({ liveData }: Props) {
         {archived && <span className="text-dim text-sm">Archived</span>}
       </div>
 
+      {prefix && (
+        <StrategyManager
+          prefix={prefix}
+          market={botStatus?.markets?.find((m) => m.slug_key === prefix) ?? null}
+          onRefresh={onRefresh}
+          appRunning={botStatus?.running ?? false}
+        />
+      )}
+
       {pnl && (pnl.overall !== 0 || pnl.last_24h !== 0 || pnl.last_1h !== 0) && (
         <PnlCard overall={pnl.overall} last24h={pnl.last_24h} last1h={pnl.last_1h ?? 0} dryRun={pnl.dry_run} />
       )}
@@ -311,6 +325,212 @@ export function LiveView({ liveData }: Props) {
               <div className="text-lg font-semibold text-txt mb-1">Connecting...</div>
             )}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StrategyManager({
+  prefix,
+  market,
+  onRefresh,
+  appRunning,
+}: {
+  prefix: string;
+  market: MarketStatus | null;
+  onRefresh: () => void;
+  appRunning: boolean;
+}) {
+  const [strategies, setStrategies] = useState<string[]>([]);
+  const [slugs, setSlugs] = useState<SlugInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [selected, setSelected] = useState("");
+  const [cash, setCash] = useState("10");
+  const [sessionCap, setSessionCap] = useState("25%:3");
+
+  useEffect(() => {
+    let cancelled = false;
+    function load() {
+      fetchStrategies().then((s) => {
+        if (cancelled) return;
+        if (s.length > 0) setStrategies(s);
+        else setTimeout(load, 3000);
+      });
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSlugs().then((s) => { if (!cancelled) setSlugs(s); });
+    return () => { cancelled = true; };
+  }, []);
+
+  function flashMessage(msg: string) {
+    setMessage(msg);
+    setTimeout(() => setMessage(null), 5000);
+  }
+
+  const activeStrategies = market?.strategies ?? [];
+  const activeNames = new Set(activeStrategies.map((s) => s.name));
+  const available = strategies.filter((s) => !activeNames.has(s));
+
+  const slugInfo = slugs.find((s) => s.slug_prefix.replace(/-$/, "") === prefix);
+  const slugPrefix = slugInfo?.slug_prefix ?? prefix + "-";
+  const windowSeconds = slugInfo?.window_duration_seconds ?? 300;
+
+  async function handleTradeOn(strategyName: string, opts: { cash: number; sessionCap?: number; sessionCashRatio?: { ratio: number; max: number }; dryRun: boolean }) {
+    setLoading(true);
+    if (!market) {
+      const mrRes = await startMarket({ slug_prefix: slugPrefix, window: windowSeconds });
+      if (!mrRes.ok) {
+        flashMessage(mrRes.error || "Failed to register market");
+        setLoading(false);
+        return;
+      }
+    }
+    const body: any = {
+      slug_prefix: slugPrefix,
+      strategy: strategyName,
+      cash: opts.cash,
+      dry_run: opts.dryRun,
+    };
+    if (opts.sessionCashRatio != null) body.session_cash_ratio = opts.sessionCashRatio;
+    else if (opts.sessionCap != null) body.session_cap = opts.sessionCap;
+    const res = await tradeBotOn(body);
+    flashMessage(res.ok ? `Started: ${strategyName}` : res.error || "Failed");
+    setLoading(false);
+    onRefresh();
+  }
+
+  async function handleTradeOff(strategyName?: string) {
+    setLoading(true);
+    const res = await tradeBotOff(slugPrefix, strategyName);
+    flashMessage(res.ok ? (strategyName ? `Stopped: ${strategyName}` : "All strategies stopped") : res.error || "Failed");
+    setLoading(false);
+    onRefresh();
+  }
+
+  async function handleReload(strategyName: string) {
+    setLoading(true);
+    const res = await reloadBot(slugPrefix, strategyName);
+    flashMessage(res.ok ? `Reloaded: ${strategyName}` : res.error || "Failed");
+    setLoading(false);
+    onRefresh();
+  }
+
+  async function handleToggleAutoExit(strategyName: string, enabled: boolean) {
+    const res = await setAutoExit(slugPrefix, enabled, strategyName);
+    if (!res.ok) flashMessage(res.error || "Failed");
+    onRefresh();
+  }
+
+  if (!appRunning) {
+    return (
+      <div className="mb-6 p-3 bg-bg rounded-md border border-dashed border-border text-[13px] text-dim">
+        Enable trading to add strategies to this market.
+      </div>
+    );
+  }
+
+  if (activeStrategies.length === 0 && available.length === 0) return null;
+
+  return (
+    <div className="mb-6">
+      {activeStrategies.length > 0 && (
+        <div className="flex flex-col gap-2 mb-3">
+          {activeStrategies.map((s) => {
+            const alive = s.alive !== false;
+            return (
+              <div key={s.name} className="flex items-center gap-3 px-3.5 py-2.5 bg-card rounded-md border border-border">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${alive ? "bg-up" : "bg-down"}`} />
+                <span className="font-semibold text-sm min-w-[120px]">{s.name}</span>
+                {s.dry_run && <span className="inline-block px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/15 text-accent">DRY</span>}
+                {!alive && <span className="px-1.5 py-px rounded text-[10px] font-semibold bg-down/15 text-down">DEAD</span>}
+                <span className="text-dim text-[13px] ml-auto font-mono tabular-nums">
+                  ${(s.bankroll ?? s.cash).toFixed(2)}
+                  {s.session_cash_ratio != null && (
+                    <span className="opacity-60"> ({Math.round(s.session_cash_ratio.ratio * 100)}% up to ${s.session_cash_ratio.max.toFixed(0)})</span>
+                  )}
+                  {s.session_cash_ratio == null && s.session_cap != null && (
+                    <span className="opacity-60"> (${s.session_cap.toFixed(0)}/s)</span>
+                  )}
+                </span>
+                <label className="flex items-center gap-1.5 text-[11px] cursor-pointer text-dim">
+                  <input
+                    type="checkbox"
+                    checked={!!s.auto_exit}
+                    onChange={(e) => handleToggleAutoExit(s.name, e.target.checked)}
+                    className="w-[13px] h-[13px] accent-accent"
+                  />
+                  Auto-exit
+                </label>
+                {s.pid != null && <span className="text-dim text-[11px]">PID {s.pid}</span>}
+                <div className="flex gap-1.5">
+                  <button className="btn-accent btn-sm" onClick={() => handleReload(s.name)} disabled={loading}>Reload</button>
+                  <button className="btn-danger btn-sm" onClick={() => handleTradeOff(s.name)} disabled={loading}>Kill</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {available.length > 0 && (
+        <div className="p-3 bg-bg rounded-md border border-dashed border-border mb-3">
+          <div className="flex items-end gap-2.5">
+            <label className="flex flex-col gap-1 flex-1 min-w-0">
+              <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Strategy</span>
+              <select className="!text-[13px] !py-1.5 !px-2.5 w-full" value={selected} onChange={(e) => setSelected(e.target.value)}>
+                <option value="">Select...</option>
+                {available.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Cash</span>
+              <input type="number" value={cash} onChange={(e) => setCash(e.target.value)} min="1" step="1" className="text-[13px] w-20" />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Session limit</span>
+              <input type="text" value={sessionCap} onChange={(e) => setSessionCap(e.target.value)} placeholder="5 or 25%:3" className="text-[13px] w-24" />
+            </label>
+            <button
+              className="btn-primary btn-sm shrink-0"
+              disabled={loading || !selected}
+              onClick={() => {
+                if (!selected) return;
+                const capStr = sessionCap.trim();
+                let sessionCapVal: number | undefined;
+                let sessionCashRatioVal: { ratio: number; max: number } | undefined;
+                if (capStr && capStr.includes("%")) {
+                  const parts = capStr.replace("%", "").split(":");
+                  sessionCashRatioVal = { ratio: parseFloat(parts[0]) / 100, max: parseFloat(parts[1]) };
+                } else if (capStr) {
+                  sessionCapVal = parseFloat(capStr);
+                }
+                handleTradeOn(selected, {
+                  cash: parseFloat(cash) || 10,
+                  sessionCap: sessionCapVal,
+                  sessionCashRatio: sessionCashRatioVal,
+                  dryRun: false,
+                });
+                setSelected("");
+              }}
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      )}
+
+      {message && (
+        <div className="mb-3 px-4 py-2.5 bg-accent/10 border border-accent/20 rounded-md text-[13px] text-accent">
+          {message}
         </div>
       )}
     </div>

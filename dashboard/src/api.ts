@@ -56,15 +56,15 @@ export async function fetchPrefixes(): Promise<PrefixInfo[]> {
 
       let recentSessions: SessionSummary[];
       try {
-        const sumRes = await fetch(`/api/sessions/${name}/summaries?limit=20`);
+        const sumRes = await fetch(`/api/sessions/${name}/summaries?limit=10`);
         if (sumRes.ok) {
           const data = (await sumRes.json()) as { sessions: SessionSummary[] };
           recentSessions = data.sessions;
         } else {
-          recentSessions = files.slice(0, 20).map((f) => ({ file: f, outcome: null }));
+          recentSessions = files.slice(0, 10).map((f) => ({ file: f, outcome: null }));
         }
       } catch {
-        recentSessions = files.slice(0, 20).map((f) => ({ file: f, outcome: null }));
+        recentSessions = files.slice(0, 10).map((f) => ({ file: f, outcome: null }));
       }
 
       return { name, count: files.length, recentSessions };
@@ -364,6 +364,7 @@ export interface StrategyStats {
     total_pnl: number;
     wins: number;
     losses: number;
+    entry_rate: number;
     win_rate: number;
     sharpe: number;
     current_cash: number | null;
@@ -457,6 +458,40 @@ export async function fetchSessionTrading(
   }
 }
 
+// --- Collector lifecycle ---
+
+export async function startCollector(body: {
+  slug_prefix: string;
+  window?: number;
+}): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/collector/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+export async function stopCollector(body: {
+  slug_prefix: string;
+  after_session?: boolean;
+}): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/collector/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 // --- Optimizer ---
 
 export interface OptimizerStatus {
@@ -464,7 +499,7 @@ export interface OptimizerStatus {
   pid: number | null;
   state?: string;
   interval_minutes?: number;
-  lookback?: number;
+  eval_sessions?: number;
   min_sharpe?: number;
   current_strategy?: string;
   current_market?: string;
@@ -514,7 +549,7 @@ export interface OptimizerEvent {
 
 export interface OptimizerConfig {
   interval_minutes?: number;
-  lookback?: number;
+  eval_sessions?: number;
   min_sharpe?: number;
   starting_cash?: number;
 }
@@ -553,7 +588,7 @@ export async function fetchOptimizerEvents(): Promise<OptimizerEvent[]> {
 
 export async function startOptimizer(body: {
   interval?: number;
-  lookback?: number;
+  eval_sessions?: number;
   min_sharpe?: number;
   starting_cash?: number;
 }): Promise<{ ok: boolean; error?: string; pid?: number }> {
@@ -580,7 +615,7 @@ export async function stopOptimizer(): Promise<{ ok: boolean; error?: string }> 
 
 export async function updateOptimizerConfig(body: {
   interval_minutes?: number;
-  lookback?: number;
+  eval_sessions?: number;
   min_sharpe?: number;
   starting_cash?: number;
 }): Promise<{ ok: boolean; error?: string; config?: Record<string, any> }> {

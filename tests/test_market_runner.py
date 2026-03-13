@@ -10,23 +10,17 @@ from bots import UPDOWN_STRATEGIES
 
 
 def _make_runner(tmp_path, slug_prefix="btc-updown-5m-", market_type="updown"):
-    """Create a MarketRunner with mocked dependencies."""
+    """Create a MarketRunner with mocked paths."""
     from app.market_runner import MarketRunner
 
-    mock_session = MagicMock()
-    mock_rtds = MagicMock()
-
-    with patch("app.market_runner.PriceFetcher"), \
-         patch("app.market_runner.SessionRecorder"), \
-         patch("app.market_runner.TickBroadcaster"), \
-         patch("app.market_runner.market_data_dir", return_value=str(tmp_path / "market")), \
+    with patch("app.market_runner.market_data_dir", return_value=str(tmp_path / "market")), \
          patch("app.market_runner.market_workers_dir", return_value=str(tmp_path / "workers")), \
          patch("app.market_runner.market_strategies_file", return_value=str(tmp_path / "strategies.json")), \
-         patch("app.market_runner.market_socket_path", return_value=str(tmp_path / "ticks.sock")):
+         patch("app.market_runner.market_socket_path", return_value=str(tmp_path / "ticks.sock")), \
+         patch("app.market_runner.collector_pid_path", return_value=str(tmp_path / "collector.pid")), \
+         patch("app.market_runner.collector_state_path", return_value=str(tmp_path / "collector_state.json")):
         runner = MarketRunner(
             slug_prefix=slug_prefix,
-            http_session=mock_session,
-            rtds_client=mock_rtds,
             market_type=market_type,
         )
     runner._market_dir = str(tmp_path / "market")
@@ -67,7 +61,7 @@ class TestEnableTrading:
         mock_process.pid = 12345
         mock_process.poll.return_value = None
 
-        with patch.object(runner, "_spawn_worker", return_value=mock_process):
+        with patch.object(runner, "_spawn_worker", return_value=(mock_process, MagicMock())):
             runner.enable_trading(strategy_name, cash=50.0, dry_run=True)
 
         assert len(runner._workers) == 1
@@ -87,7 +81,7 @@ class TestEnableTrading:
         mock_p2.pid = 200
         mock_p2.poll.return_value = None
 
-        with patch.object(runner, "_spawn_worker", side_effect=[mock_p1, mock_p2]):
+        with patch.object(runner, "_spawn_worker", side_effect=[(mock_p1, MagicMock()), (mock_p2, MagicMock())]):
             runner.enable_trading(strategy_name, cash=50.0)
             runner.enable_trading(strategy_name, cash=75.0)
 
@@ -102,7 +96,7 @@ class TestEnableTrading:
         mock_process.pid = 1
         mock_process.poll.return_value = None
 
-        with patch.object(runner, "_spawn_worker", return_value=mock_process) as spawn:
+        with patch.object(runner, "_spawn_worker", return_value=(mock_process, MagicMock())) as spawn:
             runner.enable_trading(
                 strategy_name,
                 params={"threshold": "0.5", "count": "10", "mode": "fast"},
@@ -129,7 +123,7 @@ class TestDisableTrading:
         mock_p2.pid = 200
         mock_p2.poll.return_value = None
 
-        with patch.object(runner, "_spawn_worker", side_effect=[mock_p1, mock_p2]):
+        with patch.object(runner, "_spawn_worker", side_effect=[(mock_p1, MagicMock()), (mock_p2, MagicMock())]):
             runner.enable_trading(strategies[0], cash=10.0)
             runner.enable_trading(strategies[1], cash=20.0)
 
@@ -145,7 +139,7 @@ class TestDisableTrading:
         mock_process.pid = 100
         mock_process.poll.return_value = None
 
-        with patch.object(runner, "_spawn_worker", return_value=mock_process):
+        with patch.object(runner, "_spawn_worker", return_value=(mock_process, MagicMock())):
             runner.enable_trading(strategy_name, cash=10.0)
 
         runner.disable_trading()
@@ -166,7 +160,7 @@ class TestSetCash:
         mock_process.pid = 1
         mock_process.poll.return_value = None
 
-        with patch.object(runner, "_spawn_worker", return_value=mock_process):
+        with patch.object(runner, "_spawn_worker", return_value=(mock_process, MagicMock())):
             runner.enable_trading(strategy_name, cash=50.0)
 
         state_dir = os.path.join(str(tmp_path / "workers"), strategy_name)
@@ -179,7 +173,8 @@ class TestSetCash:
 
         with open(state_file) as f:
             data = json.load(f)
-        assert data["cash"] == 75.0
+        # set_cash writes to pending, worker picks it up at session boundary
+        assert data["pending"]["bankroll"] == 75.0
 
     def test_set_cash_no_workers_raises(self, tmp_path):
         runner = _make_runner(tmp_path)
@@ -199,7 +194,7 @@ class TestSetCash:
         mock_p2.pid = 2
         mock_p2.poll.return_value = None
 
-        with patch.object(runner, "_spawn_worker", side_effect=[mock_p1, mock_p2]):
+        with patch.object(runner, "_spawn_worker", side_effect=[(mock_p1, MagicMock()), (mock_p2, MagicMock())]):
             runner.enable_trading(strategies[0], cash=10.0)
             runner.enable_trading(strategies[1], cash=20.0)
 
@@ -210,10 +205,14 @@ class TestSetCash:
 class TestGetStatus:
     def test_basic_status(self, tmp_path):
         runner = _make_runner(tmp_path)
+        runner._read_collector_pid = lambda: None
+        runner._read_collector_state = lambda: {}
         status = runner.get_status()
         assert status["slug_key"] == "btc-updown-5m"
         assert status["market_type"] == "updown"
-        assert status["running"] is True
+        # running is based on collector PID (no collector running in tests)
+        assert status["running"] is False
+        assert status["collector_running"] is False
         assert status["trading_enabled"] is False
         assert status["strategies"] == []
 
@@ -225,7 +224,7 @@ class TestGetStatus:
         mock_process.pid = 123
         mock_process.poll.return_value = None
 
-        with patch.object(runner, "_spawn_worker", return_value=mock_process):
+        with patch.object(runner, "_spawn_worker", return_value=(mock_process, MagicMock())):
             runner.enable_trading(strategy_name, cash=50.0, dry_run=True)
 
         status = runner.get_status()
@@ -247,7 +246,7 @@ class TestStrategiesConfig:
         mock_process.pid = 1
         mock_process.poll.return_value = None
 
-        with patch.object(runner, "_spawn_worker", return_value=mock_process):
+        with patch.object(runner, "_spawn_worker", return_value=(mock_process, MagicMock())):
             runner.enable_trading(
                 strategy_name, cash=50.0, dry_run=True, session_cap=5.0,
             )
@@ -280,7 +279,7 @@ class TestStrategiesConfig:
         mock_process.pid = 1
         mock_process.poll.return_value = None
 
-        with patch.object(runner, "_spawn_worker", return_value=mock_process):
+        with patch.object(runner, "_spawn_worker", return_value=(mock_process, MagicMock())):
             runner.restore_strategies()
 
         assert len(runner._workers) == 1
@@ -289,14 +288,17 @@ class TestStrategiesConfig:
 
 
 class TestRequestStop:
-    def test_request_stop(self, tmp_path):
+    def test_request_stop_kills_workers(self, tmp_path):
         runner = _make_runner(tmp_path)
-        assert runner.running is True
-        runner.request_stop()
-        assert runner.running is False
+        strategy_name = list(UPDOWN_STRATEGIES.keys())[0]
 
-    def test_request_stop_after_session(self, tmp_path):
-        runner = _make_runner(tmp_path)
-        assert runner._stop_after_session is False
-        runner.request_stop_after_session()
-        assert runner._stop_after_session is True
+        mock_process = MagicMock()
+        mock_process.pid = 100
+        mock_process.poll.return_value = None
+
+        with patch.object(runner, "_spawn_worker", return_value=(mock_process, MagicMock())):
+            runner.enable_trading(strategy_name, cash=10.0)
+
+        assert len(runner._workers) == 1
+        runner.request_stop()
+        assert len(runner._workers) == 0

@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from core.defaults import TOKEN_DECIMALS, WINDOW_DURATION_SECONDS
+from core.defaults import TOKEN_DECIMALS
 from bots import ALL_STRATEGIES
 from core.trader import ClobExecutor, Position, SimExecutor, Trade, Trader
 from core.tick_broadcast import TickSubscriber
@@ -70,7 +70,7 @@ class BotWorker:
         session_cap=None,    # type: Optional[float]
         session_cash_ratio=None,  # type: Optional[Dict[str, float]]
         per_session=False,   # type: bool
-        window_duration=WINDOW_DURATION_SECONDS, # type: int
+        window_duration=300,  # type: int  # always passed by MarketRunner
     ):
         self.strategy_name = strategy_name
         self.params = params
@@ -655,7 +655,7 @@ def main():
     parser.add_argument("--session-cash-ratio", default=None,
                         help="ratio:max e.g. 0.25:3")
     parser.add_argument("--per-session", action="store_true")
-    parser.add_argument("--window", type=int, default=WINDOW_DURATION_SECONDS)
+    parser.add_argument("--window", type=int, required=True)
     parser.add_argument("--restore", action="store_true", help="Restore state from disk")
 
     args = parser.parse_args()

@@ -15,7 +15,6 @@ COINGECKO_BTC_URL = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&v
 
 # Timing
 POLL_INTERVAL_SECONDS = 0.055
-WINDOW_DURATION_SECONDS = 300
 RESOLUTION_POLL_INTERVAL = 5.0
 RESOLUTION_TIMEOUT_SECONDS = 300
 
@@ -43,6 +42,7 @@ WEI_DIVISOR = 1_000_000            # Divisor to convert on-chain wei to token un
 
 # Basis points
 BPS_DIVISOR = 10_000.0             # Multiply by this to convert fractional returns to bps
+
 
 # HTTP timeouts (seconds)
 API_TIMEOUT_SHORT = 5              # External price APIs (Coinbase, CoinGecko, CLOB)
@@ -140,6 +140,25 @@ def market_session_log(slug_key):
 def market_backtest_log(slug_key):
     # type: (str) -> str
     return os.path.join(MARKETS_DIR, slug_key, "backtest_log.jsonl")
+
+
+# Collector (standalone data stream daemon, one per market)
+
+def collector_pid_path(slug_key):
+    # type: (str) -> str
+    """PID file for the collector process. In /tmp for short path + ephemeral."""
+    return "/tmp/eros-pm-{}-collector.pid".format(slug_key)
+
+
+def collector_state_path(slug_key):
+    # type: (str) -> str
+    """State file written periodically by the collector for AppManager to read."""
+    return os.path.join(MARKETS_DIR, slug_key, "collector_state.json")
+
+
+def collector_log_path(slug_key):
+    # type: (str) -> str
+    return os.path.join(MARKETS_DIR, slug_key, "collector.log")
 
 
 # Optimizer

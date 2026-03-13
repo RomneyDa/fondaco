@@ -51,3 +51,6 @@ data.zip
 
 # Claim server logs
 claim-server/claim-server.log
+
+# Rust (WIP)
+rust/

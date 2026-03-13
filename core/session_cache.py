@@ -10,7 +10,8 @@ Raw sample data is never stored.
 import json
 import os
 from bisect import bisect_left, bisect_right
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.defaults import BPS_DIVISOR, TOKEN_DECIMALS
 
@@ -236,3 +237,91 @@ class SessionStatsCache:
         # type: () -> List[SessionStats]
         """Return all cached stats, sorted oldest-first."""
         return list(self._entries)
+
+    # ── Gap-aware queries ─────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_ts(ts_str):
+        # type: (str) -> datetime
+        """Parse ISO timestamp to datetime."""
+        s = ts_str
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    def gap_before(self, window_start):
+        # type: (str) -> Optional[float]
+        """Seconds between the session at `window_start` and the one before it.
+
+        Returns None if there is no prior session.
+        """
+        idx = bisect_left(self._starts, window_start)
+        if idx <= 0:
+            return None
+        try:
+            current = self._parse_ts(window_start)
+            prev = self._parse_ts(self._starts[idx - 1])
+            return (current - prev).total_seconds()
+        except (ValueError, TypeError):
+            return None
+
+    def data_density(self, before, n, expected_interval_s):
+        # type: (str, int, float) -> float
+        """Fraction of expected sessions actually present in the lookback window.
+
+        Uses the time span between first and last session in the window
+        divided by expected_interval_s to estimate how many sessions
+        *should* exist, then compares to how many actually do.
+
+        Args:
+            expected_interval_s: Expected seconds between consecutive sessions
+                (e.g. 300 for 5-min markets, 900 for 15-min).
+
+        Returns 1.0 if insufficient data to compute or if n <= 1.
+        """
+        entries = self.prior(before, n)
+        if len(entries) < 2:
+            return 1.0
+        try:
+            first_ts = self._parse_ts(entries[0].window_start)
+            last_ts = self._parse_ts(entries[-1].window_start)
+        except (ValueError, TypeError):
+            return 1.0
+        span_s = (last_ts - first_ts).total_seconds()
+        if span_s <= 0:
+            return 1.0
+        expected_count = span_s / expected_interval_s + 1
+        if expected_count <= 0:
+            return 1.0
+        return min(len(entries) / expected_count, 1.0)
+
+    def prior_contiguous(self, before, n, max_gap_s=None):
+        # type: (str, int, Optional[float]) -> List[SessionStats]
+        """Return prior sessions, stopping at the first large gap.
+
+        Like prior(), but walks backwards from `before` and stops when
+        two consecutive sessions are more than max_gap_s apart. This
+        ensures the returned window contains only temporally dense data.
+
+        Returns oldest-first (same as prior()).
+        """
+        idx = bisect_left(self._starts, before)
+        result = []  # type: List[SessionStats]
+        prev_ts = None  # type: Optional[datetime]
+        # Walk backwards
+        for i in range(idx - 1, max(idx - n - 1, -1), -1):
+            try:
+                ts = self._parse_ts(self._starts[i])
+            except (ValueError, TypeError):
+                break
+            if prev_ts is not None:
+                gap = (prev_ts - ts).total_seconds()
+                if gap > max_gap_s:
+                    break
+            result.append(self._entries[i])
+            prev_ts = ts
+        result.reverse()
+        return result

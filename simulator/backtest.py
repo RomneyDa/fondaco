@@ -23,21 +23,33 @@ from simulator.engine import (
     KELLY_FRACTION,
 )
 from core.defaults import BALANCE_CACHE_FILE, DEFAULT_LATENCY_MS, DEFAULT_RATIO_MAX, MARKETS_DIR, market_backtest_log, market_sessions_dir
+from core.markets import KNOWN_MARKETS
 from bots import ALL_STRATEGIES
 
 
 # -- Process pool worker globals & functions --
 _worker_sim = None   # type: Optional[Simulator]
 _worker_sessions = None  # type: Optional[list]
+_worker_parent_pid = None  # type: Optional[int]
 # Module-level sessions set in parent before fork — inherited via CoW,
 # never pickled. This is the key optimization: avoids serializing ~50MB+
 # of session data per worker.
 _shared_sessions = None  # type: Optional[list]
 
 
+def _check_parent_alive():
+    """Raise if parent process died (orphan protection).
+
+    On macOS/Linux, getppid() returns 1 (launchd/init) when the parent
+    exits. Workers that outlive their parent are orphans and should stop.
+    """
+    if _worker_parent_pid is not None and os.getppid() != _worker_parent_pid:
+        raise RuntimeError("Parent process died — worker exiting")
+
+
 def _init_worker(starting_cash, execution_mode, slippage, fees, limit_fill_margin,
-                  latency_ms):
-    # type: (float, str, float, bool, Optional[float], int) -> None
+                  latency_ms, session_cash_ratio=None):
+    # type: (float, str, float, bool, Optional[float], int, Optional[tuple]) -> None
     """Initializer for each worker process — sets up Simulator once.
 
     Sessions are inherited from the parent via fork CoW (_shared_sessions),
@@ -45,21 +57,23 @@ def _init_worker(starting_cash, execution_mode, slippage, fees, limit_fill_margi
     Prior session stats are pre-sliced into session metadata by the parent,
     so the Simulator doesn't need session_summaries.
     """
-    global _worker_sim, _worker_sessions
+    global _worker_sim, _worker_sessions, _worker_parent_pid
+    _worker_parent_pid = os.getppid()
     _worker_sim = Simulator(
         starting_cash=starting_cash,
         execution_mode=execution_mode,
         slippage=slippage,
-        compound=False,  # Phase 1: flat cash for clean returns
         fees=fees,
         limit_fill_margin=limit_fill_margin,
         latency_ms=latency_ms,
+        session_cash_ratio=session_cash_ratio,
     )
     _worker_sessions = _shared_sessions
 
 
 def _run_one(strategy):
     """Run a single strategy variant in a worker process."""
+    _check_parent_alive()
     return _worker_sim.run_backtest(strategy, _worker_sessions)
 
 
@@ -71,14 +85,15 @@ def _run_batch(variants):
     """
     results = []
     for strategy in variants:
+        _check_parent_alive()
         results.append(_worker_sim.run_backtest(strategy, _worker_sessions))
     return results
 
 
 def _run_variants_parallel(variants, sessions, starting_cash, execution_mode,
                            slippage, fees, label="", limit_fill_margin=None,
-                           latency_ms=0):
-    # type: (list, list, float, str, float, bool, str, Optional[float], int) -> list
+                           latency_ms=0, session_cash_ratio=None):
+    # type: (list, list, float, str, float, bool, str, Optional[float], int, Optional[tuple]) -> list
     """Run strategy variants in parallel across worker processes.
 
     Sessions are shared via fork CoW (_shared_sessions) — never pickled.
@@ -95,14 +110,18 @@ def _run_variants_parallel(variants, sessions, starting_cash, execution_mode,
             starting_cash=starting_cash,
             execution_mode=execution_mode,
             slippage=slippage,
-            compound=False,
             fees=fees,
             limit_fill_margin=limit_fill_margin,
             latency_ms=latency_ms,
+            session_cash_ratio=session_cash_ratio,
         )
         return [sim.run_backtest(variants[0], sessions)]
 
-    num_workers = min(total, os.cpu_count() or 1)
+    cpu = os.cpu_count() or 1
+    # Cap workers to leave headroom for the collector, other backtests,
+    # and the OS. Each worker copies session data via CoW page faults,
+    # so fewer workers = dramatically less memory with large --recent.
+    num_workers = min(total, max(1, cpu - 2))
     if label:
         print("  {}: {} variants × {} sessions across {} workers...".format(
             label, total, len(sessions), num_workers,
@@ -113,7 +132,7 @@ def _run_variants_parallel(variants, sessions, starting_cash, execution_mode,
     # Set module-level sessions for fork CoW inheritance (no pickling)
     _shared_sessions = sessions
     pool_initargs = (starting_cash, execution_mode, slippage, fees, limit_fill_margin,
-                     latency_ms)
+                     latency_ms, session_cash_ratio)
 
     # P7: Batch variants for better CPU cache locality
     batch_size = max(1, total // (num_workers * 2))
@@ -236,36 +255,38 @@ def print_leaderboard(results, top_n, optimize, compound=False):
 
     if compound:
         # Kelly-aware header with geometric growth metrics
-        print("\n{:<20} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8} {:>6}  {}".format(
-            "Strategy", "GeoRet%", "Kelly_f", "MaxDD%", "Final$", "Fees", "Win%", "N", "Params"
+        print("\n{:<20} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8} {:>8} {:>6}  {}".format(
+            "Strategy", "GeoRet%", "Kelly_f", "MaxDD%", "Final$", "Fees", "Entry%", "Win%", "N", "Params"
         ))
-        print("-" * 115)
+        print("-" * 125)
         for r in shown:
-            print("{:<20} {:>8.3f} {:>8.3f} {:>8.1f} {:>10.2f} {:>8.2f} {:>7.1f}% {:>6}  {}".format(
+            print("{:<20} {:>8.3f} {:>8.3f} {:>8.1f} {:>10.2f} {:>8.2f} {:>7.1f}% {:>7.1f}% {:>6}  {}".format(
                 r.strategy_name,
                 r.geo_mean_return * 100,
                 r.kelly_fraction,
                 r.max_drawdown * 100,
                 r.final_bankroll,
                 r.total_fees,
+                r.entry_rate * 100,
                 r.win_rate * 100,
                 r.num_sessions,
                 format_params(r.params),
             ))
     else:
         # Standard header + Kelly columns
-        print("\n{:<20} {:>8} {:>10} {:>10} {:>8} {:>8} {:>8} {:>6}  {}".format(
-            "Strategy", "Sharpe", "Total PnL", "Mean PnL", "Fees", "GeoRet%", "Win%", "N", "Params"
+        print("\n{:<20} {:>8} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>6}  {}".format(
+            "Strategy", "Sharpe", "Total PnL", "Mean PnL", "Fees", "GeoRet%", "Entry%", "Win%", "N", "Params"
         ))
-        print("-" * 115)
+        print("-" * 125)
         for r in shown:
-            print("{:<20} {:>8.3f} {:>10.2f} {:>10.2f} {:>8.2f} {:>8.3f} {:>7.1f}% {:>6}  {}".format(
+            print("{:<20} {:>8.3f} {:>10.2f} {:>10.2f} {:>8.2f} {:>8.3f} {:>7.1f}% {:>7.1f}% {:>6}  {}".format(
                 r.strategy_name,
                 r.sharpe,
                 r.total_pnl,
                 r.mean_pnl,
                 r.total_fees,
                 r.geo_mean_return * 100,
+                r.entry_rate * 100,
                 r.win_rate * 100,
                 r.num_sessions,
                 format_params(r.params),
@@ -298,8 +319,9 @@ def print_strategy_summary(results, optimize, compound=False, starting_cash=100.
         variants = by_strategy[name]
         best = max(variants, key=sort_key)
         print("\n  {} ({} variants tested)".format(name, len(variants)))
-        print("    Best:  Sharpe={:.3f}  PnL={:.2f}  Fees={:.2f}  Win={:.1f}%  GeoRet={:.3f}%  MaxDD={:.1f}%".format(
-            best.sharpe, best.total_pnl, best.total_fees, best.win_rate * 100,
+        print("    Best:  Sharpe={:.3f}  PnL={:.2f}  Fees={:.2f}  Entry={:.1f}%  Win={:.1f}%  GeoRet={:.3f}%  MaxDD={:.1f}%".format(
+            best.sharpe, best.total_pnl, best.total_fees,
+            best.entry_rate * 100, best.win_rate * 100,
             best.geo_mean_return * 100, best.max_drawdown * 100,
         ))
         if compound:
@@ -341,8 +363,9 @@ def print_verbose(result):
             len(sr.trades),
             trade_str,
         ))
-    print("  TOTAL: pnl={:+.2f}  mean={:+.2f}  win_rate={:.1f}%  sharpe={:.3f}".format(
-        result.total_pnl, result.mean_pnl, result.win_rate * 100, result.sharpe,
+    print("  TOTAL: pnl={:+.2f}  mean={:+.2f}  entry={:.1f}%  win={:.1f}%  sharpe={:.3f}".format(
+        result.total_pnl, result.mean_pnl, result.entry_rate * 100,
+        result.win_rate * 100, result.sharpe,
     ))
 
 
@@ -359,6 +382,22 @@ def _resolve_data_dir(raw_path):
         return market_path
     # Return as-is (will fail with a clear error later)
     return raw_path
+
+
+def _window_duration_from_data_dir(data_dir):
+    # type: (str) -> int
+    """Infer window duration from data_dir path by matching against known markets.
+
+    Raises KeyError if the market is not registered in KNOWN_MARKETS.
+    """
+    markets_dir = os.path.normpath(MARKETS_DIR)
+    norm_dir = os.path.normpath(data_dir)
+    if norm_dir.startswith(markets_dir + os.sep):
+        slug_key = os.path.relpath(norm_dir, markets_dir).split(os.sep)[0]
+        for prefix, cfg in KNOWN_MARKETS.items():
+            if prefix.rstrip("-") == slug_key:
+                return cfg.window_duration_seconds
+    raise KeyError("Unknown market for data_dir '{}'. Register it in core/markets.py".format(data_dir))
 
 
 def _resolve_backtest_log(data_dir):
@@ -404,6 +443,7 @@ def log_backtest_run(args, sessions, all_results, optimize, backtest_log_file):
             "sharpe": round(best.sharpe, 4),
             "total_pnl": round(best.total_pnl, 4),
             "mean_pnl": round(best.mean_pnl, 4),
+            "entry_rate": round(best.entry_rate, 4),
             "win_rate": round(best.win_rate, 4),
             "num_sessions": best.num_sessions,
             "total_fees": round(best.total_fees, 4),
@@ -558,6 +598,15 @@ def main():
         default=True,
         help="Disable taker fee simulation.",
     )
+    parser.add_argument(
+        "--session-cash-ratio",
+        type=str,
+        default=None,
+        metavar="R:M",
+        help="Compound mode: deploy R%% of bankroll per session, capped at $M. "
+             "Bankroll carries forward across sessions. "
+             "Example: 0.08:100 deploys 8%% up to $100.",
+    )
     args = parser.parse_args()
 
     # Resolve starting cash
@@ -576,6 +625,18 @@ def main():
         starting_cash = float(args.cash)
     # Update args.cash so log_backtest_run logs the numeric value
     args.cash = starting_cash
+
+    # Parse session-cash-ratio (implies compound mode in engine)
+    session_cash_ratio = None  # type: Optional[tuple]
+    if args.session_cash_ratio:
+        parts = args.session_cash_ratio.split(":")
+        if len(parts) != 2:
+            print("Invalid --session-cash-ratio format: '{}'. Expected R:M (e.g. 0.08:100)".format(
+                args.session_cash_ratio))
+            sys.exit(1)
+        ratio = float(parts[0])
+        cap = float(parts[1])
+        session_cash_ratio = (ratio, cap)
 
     # Resolve data dir (supports slug key shorthand)
     args.data_dir = _resolve_data_dir(args.data_dir)
@@ -596,9 +657,13 @@ def main():
     kelly_mult = args.kelly_fraction
     print("Loaded {} resolved sessions from {}".format(len(sessions), args.data_dir))
     latency_str = "  Latency: {}ms".format(args.latency) if args.latency > 0 else ""
-    print("Execution: {} (slippage={})  Starting cash: ${}  Fees: {}{}".format(
+    compound_str = ""
+    if session_cash_ratio:
+        compound_str = "  Compound: on (ratio={}, cap=${})".format(
+            session_cash_ratio[0], session_cash_ratio[1])
+    print("Execution: {} (slippage={})  Starting cash: ${}  Fees: {}{}{}".format(
         args.execution, args.slippage, starting_cash, "on" if fees else "off",
-        latency_str,
+        latency_str, compound_str,
     ))
 
     # Select strategies
@@ -624,7 +689,9 @@ def main():
     session_summaries = load_session_summaries(args.data_dir)
     stats_cache = SessionStatsCache.from_summaries(session_summaries)
     # Pre-compute per-session prior stats once (avoids V×S list scans in workers)
-    pre_slice_summaries(sessions, stats_cache=stats_cache)
+    window_duration = _window_duration_from_data_dir(args.data_dir)
+    pre_slice_summaries(sessions, stats_cache=stats_cache,
+                        window_duration=window_duration)
 
     # Parse --param overrides
     grid_overrides = parse_param_overrides(args.param) if args.param else None
@@ -659,6 +726,7 @@ def main():
             args.slippage, fees, label="Screen pass",
             limit_fill_margin=args.limit_fill_margin,
             latency_ms=args.latency,
+            session_cash_ratio=session_cash_ratio,
         )
 
         # Keep top N by Sharpe from screening.
@@ -678,6 +746,7 @@ def main():
             args.slippage, fees, label="Full pass",
             limit_fill_margin=args.limit_fill_margin,
             latency_ms=args.latency,
+            session_cash_ratio=session_cash_ratio,
         )
     else:
         # Standard: run all variants on all sessions
@@ -686,6 +755,7 @@ def main():
             args.slippage, fees,
             limit_fill_margin=args.limit_fill_margin,
             latency_ms=args.latency,
+            session_cash_ratio=session_cash_ratio,
         )
 
     print("Tested {} strategy variants across {} strategies".format(
@@ -693,7 +763,8 @@ def main():
     ))
 
     # Phase 1 output: rank by Sharpe
-    print_leaderboard(all_results, args.top, args.optimize, compound=False)
+    print_leaderboard(all_results, args.top, args.optimize,
+                      compound=session_cash_ratio is not None)
 
     # ── Phase 2: Kelly Sizing ────────────────────────────────────────────
     # For each strategy's best params, compute Kelly-optimal cash_pct from
@@ -712,10 +783,10 @@ def main():
     for r in all_results:
         by_strategy.setdefault(r.strategy_name, []).append(r)
 
-    print("\n{:<20} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8} {:>8}  {}".format(
-        "Strategy", "Sharpe", "Kelly_f", "cash%", "Final$", "MaxDD%", "GeoRet%", "Win%", "Params"
+    print("\n{:<20} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8} {:>8} {:>8}  {}".format(
+        "Strategy", "Sharpe", "Kelly_f", "cash%", "Final$", "MaxDD%", "GeoRet%", "Entry%", "Win%", "Params"
     ))
-    print("-" * 120)
+    print("-" * 130)
 
     for name in sorted(by_strategy.keys()):
         variants = by_strategy[name]
@@ -725,7 +796,7 @@ def main():
         kelly = compute_kelly_sizing(best.sessions, starting_cash, kelly_multiplier=kelly_mult,
                                      laplace_losses=args.laplace)
 
-        print("{:<20} {:>8.3f} {:>8.3f} {:>7.1f}% {:>10.2f} {:>7.1f}% {:>7.3f}% {:>7.1f}%  {}".format(
+        print("{:<20} {:>8.3f} {:>8.3f} {:>7.1f}% {:>10.2f} {:>7.1f}% {:>7.3f}% {:>7.1f}% {:>7.1f}%  {}".format(
             name,
             best.sharpe,
             kelly["kelly_f"],
@@ -733,6 +804,7 @@ def main():
             kelly["projected_final"],
             kelly["projected_max_dd"] * 100,
             kelly["projected_geo_return"] * 100,
+            best.entry_rate * 100,
             best.win_rate * 100,
             format_params(best.params),
         ))

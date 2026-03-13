@@ -20,9 +20,6 @@ using session-level statistics from the last N sessions:
 """
 
 import math
-import os
-import json
-import glob
 from typing import Any, Dict, List, Optional
 
 from core.defaults import BPS_DIVISOR
@@ -45,7 +42,7 @@ class PoissonKellyDynamic(Strategy):
         "Poisson jump model with volatility-adapted jump threshold and "
         "trend bias from recent sessions. External Kelly sizing."
     )
-    version = "5"
+    version = "7"
     requires_full_session = True
 
     # --- Tunable params ---
@@ -62,105 +59,33 @@ class PoissonKellyDynamic(Strategy):
     # --- Fixed params ---
     min_jumps = Param(default=8, tunable=False)
     no_new_after = Param(default=0.95, tunable=False)
-    cooldown_ticks = Param(default=72, tunable=False)
+    cooldown_ms = Param(default=4000, tunable=False)
     lookback = Param(default=30, tunable=False)
 
     def __init__(self, **kwargs):
-        defs = self.param_defs()
-        for name, p in defs.items():
-            setattr(self, name, kwargs.get(name, p.default))
-        self._params = {name: getattr(self, name) for name in defs}
-
+        super().__init__(**kwargs)
         # Adapted parameters (computed at session start from history)
         self._effective_jump_bps = self.jump_bps
         self._effective_stop_loss = self.stop_loss_pct
         self._trend_bias = 0.0  # applied to p_up: positive = bullish
+        self._reset_state()
 
-        # Cache for live trading disk reads
-        self._session_cache = {}  # type: Dict[str, Optional[Dict[str, Any]]]
-
-        # Per-session state
+    def _reset_state(self):
         self._prev_btc = 0.0
         self._up_jumps = 0
         self._down_jumps = 0
         self._entry_count = 0
         self._entry_midpoint = 0.0
-        self._last_trade_tick = -999
-
-    # ------------------------------------------------------------------ #
-    #  Historical data loading (same pattern as PoissonKellyHistorical)
-    # ------------------------------------------------------------------ #
+        self._last_trade_time_s = -999.0
 
     def _load_prior_summaries(self, metadata):
         # type: (Dict[str, Any]) -> List[Dict[str, Any]]
-        """Get prior session summaries from metadata or disk."""
+        """Get prior session summaries from metadata."""
         prior = metadata.get("_prior_session_summaries")
-        if prior is not None:
-            n = self.lookback
-            return prior[-n:] if len(prior) > n else prior
-        return self._load_sessions_from_disk(metadata)
-
-    def _load_sessions_from_disk(self, metadata):
-        # type: (Dict[str, Any]) -> List[Dict[str, Any]]
-        """Load recent session summaries from disk for live trading."""
-        from core.defaults import BASE_DIR
-
-        slug = metadata.get("slug", "")
-        slug_key = ""
-        for suffix_len in [10, 13]:
-            if len(slug) > suffix_len:
-                candidate = slug[:-suffix_len].rstrip("-")
-                sessions_dir = os.path.join(BASE_DIR, "data", "markets", candidate, "sessions")
-                if os.path.isdir(sessions_dir):
-                    slug_key = candidate
-                    break
-
-        if not slug_key:
+        if prior is None:
             return []
-
-        sessions_dir = os.path.join(BASE_DIR, "data", "markets", slug_key, "sessions")
-        if not os.path.isdir(sessions_dir):
-            return []
-
-        pattern = os.path.join(sessions_dir, "**", "*.json")
-        files = sorted(glob.glob(pattern, recursive=True))
-        files = files[-(self.lookback + 5):]
-
-        current_window = metadata.get("window_start_utc", "")
-        summaries = []
-        for f in files:
-            if f in self._session_cache:
-                cached = self._session_cache[f]
-                if cached is not None and cached.get("_ws", "") < current_window:
-                    summaries.append(cached)
-                continue
-            try:
-                with open(f, "r") as fh:
-                    data = json.load(fh)
-                if data.get("outcome") is None:
-                    self._session_cache[f] = None
-                    continue
-                meta = data.get("metadata", {})
-                ws = meta.get("window_start_utc", "")
-                initial_btc = data.get("initial_btc_price_usd")
-                final_btc = data.get("final_btc_price_usd")
-                outcome = data.get("outcome")
-                if initial_btc and final_btc and outcome:
-                    entry = {
-                        "initial_btc": initial_btc,
-                        "final_btc": final_btc,
-                        "outcome": outcome,
-                        "_ws": ws,
-                    }
-                    self._session_cache[f] = entry
-                    if ws < current_window:
-                        summaries.append(entry)
-                else:
-                    self._session_cache[f] = None
-            except (json.JSONDecodeError, OSError):
-                continue
-
-        return summaries[-self.lookback:]
+        n = self.lookback
+        return prior[-n:] if len(prior) > n else prior
 
     # ------------------------------------------------------------------ #
     #  Dynamic parameter adaptation
@@ -203,13 +128,7 @@ class PoissonKellyDynamic(Strategy):
         # type: (Dict[str, Any]) -> None
         summaries = self._load_prior_summaries(metadata)
         self._adapt_params(summaries)
-
-        self._prev_btc = 0.0
-        self._up_jumps = 0
-        self._down_jumps = 0
-        self._entry_count = 0
-        self._entry_midpoint = 0.0
-        self._last_trade_tick = -999
+        self._reset_state()
 
         self.log("dynamic: {} sessions | jump_bps={:.3f} stop={:.3f} trend={:.4f}".format(
             len(summaries), self._effective_jump_bps,
@@ -292,7 +211,7 @@ class PoissonKellyDynamic(Strategy):
         if self._held_side(ctx) is not None:
             exit_action = self._check_exit(ctx, up_mid, down_mid,
                                             self._effective_stop_loss,
-                                            cooldown=self.cooldown_ticks)
+                                            cooldown_ms=self.cooldown_ms)
             return exit_action if exit_action is not None else HOLD
 
         # --- No position: look for entry ---
@@ -301,7 +220,7 @@ class PoissonKellyDynamic(Strategy):
         self._check_expired_entry(ctx)
 
         # Cooldown between trades
-        if ctx.tick_index - self._last_trade_tick < self.cooldown_ticks:
+        if ctx.elapsed_seconds - self._last_trade_time_s < self.cooldown_ms / 1000.0:
             return HOLD
 
         # Max entries cap
@@ -342,7 +261,7 @@ class PoissonKellyDynamic(Strategy):
 
         self._entry_count += 1
         self._entry_midpoint = midpoint
-        self._last_trade_tick = ctx.tick_index
+        self._last_trade_time_s = ctx.elapsed_seconds
 
         dollars = ctx.position.cash
 
@@ -353,5 +272,5 @@ class PoissonKellyDynamic(Strategy):
                      self._effective_jump_bps,
                      ctx.elapsed_fraction * 100))
 
-        return TradeAction(side=side, amount=dollars, price=midpoint)
+        return TradeAction(side=side, amount=dollars, price=midpoint, cancel_after_s=10)
 

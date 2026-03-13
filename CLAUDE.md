@@ -1,6 +1,6 @@
 # Polymarket Up/Down Trading System
 
-Trade crypto up/down prediction markets on Polymarket. Built for the **5-minute BTC up/down market** (`btc-updown-5m-`). See `README.md` for full architecture, usage, file structure, and technical reference.
+Trade crypto up/down prediction markets on Polymarket. Supports multiple market durations simultaneously (e.g. `btc-updown-5m-` and `btc-updown-15m-`). See `README.md` for full architecture, usage, file structure, and technical reference.
 
 ## The Market
 
@@ -26,9 +26,11 @@ New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 
 - **Python >=3.10** — use `typing.Optional`/`typing.Union`, not `X | Y`
 - **All HTTP through `LoggingSession`** — no bare `requests.get()`
 - **Auth:** `.env` has `POLYMARKET_PRIVATE_KEY`, derives Safe via Polygon RPC, caches in `.cache/auth.json`
-- **Strategies:** base class at `core/strategies/base.py`, implementations at `bots/updown/`, registries at `bots/__init__.py`. Import from `bots`, not `core.strategies`.
+- **Strategies:** base class at `core/strategies/base.py`, regime-gated base at `core/strategies/regime_gated.py`, implementations at `bots/updown/`, registries at `bots/__init__.py`. Import from `bots`, not `core.strategies`.
+- **Regime-gated strategies** extend `RegimeGatedStrategy` and set `required_vol`/`required_trend` as class-level sets. Regime thresholds are NOT tunable params — if you optimize the gate you're back to overfitting. Implement `on_tick_active()` instead of `on_tick()`, and `_on_session_start_inner()` instead of `on_session_start()`.
 - **`requires_full_session = True`** when strategy accumulates state from tick 0 (jump counts, warmup windows, running sums)
-- **No magic numbers** — numeric constants belong in `core/defaults.py` with a descriptive name and comment, then import where needed. Never inline raw numbers in logic or CLI defaults.
+- **No magic numbers** — global constants (API URLs, price precision, fee rates) belong in `core/defaults.py`; market-specific constants (window duration, session gap thresholds) belong in `core/markets.py`. Never inline raw numbers in logic or CLI defaults.
+- **Tests must pass after changes.** After implementing a group of changes, run the test suite (`uv run pytest`) and fix any failures before considering the work done. Update or add tests to cover new/changed behavior.
 
 ## Process Reliability
 
@@ -44,7 +46,7 @@ New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 
 - Optimizer: `optimizer-on`, `optimizer-off`, `optimizer-config`
 - Backtest: `uv run python -m simulator.backtest btc-updown-5m --strategy <name> --recent 30`
 
-**Per-session cash limits:** `--session-cash-ratio R:M` deploys `min(R × bankroll, M)` per session (e.g. `--cash 20 --session-cash-ratio 0.25:3` → 25% up to $3). Update live with `set-cash`. Alternatives: `--session-cap N` (fixed), `--per-session` (reset each session).
+**Per-session cash limits:** `--session-cash-ratio R:M` deploys `min(R × bankroll, M)` per session (e.g. `--cash 20 --session-cash-ratio 0.25:3` → 25% up to $3). Works in both the live app and the backtester (enables compound mode). Update live with `set-cash`. Alternatives: `--session-cap N` (fixed), `--per-session` (reset each session).
 
 ## Strategy Pitfalls
 
@@ -52,10 +54,12 @@ Common bugs found across strategies. Avoid these when writing or modifying any s
 
 - **Stuck state on expired buy orders.** If a limit buy expires without filling, the strategy must detect that `_entry_midpoint > 0` but `_held_side(ctx) is None` and reset entry state. Otherwise the strategy freezes — thinks it entered, never re-enters, never sells. Always add: `if self._entry_midpoint > 0: self._entry_midpoint = 0.0` in the "no position" branch.
 - **Use `_entry_count` instead of `_entered` flags.** Boolean flags like `_entered = True` can't distinguish "order pending" from "order filled" from "order expired." Use `_entry_count` (increment on buy attempt) and check actual position via `_held_side(ctx)`.
-- **All limit orders need `expiration_seconds`.** `TradeAction` defaults to 30s GTD. For 5-min markets, use 10s on buys/sells, 5s on very late entries (LateSniperSafe). Without expiry, orders hang on the CLOB indefinitely if the market moves away.
+- **Use `cancel_after_s` for soft order cancellation.** Polymarket enforces a ~60s minimum on GTD expiry, too long for 5-min markets. Instead, set `cancel_after_s=10` on buy `TradeAction`s — the Trader will explicitly cancel unfilled orders after that timeout. `expiration_seconds` (default 120s GTD) is the CLOB-enforced backstop. `cancel_after_s` has no default — strategies must opt in.
 - **Use `_held_side()` and `_has_position()` from base class.** Don't reimplement — they're on `Strategy` in `core/strategies/base.py`.
 - **Add `no_new_after` guard.** Strategies that can enter late should stop new entries at ~95% elapsed. The CLOB orderbook gets deleted before the window officially ends — late entries hit "orderbook does not exist" errors.
-- **Sell retry: use tick-based cooldown, not one-shot flags.** One-shot (`_exit_sell_attempted = True`) abandons tokens if the sell fails. Throttled retry (`if ctx.tick_index - self._last_sell_tick < 36: return HOLD`) retries on new ticks at updated prices.
+- **Sell retry: use time-based cooldown, not one-shot flags.** One-shot (`_exit_sell_attempted = True`) abandons tokens if the sell fails. Throttled retry (`if ctx.elapsed_seconds - self._last_sell_time_s < 2.0: return HOLD`) retries on new ticks at updated prices.
+- **No tick-based decisions.** All timing decisions (cooldowns, confirmation windows, velocity windows) must use `ctx.elapsed_seconds` or `ctx.elapsed_fraction`, never `ctx.tick_index`. The tick rate may change. Use `cooldown_ms`, `confirm_ms`, `velocity_window_ms` etc. for time-based params in milliseconds.
+- **Circuit breaker (shadow picks).** Track recent trade outcomes across sessions. If losses exceed a threshold (e.g. 2 of last 6), stop executing and instead record "shadow picks" — what the strategy *would* have bought. Resume live trading after a shadow pick proves correct. State persists on the instance across sessions (`__init__`, not `on_session_start`). Score the previous trade in `_on_session_start_inner` by comparing `_last_bought_side` against the prior session's outcome from `_prior_session_summaries[-1]["outcome"]`. See `PoissonKellyGated` for reference implementation.
 
 ## Latency Simulation
 
@@ -77,3 +81,10 @@ Time = variants × sessions × ticks. **Reduce variants first** — that's the b
 - **Keep `param_grid()` lean:** 3-4 values per param max. Test `None` (optional features) separately before tuning values.
 - **One strategy at a time** for targeted work. `--strategy all` only for broad comparison with `--screen`.
 - **`--recent 15`** for exploration, **`--recent 30`** for coarse grid sweeps, **`--recent 500`** for final validation. 30 sessions is enough to find promising directions but will overfit — always validate winners on 500+ sessions (~a few days of data) before trusting Sharpe numbers.
+- **`--session-cash-ratio R:M`** in backtester enables compound mode: deploys `R × bankroll` per session (capped at `$M`), bankroll carries forward. Without this flag, each session gets flat `--cash`.
+
+## Backtest Metrics
+
+- **Entry%** (`entry_rate`): fraction of sessions where the strategy made at least one trade. Regime-gated strategies may only trade 2-5% of sessions.
+- **Win%** (`win_rate`): fraction of *traded* sessions with positive PnL. Only counts sessions where the strategy entered — sitting out is not a loss. A strategy with 3% Entry and 87% Win is very selective but highly accurate.
+- These are distinct: a strategy that trades 20/700 sessions and wins 17 has Entry=2.9%, Win=85% — not Win=2.4%.

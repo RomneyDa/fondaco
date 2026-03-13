@@ -68,18 +68,23 @@ class TestReadWriteState:
             json.dump({"pid": 999999999, "port": 8420}, f)
         with patch("app.__main__.APP_STATE_FILE", state_file):
             from app.__main__ import _read_state
-            # Stale PID should be cleaned up
+            # Stale PID returns None but file is preserved for markets list
             assert _read_state() is None
-            assert not os.path.exists(state_file)
+            assert os.path.exists(state_file)
 
     def test_remove_state(self, tmp_path):
         state_file = str(tmp_path / "app.json")
         with open(state_file, "w") as f:
-            json.dump({"pid": 1, "port": 8420}, f)
+            json.dump({"pid": 1, "port": 8420, "markets": []}, f)
         with patch("app.__main__.APP_STATE_FILE", state_file):
             from app.__main__ import _remove_state
             _remove_state()
-            assert not os.path.exists(state_file)
+            # File preserved with pid/port cleared
+            assert os.path.exists(state_file)
+            with open(state_file) as f:
+                data = json.load(f)
+            assert "pid" not in data
+            assert "port" not in data
 
 
 class TestCmdStatus:

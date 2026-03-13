@@ -19,7 +19,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.defaults import BASE_DIR, DEFAULT_RATIO_MAX, OPTIMIZER_MAX_RATIO, market_sessions_dir
-from simulator.engine import Simulator, BacktestResult, load_sessions, load_session_summaries, compute_kelly_sizing, KELLY_FRACTION
+from core.session_cache import SessionStatsCache
+from simulator.engine import Simulator, BacktestResult, load_sessions, load_session_summaries, compute_kelly_sizing, pre_slice_summaries, convert_all_samples, KELLY_FRACTION
 from simulator.backtest import build_variants, format_params
 from bots import ALL_STRATEGIES
 
@@ -32,7 +33,7 @@ OPTIMIZER_STATUS_FILE = os.path.join(OPTIMIZER_DIR, "status.json")
 
 # Defaults
 DEFAULT_INTERVAL_MINUTES = 30
-DEFAULT_LOOKBACK_SESSIONS = 30
+DEFAULT_EVAL_SESSIONS = 30
 DEFAULT_MIN_SHARPE = 0.2
 DEFAULT_STARTING_CASH = 100.0
 DEFAULT_MAX_EDGE_ITERS = 2
@@ -237,9 +238,134 @@ def _build_refined_grid(best_params, grid, edges):
     return refined
 
 
+# Walk-forward validation splits
+WALK_FORWARD_FOLDS = 3            # Number of train/validate splits
+WALK_FORWARD_TRAIN_RATIO = 0.67   # Fraction of sessions used for training
+# Sharpe decay: if recent Sharpe is this much below full-window Sharpe, flag it
+SHARPE_DECAY_THRESHOLD = 0.3      # Absolute Sharpe difference (recent - full)
+SHARPE_DECAY_RECENT_FRACTION = 0.33  # Fraction of sessions to use as "recent"
+
+
+def _walk_forward_validate(strategy_cls, best_params, sessions, starting_cash,
+                           session_summaries, folds=WALK_FORWARD_FOLDS,
+                           train_ratio=WALK_FORWARD_TRAIN_RATIO):
+    # type: (type, dict, list, float, list, int, float) -> Dict[str, Any]
+    """Walk-forward validation: train on a window, validate on the next.
+
+    Splits sessions into overlapping train/validate windows and checks
+    that optimal params from training are stable on validation data.
+
+    Returns dict with:
+        fold_sharpes: list of validation Sharpe ratios
+        mean_val_sharpe: mean of validation Sharpes
+        min_val_sharpe: worst fold Sharpe
+        stable: True if all folds have positive validation Sharpe
+    """
+    n = len(sessions)
+    if n < 10:
+        # Too few sessions for walk-forward
+        return {"fold_sharpes": [], "mean_val_sharpe": 0.0,
+                "min_val_sharpe": 0.0, "stable": True, "skipped": True}
+
+    train_size = max(5, int(n * train_ratio))
+    step = max(1, (n - train_size) // max(folds, 1))
+    if step == 0:
+        step = 1
+
+    fold_sharpes = []  # type: List[float]
+    sim = Simulator(
+        starting_cash=starting_cash,
+        execution_mode="book",
+        session_summaries=session_summaries,
+        compound=False,
+    )
+
+    for fold in range(folds):
+        train_start = fold * step
+        train_end = min(train_start + train_size, n)
+        val_start = train_end
+        val_end = min(val_start + step, n)
+
+        if val_start >= n or val_end <= val_start:
+            break
+
+        val_sessions = sessions[val_start:val_end]
+        if len(val_sessions) < 3:
+            continue
+
+        try:
+            strategy = strategy_cls(**best_params) if best_params else strategy_cls()
+            strategy._params = best_params or {}
+            result = sim.run_backtest(strategy, val_sessions)
+            fold_sharpes.append(result.sharpe)
+        except (TypeError, ValueError, KeyError):
+            fold_sharpes.append(0.0)
+
+    if not fold_sharpes:
+        return {"fold_sharpes": [], "mean_val_sharpe": 0.0,
+                "min_val_sharpe": 0.0, "stable": True, "skipped": True}
+
+    mean_val = sum(fold_sharpes) / len(fold_sharpes)
+    min_val = min(fold_sharpes)
+
+    return {
+        "fold_sharpes": [round(s, 3) for s in fold_sharpes],
+        "mean_val_sharpe": round(mean_val, 3),
+        "min_val_sharpe": round(min_val, 3),
+        "stable": all(s > 0 for s in fold_sharpes),
+        "skipped": False,
+    }
+
+
+def _detect_sharpe_decay(sessions_results, recent_fraction=SHARPE_DECAY_RECENT_FRACTION):
+    # type: (List[Any], float) -> Dict[str, Any]
+    """Detect if a strategy's Sharpe is decaying on recent data.
+
+    Compares Sharpe on the last `recent_fraction` of sessions vs the full window.
+    If recent Sharpe is significantly below full Sharpe, the strategy may be
+    losing its edge due to regime change.
+
+    Returns dict with:
+        full_sharpe: Sharpe over all sessions
+        recent_sharpe: Sharpe over recent sessions
+        decaying: True if recent is significantly below full
+        decay_amount: how much worse recent is
+    """
+    n = len(sessions_results)
+    if n < 6:
+        return {"full_sharpe": 0.0, "recent_sharpe": 0.0,
+                "decaying": False, "decay_amount": 0.0}
+
+    pnls = [r.pnl for r in sessions_results]
+    mean_all = sum(pnls) / n
+    var_all = sum((p - mean_all) ** 2 for p in pnls) / (n - 1)
+    std_all = var_all ** 0.5
+    full_sharpe = mean_all / std_all if std_all > 0 else 0.0
+
+    recent_n = max(3, int(n * recent_fraction))
+    recent_pnls = pnls[-recent_n:]
+    mean_recent = sum(recent_pnls) / recent_n
+    if recent_n > 1:
+        var_recent = sum((p - mean_recent) ** 2 for p in recent_pnls) / (recent_n - 1)
+        std_recent = var_recent ** 0.5
+        recent_sharpe = mean_recent / std_recent if std_recent > 0 else 0.0
+    else:
+        recent_sharpe = 0.0
+
+    decay = full_sharpe - recent_sharpe
+    decaying = decay > SHARPE_DECAY_THRESHOLD and recent_sharpe < full_sharpe * 0.5
+
+    return {
+        "full_sharpe": round(full_sharpe, 3),
+        "recent_sharpe": round(recent_sharpe, 3),
+        "decaying": decaying,
+        "decay_amount": round(decay, 3),
+    }
+
+
 def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
                        session_cash_ratio, session_cap,
-                       lookback, min_sharpe, starting_cash, port,
+                       eval_sessions, min_sharpe, starting_cash, port,
                        max_edge_iters=DEFAULT_MAX_EDGE_ITERS):
     """Run optimization for a single strategy. Returns (action, details) tuple."""
 
@@ -250,11 +376,11 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
         "started_at": datetime.now(timezone.utc).isoformat(),
     })
 
-    logger.info("[%s/%s] Starting optimization (lookback=%d, min_sharpe=%.2f)",
-                slug_key, strategy_name, lookback, min_sharpe)
+    logger.info("[%s/%s] Starting optimization (eval_sessions=%d, min_sharpe=%.2f)",
+                slug_key, strategy_name, eval_sessions, min_sharpe)
     _log_event("optimize_start", strategy=strategy_name, market=slug_key,
                current_params=current_params or {},
-               lookback=lookback, min_sharpe=min_sharpe)
+               eval_sessions=eval_sessions, min_sharpe=min_sharpe)
 
     if strategy_name not in ALL_STRATEGIES:
         logger.warning("[%s/%s] Strategy not in registry, skipping", slug_key, strategy_name)
@@ -264,7 +390,7 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
 
     # Load sessions
     sessions_dir = market_sessions_dir(slug_key)
-    sessions = load_sessions(sessions_dir, recent=lookback)
+    sessions = load_sessions(sessions_dir, recent=eval_sessions)
     if not sessions:
         logger.warning("[%s/%s] No sessions found", slug_key, strategy_name)
         return "skip", {"reason": "no_sessions"}
@@ -278,7 +404,18 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
                 slug_key, strategy_name, len(sessions))
 
     # Load lightweight summaries for strategy lookback (no sample data)
+    # Build stats cache for gap-aware pre-slicing
     session_summaries = load_session_summaries(sessions_dir)
+    stats_cache = SessionStatsCache.from_summaries(session_summaries)
+    convert_all_samples(sessions)
+    from core.markets import KNOWN_MARKETS
+    # Look up window duration for this market
+    _wd = None  # type: Optional[int]
+    for _prefix, _cfg in KNOWN_MARKETS.items():
+        if _prefix.rstrip("-") == slug_key:
+            _wd = _cfg.window_duration_seconds
+            break
+    pre_slice_summaries(sessions, stats_cache=stats_cache, window_duration=_wd)
 
     # Step 1: Run baseline with current params
     try:
@@ -292,7 +429,6 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
     sim = Simulator(
         starting_cash=starting_cash,
         execution_mode="book",
-        session_summaries=session_summaries,
         compound=False,  # Phase 1: flat cash for clean per-session returns
     )
     baseline_result = sim.run_backtest(baseline_strategy, sessions)
@@ -300,14 +436,16 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
     baseline_info = {
         "sharpe": round(baseline_result.sharpe, 3),
         "pnl": round(baseline_result.total_pnl, 2),
+        "entry_rate": round(baseline_result.entry_rate * 100, 1),
         "win_rate": round(baseline_result.win_rate * 100, 1),
         "geo_return": round(baseline_result.geo_mean_return * 100, 4),
         "final_bankroll": round(baseline_result.final_bankroll, 2),
     }
-    logger.info("[%s/%s] Baseline: sharpe=%.3f geo=%.4f%% pnl=%.2f win=%.1f%% final=$%.2f",
+    logger.info("[%s/%s] Baseline: sharpe=%.3f geo=%.4f%% pnl=%.2f entry=%.1f%% win=%.1f%% final=$%.2f",
                 slug_key, strategy_name,
                 baseline_result.sharpe, baseline_result.geo_mean_return * 100,
                 baseline_result.total_pnl,
+                baseline_result.entry_rate * 100,
                 baseline_result.win_rate * 100, baseline_result.final_bankroll)
     _log_event("baseline", strategy=strategy_name, market=slug_key,
                params=current_params or {}, sessions_used=len(sessions),
@@ -438,14 +576,15 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
             "sharpe": round(r.sharpe, 3),
             "geo_return": round(r.geo_mean_return * 100, 4),
             "pnl": round(r.total_pnl, 2),
+            "entry_rate": round(r.entry_rate * 100, 1),
             "win_rate": round(r.win_rate * 100, 1),
         })
 
-    logger.info("[%s/%s] Best overall: sharpe=%.3f geo=%.4f%% pnl=%.2f win=%.1f%% params=%s "
+    logger.info("[%s/%s] Best overall: sharpe=%.3f geo=%.4f%% pnl=%.2f entry=%.1f%% win=%.1f%% params=%s "
                 "(tested %d variants across %d iteration(s))",
                 slug_key, strategy_name,
                 best.sharpe, best.geo_mean_return * 100, best.total_pnl,
-                best.win_rate * 100,
+                best.entry_rate * 100, best.win_rate * 100,
                 format_params(best.params),
                 total_variants_tested, min(edge_iter + 1, max_edge_iters + 1))
     _log_event("grid_result", strategy=strategy_name, market=slug_key,
@@ -456,7 +595,17 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
                baseline_sharpe=round(baseline_result.sharpe, 3),
                edge_iterations=min(edge_iter + 1, max_edge_iters + 1))
 
-    # Step 3: Decide action
+    # Step 3: Sharpe decay detection on baseline
+    decay_info = _detect_sharpe_decay(baseline_result.sessions)
+    if decay_info["decaying"]:
+        logger.warning("[%s/%s] Sharpe decay detected: full=%.3f recent=%.3f (decay=%.3f)",
+                       slug_key, strategy_name,
+                       decay_info["full_sharpe"], decay_info["recent_sharpe"],
+                       decay_info["decay_amount"])
+        _log_event("sharpe_decay", strategy=strategy_name, market=slug_key,
+                   **decay_info)
+
+    # Step 4: Decide action
     # Optimize for Sharpe (best risk-adjusted edge), then size with Kelly (cash_pct)
     if best.sharpe < min_sharpe:
         logger.info("[%s/%s] Best sharpe %.3f < min %.2f -> disabling",
@@ -469,6 +618,22 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
             "best_pnl": best.total_pnl,
             "baseline_sharpe": baseline_result.sharpe,
             "baseline_pnl": baseline_result.total_pnl,
+            "sharpe_decay": decay_info,
+        }
+
+    # Disable faster if Sharpe is decaying on recent data even though
+    # the full-window Sharpe looks OK
+    if decay_info["decaying"] and decay_info["recent_sharpe"] < min_sharpe:
+        logger.info("[%s/%s] Recent sharpe %.3f < min %.2f (decay detected) -> disabling",
+                    slug_key, strategy_name, decay_info["recent_sharpe"], min_sharpe)
+        return "disable", {
+            "reason": "sharpe_decay",
+            "best_sharpe": best.sharpe,
+            "recent_sharpe": decay_info["recent_sharpe"],
+            "min_sharpe": min_sharpe,
+            "best_params": best.params,
+            "baseline_sharpe": baseline_result.sharpe,
+            "sharpe_decay": decay_info,
         }
 
     # Check if improvement over baseline
@@ -478,6 +643,28 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
     params_changed = best_strategy_params != (current_params or {})
 
     if improved and params_changed:
+        # Walk-forward validation: check that best params are stable
+        wf = _walk_forward_validate(strategy_cls, best.params, sessions,
+                                    starting_cash, session_summaries)
+        logger.info("[%s/%s] Walk-forward: folds=%s mean_val=%.3f stable=%s",
+                    slug_key, strategy_name,
+                    wf.get("fold_sharpes"), wf.get("mean_val_sharpe"),
+                    wf.get("stable"))
+        _log_event("walk_forward", strategy=strategy_name, market=slug_key, **wf)
+
+        # If walk-forward shows instability, downgrade to "keep"
+        if not wf.get("stable", True) and not wf.get("skipped", False):
+            logger.info("[%s/%s] Walk-forward unstable — keeping current params",
+                        slug_key, strategy_name)
+            return "keep", {
+                "best_sharpe": best.sharpe,
+                "baseline_sharpe": baseline_result.sharpe,
+                "best_params": best.params,
+                "baseline_pnl": baseline_result.total_pnl,
+                "walk_forward": wf,
+                "reason": "walk_forward_unstable",
+            }
+
         # Phase 2: compute Kelly sizing from raw session returns
         kelly = compute_kelly_sizing(best.sessions, starting_cash, kelly_multiplier=KELLY_FRACTION)
         best_cash_pct = kelly["cash_pct"]
@@ -499,6 +686,7 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
             "new_cash_pct": best_cash_pct,
             "new_sharpe": best.sharpe,
             "new_pnl": best.total_pnl,
+            "new_entry_rate": best.entry_rate,
             "new_win_rate": best.win_rate,
             "new_geo_return": best.geo_mean_return,
             "new_dd_ratio": best.dd_ratio,
@@ -508,6 +696,8 @@ def _optimize_strategy(strategy_name, slug_key, current_params, current_cash,
             "baseline_params": current_params or {},
             "variants_tested": len(results),
             "sessions_used": len(sessions),
+            "walk_forward": wf,
+            "sharpe_decay": decay_info,
         }
     else:
         logger.info("[%s/%s] No significant improvement (sharpe %.3f vs %.3f), keeping current",
@@ -578,7 +768,7 @@ def _apply_disable(strategy_name, slug_key, slug_prefix, details, port):
         return False
 
 
-def run_optimizer(port, interval_minutes, lookback, min_sharpe, starting_cash,
+def run_optimizer(port, interval_minutes, eval_sessions, min_sharpe, starting_cash,
                   max_edge_iters=DEFAULT_MAX_EDGE_ITERS):
     """Main optimizer loop."""
     _setup_logging()
@@ -592,10 +782,12 @@ def run_optimizer(port, interval_minutes, lookback, min_sharpe, starting_cash,
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    logger.info("Optimizer started (port=%d, interval=%dm, lookback=%d, min_sharpe=%.2f, "
+    parent_pid = os.getppid()
+
+    logger.info("Optimizer started (port=%d, interval=%dm, eval_sessions=%d, min_sharpe=%.2f, "
                 "cash=%.0f, max_edge_iters=%d)",
-                port, interval_minutes, lookback, min_sharpe, starting_cash, max_edge_iters)
-    _log_event("started", interval_minutes=interval_minutes, lookback=lookback,
+                port, interval_minutes, eval_sessions, min_sharpe, starting_cash, max_edge_iters)
+    _log_event("started", interval_minutes=interval_minutes, eval_sessions=eval_sessions,
                min_sharpe=min_sharpe, starting_cash=starting_cash,
                max_edge_iters=max_edge_iters)
 
@@ -603,7 +795,7 @@ def run_optimizer(port, interval_minutes, lookback, min_sharpe, starting_cash,
         "state": "running",
         "pid": os.getpid(),
         "interval_minutes": interval_minutes,
-        "lookback": lookback,
+        "eval_sessions": eval_sessions,
         "min_sharpe": min_sharpe,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "last_run": None,
@@ -611,10 +803,15 @@ def run_optimizer(port, interval_minutes, lookback, min_sharpe, starting_cash,
     })
 
     while running:
+        # Exit if parent process died (e.g. app manager was killed)
+        if os.getppid() != parent_pid:
+            logger.info("Parent process died — optimizer exiting.")
+            break
+
         # Reload config each cycle (allows live config changes)
         config = _load_config()
         interval_minutes = _get_config_value(config, "interval_minutes", interval_minutes)
-        lookback = _get_config_value(config, "lookback", lookback)
+        eval_sessions = _get_config_value(config, "eval_sessions", eval_sessions)
         min_sharpe = _get_config_value(config, "min_sharpe", min_sharpe)
         max_edge_iters = _get_config_value(config, "max_edge_iters", max_edge_iters)
 
@@ -626,7 +823,7 @@ def run_optimizer(port, interval_minutes, lookback, min_sharpe, starting_cash,
             "state": "scanning",
             "pid": os.getpid(),
             "interval_minutes": interval_minutes,
-            "lookback": lookback,
+            "eval_sessions": eval_sessions,
             "min_sharpe": min_sharpe,
             "started_at": cycle_start.isoformat(),
             "cycle_started_at": cycle_start.isoformat(),
@@ -640,7 +837,7 @@ def run_optimizer(port, interval_minutes, lookback, min_sharpe, starting_cash,
                 "state": "waiting",
                 "pid": os.getpid(),
                 "interval_minutes": interval_minutes,
-                "lookback": lookback,
+                "eval_sessions": eval_sessions,
                 "min_sharpe": min_sharpe,
                 "error": "app_not_running",
             })
@@ -672,7 +869,7 @@ def run_optimizer(port, interval_minutes, lookback, min_sharpe, starting_cash,
                 try:
                     action, details = _optimize_strategy(
                         name, slug_key, params, cash,
-                        scr, sc, lookback, min_sharpe, starting_cash, port,
+                        scr, sc, eval_sessions, min_sharpe, starting_cash, port,
                         max_edge_iters=max_edge_iters,
                     )
                 except Exception as e:
@@ -718,7 +915,7 @@ def run_optimizer(port, interval_minutes, lookback, min_sharpe, starting_cash,
             "state": "idle",
             "pid": os.getpid(),
             "interval_minutes": interval_minutes,
-            "lookback": lookback,
+            "eval_sessions": eval_sessions,
             "min_sharpe": min_sharpe,
             "last_run": cycle_end.isoformat(),
             "last_duration_seconds": round(duration, 1),
@@ -749,8 +946,8 @@ def main():
     parser.add_argument("--port", type=int, required=True, help="Control server port")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_MINUTES,
                         help="Minutes between optimization cycles (default: {})".format(DEFAULT_INTERVAL_MINUTES))
-    parser.add_argument("--lookback", type=int, default=DEFAULT_LOOKBACK_SESSIONS,
-                        help="Number of recent sessions to backtest (default: {})".format(DEFAULT_LOOKBACK_SESSIONS))
+    parser.add_argument("--eval-sessions", type=int, default=DEFAULT_EVAL_SESSIONS,
+                        help="Number of recent sessions to backtest (default: {})".format(DEFAULT_EVAL_SESSIONS))
     parser.add_argument("--min-sharpe", type=float, default=DEFAULT_MIN_SHARPE,
                         help="Minimum Sharpe ratio to keep a strategy (default: {})".format(DEFAULT_MIN_SHARPE))
     parser.add_argument("--cash", type=float, default=DEFAULT_STARTING_CASH,
@@ -763,13 +960,13 @@ def main():
     # Save initial config
     _save_config({
         "interval_minutes": args.interval,
-        "lookback": args.lookback,
+        "eval_sessions": args.eval_sessions,
         "min_sharpe": args.min_sharpe,
         "starting_cash": args.cash,
         "max_edge_iters": args.max_edge_iters,
     })
 
-    run_optimizer(args.port, args.interval, args.lookback, args.min_sharpe, args.cash,
+    run_optimizer(args.port, args.interval, args.eval_sessions, args.min_sharpe, args.cash,
                   max_edge_iters=args.max_edge_iters)
 
 

@@ -18,13 +18,18 @@ from core.strategies.base import Strategy
 
 
 class TestTradeActionExpiration:
-    def test_default_is_none(self):
+    def test_default_is_120(self):
+        from core.defaults import DEFAULT_EXPIRATION_SECONDS
         action = TradeAction(side="buy_up", amount=100.0, price=0.20)
-        assert action.expiration_seconds is None
+        assert action.expiration_seconds == DEFAULT_EXPIRATION_SECONDS
 
     def test_can_set_expiration(self):
         action = TradeAction(side="buy_up", amount=100.0, price=0.20, expiration_seconds=60.0)
         assert action.expiration_seconds == 60.0
+
+    def test_can_set_none_for_gtc(self):
+        action = TradeAction(side="buy_up", amount=100.0, price=0.20, expiration_seconds=None)
+        assert action.expiration_seconds is None
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +82,7 @@ class TestSimPlaceLimitGTD:
     def test_gtc_order_has_no_expiration(self, sample, metadata):
         ex = SimExecutor(execution_mode="book")
         pos = Position(cash=100.0)
-        action = TradeAction(side="buy_up", amount=100.0, price=0.20)
+        action = TradeAction(side="buy_up", amount=100.0, price=0.20, expiration_seconds=None)
         order = ex.place_limit_order(action, 0, metadata, sample, pos)
         assert order is not None
         assert order.expiration is None
@@ -147,10 +152,10 @@ class TestSimCheckFillsGTD:
         )
         open_orders = [order]
 
-        # Sample at elapsed_seconds=100.0 (before 120.0 expiration), midpoint at 0.20 (fills)
+        # Midpoint must be <= price - margin (0.20 - 0.02 = 0.18) to fill
         sample = {
-            "up_token_midpoint": 0.20,
-            "down_token_midpoint": 0.80,
+            "up_token_midpoint": 0.18,
+            "down_token_midpoint": 0.82,
             "elapsed_seconds": 100.0,
         }
 
@@ -194,9 +199,10 @@ class TestSimCheckFillsGTD:
         )  # no expiration = GTC
         open_orders = [order]
 
+        # Midpoint must be <= price - margin (0.20 - 0.02 = 0.18) to fill
         sample = {
-            "up_token_midpoint": 0.20,
-            "down_token_midpoint": 0.80,
+            "up_token_midpoint": 0.18,
+            "down_token_midpoint": 0.82,
             "elapsed_seconds": 100.0,
         }
 
@@ -348,9 +354,9 @@ class TestGTDLifecycle:
         trader.process_tick(sample0)
         assert len(trader._open_orders) == 1
 
-        # Tick 1: elapsed=30s, midpoint dips to 0.20 — fills
+        # Tick 1: elapsed=30s, midpoint dips to 0.18 (below price - margin) — fills
         sample1 = {
-            "up_token_midpoint": 0.20, "down_token_midpoint": 0.80,
+            "up_token_midpoint": 0.18, "down_token_midpoint": 0.82,
             "elapsed_seconds": 30.0,
         }
         trader.process_tick(sample1)

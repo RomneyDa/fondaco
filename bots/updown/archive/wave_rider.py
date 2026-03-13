@@ -40,7 +40,7 @@ class WaveRider(Strategy):
         "Identifies session trend, buys on pullback dips at better prices. "
         "Volatility from recent sessions calibrates pullback thresholds."
     )
-    version = "6"
+    version = "8"
     requires_full_session = True
 
     # --- Tunable params ---
@@ -53,36 +53,29 @@ class WaveRider(Strategy):
     take_profit_pct = Param(default=None, min=0.10, max=0.40, nullable=True)
 
     # --- Fixed params (not tuned by optimizer) ---
-    trend_window = Param(default=100, min=60, max=200, tunable=False)
+    trend_window_ms = Param(default=5500, min=3300, max=11000, tunable=False)
     no_new_after = Param(default=0.95, tunable=False)
-    cooldown_ticks = Param(default=72, tunable=False)
+    cooldown_ms = Param(default=4000, tunable=False)
     vol_lookback = Param(default=5, tunable=False)
     min_vol_sessions = Param(default=3, tunable=False)
     vol_pullback_scale = Param(default=0.3, tunable=False)
 
     def __init__(self, **kwargs):
-        defs = self.param_defs()
-        for name, p in defs.items():
-            setattr(self, name, kwargs.get(name, p.default))
-        self._params = {name: getattr(self, name) for name in defs}
+        super().__init__(**kwargs)
+        self._reset_state()
 
-        # Per-session state
+    def _reset_state(self):
         self._btc_prices = []  # type: List[float]
         self._trend_dir = None  # type: Optional[str]  # "up" or "down"
         self._wave_peak = 0.0  # extreme BTC price in trend direction
         self._adaptive_pullback_bps = 0.0
         self._entry_midpoint = 0.0
         self._entry_count = 0
-        self._last_trade_tick = -999
+        self._last_trade_time_s = -999.0
 
     def on_session_start(self, metadata):
         # type: (Dict[str, Any]) -> None
-        self._btc_prices = []
-        self._trend_dir = None
-        self._wave_peak = 0.0
-        self._entry_midpoint = 0.0
-        self._entry_count = 0
-        self._last_trade_tick = -999
+        self._reset_state()
 
         # Compute adaptive pullback from recent session volatility
         self._adaptive_pullback_bps = self.pullback_bps
@@ -101,10 +94,10 @@ class WaveRider(Strategy):
         self.log("Vol: mean_abs={:.2f}bps std={:.2f}bps → pullback={:.2f}bps".format(
             mean_ret, vol_std, adaptive))
 
-    def _detect_trend(self, initial_btc):
-        # type: (float) -> Optional[str]
+    def _detect_trend(self, initial_btc, elapsed_seconds):
+        # type: (float, float) -> Optional[str]
         """Detect trend direction from accumulated BTC prices."""
-        if len(self._btc_prices) < self.trend_window or initial_btc <= 0:
+        if elapsed_seconds < self.trend_window_ms / 1000.0 or initial_btc <= 0:
             return None
 
         current = self._btc_prices[-1]
@@ -150,11 +143,11 @@ class WaveRider(Strategy):
             return HOLD
 
         # Cooldown
-        if ctx.tick_index - self._last_trade_tick < self.cooldown_ticks:
+        if ctx.elapsed_seconds - self._last_trade_time_s < self.cooldown_ms / 1000.0:
             return HOLD
 
         # Detect or update trend
-        trend = self._detect_trend(ctx.initial_btc_price)
+        trend = self._detect_trend(ctx.initial_btc_price, ctx.elapsed_seconds)
         if trend is None:
             return HOLD
 
@@ -190,24 +183,24 @@ class WaveRider(Strategy):
             if up_mid <= self.max_price and up_mid > 0:
                 self._entry_count += 1
                 self._entry_midpoint = up_mid
-                self._last_trade_tick = ctx.tick_index
+                self._last_trade_time_s = ctx.elapsed_seconds
                 self._wave_peak = btc  # reset peak for next wave
                 dollars = ctx.position.cash
                 self.log("BUY UP #{} on pullback: pb={:.2f}bps mid={:.3f} ${:.2f} at {:.0f}%".format(
                     self._entry_count, pullback, up_mid, dollars,
                     ctx.elapsed_fraction * 100))
-                return TradeAction(side="buy_up", amount=dollars, price=up_mid)
+                return TradeAction(side="buy_up", amount=dollars, price=up_mid, cancel_after_s=10)
         else:
             if down_mid <= self.max_price and down_mid > 0:
                 self._entry_count += 1
                 self._entry_midpoint = down_mid
-                self._last_trade_tick = ctx.tick_index
+                self._last_trade_time_s = ctx.elapsed_seconds
                 self._wave_peak = btc  # reset peak for next wave
                 dollars = ctx.position.cash
                 self.log("BUY DOWN #{} on pullback: pb={:.2f}bps mid={:.3f} ${:.2f} at {:.0f}%".format(
                     self._entry_count, pullback, down_mid, dollars,
                     ctx.elapsed_fraction * 100))
-                return TradeAction(side="buy_down", amount=dollars, price=down_mid)
+                return TradeAction(side="buy_down", amount=dollars, price=down_mid, cancel_after_s=10)
 
         return HOLD
 

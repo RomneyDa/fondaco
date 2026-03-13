@@ -1,6 +1,6 @@
 # Polymarket Up/Down Trading System
 
-Trade crypto up/down prediction markets on Polymarket. Built for the **5-minute BTC up/down market** (`btc-updown-5m-`).
+Trade crypto up/down prediction markets on Polymarket. Supports multiple market durations simultaneously (e.g. `btc-updown-5m-` and `btc-updown-15m-`).
 
 ## The Market
 
@@ -59,6 +59,9 @@ uv run python -m app optimizer-on --interval 15 --lookback 20 --min-sharpe 0.15
 uv run python -m simulator.backtest btc-updown-5m --strategy all --top 10 --recent 30
 uv run python -m simulator.backtest btc-updown-5m --strategy LateSniper --recent 30 \
   --param min_elapsed=0.45,0.50,0.55 --param stop_loss_pct=0.03,0.05
+# Backtest with compound sizing (20% of bankroll per session, uncapped)
+uv run python -m simulator.backtest btc-updown-5m --strategy VolBreakout --recent 700 \
+  --cash 100 --session-cash-ratio 0.20:99999
 
 # Claim
 uv run python -m app claim [--no-wait]
@@ -77,7 +80,8 @@ Update live: `set-cash btc-updown-5m- 20 --session-cash-ratio 0.25:3` / `--sessi
 
 ```
 core/
-  defaults.py            Timing, API URLs, market-aware path helpers
+  defaults.py            Global constants (API URLs, price precision, fees, paths)
+  markets.py             Market-specific constants (window duration, gap thresholds)
   models.py              PriceSample, MarketMetadata, SessionData
   api_logger.py          LoggingSession
   trader.py              TradeAction, Position, TickContext, Trade, Executor ABC, SimExecutor, ClobExecutor, Trader
@@ -133,12 +137,62 @@ Bot endpoints require `slug_prefix` in JSON body.
 
 **Guardrails:** Min order 5 tokens. Per-session risk via `--session-cash-ratio` or `--session-cap`. Settlement cooldown in `Trader.process_tick()`. Balance cached to `.cache/balance.json`.
 
+## Regime Detection & Gap Handling
+
+### Data Gap Handling
+
+Session data can have gaps (hours of missing sessions due to downtime, API issues, etc.). The system detects and handles these:
+
+- **`_gap_before_seconds`**: Attached to each session's metadata during backtesting. The time since the previous session. Large gaps (>600s for 5-min markets) indicate stale data.
+- **`_data_density`**: Fraction of expected sessions actually present in the lookback window. Below 80% means the lookback data has significant holes.
+- **`SessionStatsCache.prior_contiguous()`**: Returns prior sessions stopping at the first large gap. Strategies using this get only temporally dense data instead of lookback windows that span hours of missing data.
+- **`SessionStatsCache.data_density()`**: Computes how many sessions exist vs how many should exist based on the time span.
+
+Gap threshold is market-specific: each market's `max_session_gap_seconds` (defined in `core/markets.py`) defaults to 2x its window duration (600s for 5-min, 1800s for 15-min). Data density has no global cutoff; strategies opt in via `min_density` on `RegimeGatedStrategy` (e.g., `min_density = 0.80` to require 80% of expected sessions present).
+
+### Regime Classification
+
+`core/volatility.py` classifies the market regime from prior session data:
+
+- **Volatility regime** (`classify_vol_regime`): `low` (<3 bps mean abs return), `medium` (3-8 bps), `high` (>8 bps). Determines whether the market is moving enough to trade.
+- **Trend regime** (`classify_trend_regime`): Uses lag-1 autocorrelation of signed returns. `trending` (>0.15 autocorr = outcomes persist), `mean_reverting` (<-0.15 = outcomes reverse), `flat` (near zero).
+- **Data quality**: `clean` or `stale` based on gap and density thresholds.
+- **`classify_regime(metadata)`**: Combined classifier returning all three dimensions.
+
+### Regime-Gated Strategies
+
+`RegimeGatedStrategy` (in `core/strategies/regime_gated.py`) wraps any strategy with a regime filter. Subclasses set which regimes they accept:
+
+```python
+class TrendDrift(RegimeGatedStrategy):
+    required_vol = {"medium", "high"}    # only trade when vol is sufficient
+    required_trend = {"trending"}         # only in trending regimes
+    skip_stale_data = True                # sit out after data gaps
+```
+
+Regime is classified once per session in `on_session_start()`. If the regime doesn't match, `on_tick()` returns HOLD for the entire session. **Regime thresholds are NOT tunable** — they are fixed per strategy class to prevent overfitting the gate itself.
+
+**Active regime-gated strategies:**
+
+| Strategy | Vol Gate | Trend Gate | Entry Logic |
+|---|---|---|---|
+| `TrendDrift` | medium, high | trending | BTC drift + velocity confirmation |
+| `MeanRevFader` | medium, high | mean_reverting | Buy dips below threshold, sell on TP/SL |
+| `VolBreakout` | high | any | BTC displacement breakout |
+| `ConfirmedLate` | medium, high | any | Late-session high-confidence with confirmation timer |
+
+These strategies are designed to **activate selectively** — each only trades in the ~30-50% of sessions where its edge exists, and sits out the rest. This is the key to avoiding the "great on 50 sessions, flat on 500" problem: instead of one strategy trying to work everywhere, multiple strategies each work in their niche.
+
 ## Backtesting & Optimization
 
 **Two-phase backtest: Sharpe for edge, Kelly for sizing.**
 
-- **Phase 1 (Strategy Selection):** Grid search with flat cash per session (`compound=False`). Ranks by Sharpe to find the best risk-adjusted edge. This gives clean, unscaled per-session returns.
+- **Phase 1 (Strategy Selection):** Grid search with flat cash per session (default) or compound mode (`--session-cash-ratio R:M` deploys `R × bankroll` per session, capped at `$M`, bankroll carries forward). Ranks by Sharpe to find the best risk-adjusted edge.
 - **Phase 2 (Kelly Sizing):** Takes the best params' raw return series and computes `f* = argmax_f Σ log(1 + f·r_i)`. Applies fractional Kelly (default half-Kelly, `--kelly-fraction 0.5`) to get `cash_pct` — the fraction of bankroll to deploy per session. Projects compound growth at that sizing.
+
+**Metrics:**
+- **Entry%** (`entry_rate`): fraction of sessions where the strategy traded (at least one order). Regime-gated strategies may only enter 2-5% of sessions.
+- **Win%** (`win_rate`): fraction of *traded* sessions with positive PnL. Sitting out is not counted as a loss — Win% measures accuracy when the strategy chooses to act.
 
 The optimizer uses the same two-phase approach and translates `cash_pct` into the live `session-cash-ratio` setting. Constants: `KELLY_FRACTION = 0.5` (engine.py), `MIN_SHARPE_IMPROVEMENT = 0.05` (optimizer.py).
 
@@ -147,6 +201,16 @@ The optimizer uses the same two-phase approach and translates `cash_pct` into th
 **Laplace smoothing (Rule of Three) for total-loss markets:** In binary-outcome markets (token → $0 or $1), a loss is -100% of deployed capital. With small wins (+4-6%) and total losses, Kelly is extremely sensitive to the estimated loss rate. When the sample has zero observed losses, naive Kelly says f*=1.0 (bet everything) — which is dangerously overfit. We inject synthetic total-loss events using the **Rule of Three**: with 0 losses in n trials, the 95% CI upper bound on loss rate ≈ 3/n. We inject `max(1, round(3*n_traded/(n_traded+3)))` synthetic losses (approaches 3 for large n). This scales with sample size — unlike a fixed 1-loss injection which underestimates risk as n grows.
 
 **Caveat:** Kelly assumes returns scale linearly with size. If fills/slippage change materially with size (liquidity limits, market impact), the true optimal sizing is lower.
+
+### Optimizer Anti-Overfit Measures
+
+The optimizer (`app/optimizer.py`) includes safeguards against deploying overfit parameters:
+
+- **Walk-forward validation**: Before accepting new params, the optimizer splits sessions into overlapping train/validate windows and checks that the best params produce positive Sharpe on each validation fold. If any fold has negative Sharpe, the update is rejected and current params are kept. This prevents deploying params that only worked on one lucky window.
+
+- **Sharpe decay detection**: Compares the strategy's Sharpe on the most recent 1/3 of sessions vs the full lookback window. If recent Sharpe has dropped significantly below the full-window Sharpe (and recent Sharpe is below `min_sharpe`), the strategy is disabled immediately — don't wait for the full-window average to catch up. This catches regime changes faster.
+
+- **Gap-aware session data**: The optimizer now uses `pre_slice_summaries` with the `SessionStatsCache` to attach gap and density metadata to sessions. Regime-gated strategies automatically skip sessions after data gaps, preventing stale lookback data from corrupting their regime estimates.
 
 ### Performance: Keeping Backtests Fast
 

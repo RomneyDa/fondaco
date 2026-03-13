@@ -12,7 +12,7 @@ class LateSniper(Strategy):
 
     name = "LateSniper"
     description = "Waits until late in the window when the outcome is more predictable, then buys the likely winner."
-    version = "11"
+    version = "12"
 
     # --- Tunable params ---
     min_elapsed = Param(default=0.70, min=0.40, max=0.70)
@@ -34,12 +34,12 @@ class LateSniper(Strategy):
         self.min_elapsed_hint = self.min_elapsed
         self._entry_midpoint = 0.0
         self._entry_count = 0
-        self._last_sell_tick = -999
+        self._last_sell_time_s = -999.0
 
     def on_session_start(self, metadata):
         self._entry_midpoint = 0.0
         self._entry_count = 0
-        self._last_sell_tick = -999
+        self._last_sell_time_s = -999.0
 
     def on_tick(self, ctx):
         up_mid = ctx.sample.get("up_token_midpoint")

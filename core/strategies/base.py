@@ -101,6 +101,12 @@ class Strategy(ABC):
     uses_history = False  # type: bool  # Set True if on_tick reads ctx.history
     min_elapsed_hint = 0.0  # type: float  # Simulator skips ticks before this (only when requires_full_session=False)
 
+    def __init__(self, **kwargs):
+        defs = self.param_defs()
+        for name, p in defs.items():
+            setattr(self, name, kwargs.get(name, p.default))
+        self._params = {name: getattr(self, name) for name in defs}
+
     @classmethod
     def param_defs(cls):
         # type: () -> Dict[str, Param]
@@ -149,15 +155,15 @@ class Strategy(ABC):
         return ctx.position.up_tokens > 0 or ctx.position.down_tokens > 0
 
     def _check_exit(self, ctx, up_mid, down_mid, stop_loss_pct, take_profit_pct=None,
-                     cooldown=36):
+                     cooldown_ms=2000):
         # type: (TickContext, float, float, Optional[float], Optional[float], int) -> Optional[TradeAction]
         """Check stop-loss and take-profit for an existing position.
 
         Returns a sell TradeAction if triggered, HOLD if in cooldown, or None
         if no exit condition met (caller should return HOLD for held positions).
 
-        Expects self._entry_midpoint and self._last_sell_tick / self._last_trade_tick
-        to be set by the strategy.
+        Expects self._entry_midpoint and self._last_sell_time_s / self._last_trade_time_s
+        to be set by the strategy. cooldown_ms is in milliseconds.
         """
         held = self._held_side(ctx)
         if held is None:
@@ -171,15 +177,17 @@ class Strategy(ABC):
         sell_side = "sell_up" if held == "up" else "sell_down"
         tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
 
-        # Find the last trade/sell tick attribute (strategies use different names)
-        last_tick = getattr(self, "_last_sell_tick",
-                            getattr(self, "_last_trade_tick", -999))
+        # Find the last trade/sell time (strategies use different names)
+        last_time_s = getattr(self, "_last_sell_time_s",
+                              getattr(self, "_last_trade_time_s", -999.0))
+
+        cooldown_s = cooldown_ms / 1000.0
 
         # Stop-loss
         if stop_loss_pct is not None and current_mid <= entry_mid * (1.0 - stop_loss_pct):
-            if ctx.tick_index - last_tick < cooldown:
+            if ctx.elapsed_seconds - last_time_s < cooldown_s:
                 return HOLD
-            self._update_last_trade_tick(ctx.tick_index)
+            self._update_last_trade_time(ctx.elapsed_seconds)
             self.log("stop-loss: mid={:.3f} down {:.1f}% from entry {:.3f}".format(
                 current_mid,
                 (1.0 - current_mid / entry_mid) * 100,
@@ -190,9 +198,9 @@ class Strategy(ABC):
 
         # Take-profit
         if take_profit_pct is not None and current_mid >= entry_mid * (1.0 + take_profit_pct):
-            if ctx.tick_index - last_tick < cooldown:
+            if ctx.elapsed_seconds - last_time_s < cooldown_s:
                 return HOLD
-            self._update_last_trade_tick(ctx.tick_index)
+            self._update_last_trade_time(ctx.elapsed_seconds)
             self.log("take-profit: mid={:.3f} up {:.1f}% from entry {:.3f}".format(
                 current_mid,
                 (current_mid / entry_mid - 1.0) * 100,
@@ -203,13 +211,13 @@ class Strategy(ABC):
 
         return None
 
-    def _update_last_trade_tick(self, tick_index):
-        # type: (int) -> None
-        """Update whichever last-trade-tick attribute the strategy uses."""
-        if hasattr(self, "_last_sell_tick"):
-            self._last_sell_tick = tick_index
-        if hasattr(self, "_last_trade_tick"):
-            self._last_trade_tick = tick_index
+    def _update_last_trade_time(self, elapsed_seconds):
+        # type: (float) -> None
+        """Update whichever last-trade-time attribute the strategy uses."""
+        if hasattr(self, "_last_sell_time_s"):
+            self._last_sell_time_s = elapsed_seconds
+        if hasattr(self, "_last_trade_time_s"):
+            self._last_trade_time_s = elapsed_seconds
 
     def _check_timing_guards(self, ctx, min_elapsed, no_new_after):
         # type: (TickContext, float, float) -> bool

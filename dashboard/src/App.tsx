@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { fetchBalance, fetchBotStatus, fetchLivePrefixes, fetchPrefixes } from "./api";
 import type { BalanceInfo } from "./api";
 import { useSSE } from "./hooks/useSSE";
 import type { BotStatus, LivePayload, PrefixInfo } from "./types";
 import { Sidebar } from "./components/Sidebar";
-import { Home } from "./components/Home";
 import { SessionList } from "./components/SessionList";
 import { SessionDetail } from "./components/SessionDetail";
 import { LiveView } from "./components/LiveView";
-import { BotPanel } from "./components/BotPanel";
+import { HomePanel } from "./components/HomePanel";
 import { StrategyDetail } from "./components/StrategyDetail";
 import { OptimizerPanel } from "./components/OptimizerPanel";
 import { Positions } from "./components/Positions";
@@ -120,8 +119,8 @@ export function App() {
   });
 
   return (
-    <Group direction="horizontal" autoSaveId="app-layout-v4" style={{ height: "100vh" }}>
-      <Panel defaultSize="330px" min="180px" max="500px" className="min-w-0">
+    <Group orientation="horizontal" style={{ height: "100vh" }}>
+      <Panel defaultSize="230px" minSize="180px" maxSize="500px" className="min-w-0">
         <Sidebar
           prefixes={prefixes}
           livePrefixes={livePrefixes}
@@ -131,10 +130,17 @@ export function App() {
         />
       </Panel>
       <Separator className="resize-handle" />
-      <Panel min="400px" className="min-w-0">
+      <Panel minSize="400px" className="min-w-0">
         <main className="h-full overflow-y-auto px-8 py-6">
           <Routes>
-            <Route path="/" element={<Home prefixes={prefixes} />} />
+            <Route path="/" element={<Navigate to="/home" replace />} />
+            <Route
+              path="/home"
+              element={
+                <HomePanel botStatus={botStatus} onRefresh={refreshBotStatus} livePrefixes={livePrefixes} />
+              }
+            />
+            <Route path="/bot" element={<Navigate to="/home" replace />} />
             <Route
               path="/sessions/:prefix"
               element={<SessionList key={navVersion} />}
@@ -145,13 +151,7 @@ export function App() {
             />
             <Route
               path="/live/:prefix"
-              element={<LiveView liveData={liveData} />}
-            />
-            <Route
-              path="/bot"
-              element={
-                <BotPanel botStatus={botStatus} onRefresh={refreshBotStatus} tradeRefresh={tradeRefresh} />
-              }
+              element={<LiveView liveData={liveData} botStatus={botStatus} onRefresh={refreshBotStatus} />}
             />
             <Route
               path="/strategy/:market/:strategy"

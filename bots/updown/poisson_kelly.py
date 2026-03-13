@@ -32,7 +32,7 @@ class PoissonKelly(Strategy):
         "Models BTC price as a Poisson jump process, estimates win probability "
         "via Skellam distribution. External Kelly sizing via session_cash_ratio."
     )
-    version = "9"
+    version = "11"
     requires_full_session = True
 
     # --- Tunable params ---
@@ -47,29 +47,21 @@ class PoissonKelly(Strategy):
     no_new_after = Param(default=0.95, tunable=False)
 
     def __init__(self, **kwargs):
-        defs = self.param_defs()
-        for name, p in defs.items():
-            setattr(self, name, kwargs.get(name, p.default))
-        self._params = {name: getattr(self, name) for name in defs}
+        super().__init__(**kwargs)
+        self._reset_state()
 
-        # Per-session state
+    def _reset_state(self):
         self._prev_btc = 0.0
         self._up_jumps = 0
         self._down_jumps = 0
         self._entry_count = 0
         self._entry_midpoint = 0.0
         self._stopped_out = False
-        self._last_trade_tick = -999
+        self._last_trade_time_s = -999.0
 
     def on_session_start(self, metadata):
         # type: (Dict[str, Any]) -> None
-        self._prev_btc = 0.0
-        self._up_jumps = 0
-        self._down_jumps = 0
-        self._entry_count = 0
-        self._entry_midpoint = 0.0
-        self._stopped_out = False
-        self._last_trade_tick = -999
+        self._reset_state()
 
     def _compute_p_up(self, ctx):
         # type: (TickContext) -> Optional[float]
@@ -193,7 +185,7 @@ class PoissonKelly(Strategy):
 
         self._entry_count += 1
         self._entry_midpoint = midpoint
-        self._last_trade_tick = ctx.tick_index
+        self._last_trade_time_s = ctx.elapsed_seconds
 
         # Bet full session cash (sizing handled externally via session_cash_ratio)
         dollars = ctx.position.cash
@@ -204,5 +196,5 @@ class PoissonKelly(Strategy):
                      self._up_jumps, self._down_jumps,
                      ctx.elapsed_fraction * 100))
 
-        return TradeAction(side=side, amount=dollars, price=midpoint)
+        return TradeAction(side=side, amount=dollars, price=midpoint, cancel_after_s=10)
 

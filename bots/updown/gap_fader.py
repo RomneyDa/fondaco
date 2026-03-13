@@ -39,20 +39,20 @@ class GapFader(Strategy):
         "take-profit. Multiple round-trips per session, scaled by "
         "volatility and elapsed time."
     )
-    version = "4"
+    version = "7"
     requires_full_session = True
 
     # --- Tunable params ---
-    gap_threshold = Param(default=0.12, min=0.08, max=0.18)
-    max_buy_price = Param(default=0.40, min=0.35, max=0.48)
-    take_profit_pct = Param(default=0.40, min=0.25, max=0.50)
-    stop_loss_pct = Param(default=0.30, min=0.15, max=0.40)
-    max_entries = Param(default=3, min=1, max=5)
-    time_decay_power = Param(default=1.0, min=0.5, max=2.0)
+    gap_threshold = Param(default=0.06, min=0.04, max=0.10)
+    max_buy_price = Param(default=0.50, min=0.44, max=0.50)
+    take_profit_pct = Param(default=0.45, min=0.30, max=0.55)
+    stop_loss_pct = Param(default=0.35, min=0.25, max=0.45)
+    max_entries = Param(default=5, min=3, max=7)
+    time_decay_power = Param(default=2.5, min=1.5, max=3.0)
 
     # --- Fixed params ---
     observe_seconds = Param(default=15.0, tunable=False)
-    cooldown_ticks = Param(default=36, tunable=False)
+    cooldown_ms = Param(default=2000, tunable=False)
     no_new_after = Param(default=0.85, tunable=False)
     vol_lookback = Param(default=5, tunable=False)
     min_vol_sessions = Param(default=3, tunable=False)
@@ -60,30 +60,22 @@ class GapFader(Strategy):
     vol_baseline_bps = Param(default=5.0, tunable=False)
 
     def __init__(self, **kwargs):
-        defs = self.param_defs()
-        for name, p in defs.items():
-            setattr(self, name, kwargs.get(name, p.default))
-        self._params = {name: getattr(self, name) for name in defs}
+        super().__init__(**kwargs)
+        self._reset_state()
 
-        # Per-session state
+    def _reset_state(self):
         self._gap_samples = []  # type: List[float]
         self._active = False
         self._vol_boost = 1.0
         self._entry_count = 0
         self._entry_midpoint = 0.0
         self._entry_side = None  # type: Optional[str]
-        self._last_trade_tick = -999
+        self._last_trade_time_s = -999.0
         self._window_seconds = 300
 
     def on_session_start(self, metadata):
         # type: (Dict[str, Any]) -> None
-        self._gap_samples = []
-        self._active = False
-        self._vol_boost = 1.0
-        self._entry_count = 0
-        self._entry_midpoint = 0.0
-        self._entry_side = None
-        self._last_trade_tick = -999
+        self._reset_state()
         self._window_seconds = metadata.get("window", 300)
 
         # Compute volatility boost from recent sessions
@@ -151,35 +143,13 @@ class GapFader(Strategy):
         # --- Manage existing position ---
         held = self._held_side(ctx)
         if held is not None:
-            current_mid = up_mid if held == "up" else down_mid
-            sell_side = "sell_up" if held == "up" else "sell_down"
-            tokens = ctx.position.up_tokens if held == "up" else ctx.position.down_tokens
-
-            if self._entry_midpoint > 0 and tokens > 0:
-                # Cooldown guard on sells too
-                if ctx.tick_index - self._last_trade_tick < self.cooldown_ticks:
-                    return HOLD
-
-                # Take-profit
-                if current_mid >= self._entry_midpoint * (1.0 + self.take_profit_pct):
-                    self._last_trade_tick = ctx.tick_index
-                    gain_pct = (current_mid / self._entry_midpoint - 1.0) * 100
-                    self.log("TAKE-PROFIT #{}: mid={:.3f} entry={:.3f} +{:.1f}%".format(
-                        self._entry_count, current_mid, self._entry_midpoint, gain_pct))
-                    self._entry_midpoint = 0.0
+            exit_action = self._check_exit(ctx, up_mid, down_mid,
+                                            self.stop_loss_pct, self.take_profit_pct,
+                                            cooldown_ms=self.cooldown_ms)
+            if exit_action is not None:
+                if exit_action is not HOLD:
                     self._entry_side = None
-                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
-
-                # Stop-loss
-                if current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
-                    self._last_trade_tick = ctx.tick_index
-                    drop_pct = (1.0 - current_mid / self._entry_midpoint) * 100
-                    self.log("STOP-LOSS #{}: mid={:.3f} entry={:.3f} -{:.1f}%".format(
-                        self._entry_count, current_mid, self._entry_midpoint, drop_pct))
-                    self._entry_midpoint = 0.0
-                    self._entry_side = None
-                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
-
+                return exit_action
             return HOLD
 
         # --- No position: look for dip to buy ---
@@ -201,7 +171,7 @@ class GapFader(Strategy):
             return HOLD
 
         # Cooldown
-        if ctx.tick_index - self._last_trade_tick < self.cooldown_ticks:
+        if ctx.elapsed_seconds - self._last_trade_time_s < self.cooldown_ms / 1000.0:
             return HOLD
 
         # Effective max price decays with time, boosted by volatility
@@ -225,7 +195,7 @@ class GapFader(Strategy):
         self._entry_count += 1
         self._entry_midpoint = price
         self._entry_side = side_label
-        self._last_trade_tick = ctx.tick_index
+        self._last_trade_time_s = ctx.elapsed_seconds
 
         dollars = ctx.position.cash
 
@@ -235,6 +205,6 @@ class GapFader(Strategy):
                      eff_max, self._vol_boost, dollars,
                      ctx.elapsed_fraction * 100))
 
-        return TradeAction(side=side, amount=dollars, price=price)
+        return TradeAction(side=side, amount=dollars, price=price, cancel_after_s=10)
 
 

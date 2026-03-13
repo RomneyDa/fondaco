@@ -1,8 +1,8 @@
-"""Tests for core/math_utils.py: norm_cdf and ols_slope_bps."""
+"""Tests for core/math_utils.py: norm_cdf, ols_slope_bps, ols_slope_bps_timed."""
 
 import math
 import pytest
-from core.math_utils import norm_cdf, ols_slope_bps
+from core.math_utils import norm_cdf, ols_slope_bps, ols_slope_bps_timed
 
 
 # ---------------------------------------------------------------------------
@@ -66,3 +66,48 @@ class TestOlsSlopeBps:
         slope = ols_slope_bps(prices, 3)
         assert slope is not None
         assert slope > 0
+
+
+# ---------------------------------------------------------------------------
+# ols_slope_bps_timed
+# ---------------------------------------------------------------------------
+
+
+class TestOlsSlopeBpsTimed:
+    def test_uptrend(self):
+        times = [0.0, 1.0, 2.0, 3.0, 4.0]
+        prices = [100.0, 101.0, 102.0, 103.0, 104.0]
+        slope = ols_slope_bps_timed(times, prices)
+        assert slope is not None
+        assert slope > 0
+
+    def test_downtrend(self):
+        times = [0.0, 1.0, 2.0, 3.0, 4.0]
+        prices = [104.0, 103.0, 102.0, 101.0, 100.0]
+        slope = ols_slope_bps_timed(times, prices)
+        assert slope is not None
+        assert slope < 0
+
+    def test_flat(self):
+        times = [0.0, 1.0, 2.0, 3.0, 4.0]
+        prices = [100.0, 100.0, 100.0, 100.0, 100.0]
+        slope = ols_slope_bps_timed(times, prices)
+        assert slope is not None
+        assert slope == pytest.approx(0.0)
+
+    def test_insufficient_data(self):
+        assert ols_slope_bps_timed([0.0], [100.0]) is None
+
+    def test_base_zero(self):
+        assert ols_slope_bps_timed([0.0, 1.0, 2.0], [0.0, 1.0, 2.0]) is None
+
+    def test_mismatched_lengths(self):
+        assert ols_slope_bps_timed([0.0, 1.0], [100.0]) is None
+
+    def test_returns_bps_per_second(self):
+        # Price goes from 100 to 110 over 10 seconds = 1 $/s = 100 bps/s
+        times = [0.0, 10.0]
+        prices = [100.0, 110.0]
+        slope = ols_slope_bps_timed(times, prices)
+        assert slope is not None
+        assert slope == pytest.approx(100.0)

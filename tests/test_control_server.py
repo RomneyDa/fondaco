@@ -167,7 +167,10 @@ class TestSetCash:
                 "strategy": "LateSniper",
             })
             assert result["ok"] is True
-            runner.set_cash.assert_called_once_with(75.0, strategy_name="LateSniper")
+            runner.set_cash.assert_called_once()
+            call_args = runner.set_cash.call_args
+            assert call_args[0][0] == 75.0
+            assert call_args[1]["strategy_name"] == "LateSniper"
         finally:
             server.stop()
 

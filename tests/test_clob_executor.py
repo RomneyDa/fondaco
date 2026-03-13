@@ -18,8 +18,11 @@ from core.trader import (
 def mock_client():
     """A mock ClobClient that succeeds by default with realistic FAK response.
 
-    Default response simulates a full fill of 200 tokens at 0.50 price:
+    Default response simulates a full fill of 100 tokens at 0.50 price:
     BUY: takingAmount = tokens * 1e6, makingAmount = dollars * 1e6
+
+    Kept small (100 tokens / $50) so that apply_trade never exceeds $100 cash
+    regardless of the price used by the test (worst case: 100 * 0.99 = $99).
     """
     client = MagicMock()
     client.create_order.return_value = MagicMock()
@@ -27,8 +30,8 @@ def mock_client():
         "orderID": "order-abc-123",
         "success": True,
         "status": "matched",
-        "takingAmount": "200000000",   # 200 tokens (full fill of 100/0.50)
-        "makingAmount": "100000000",   # $100
+        "takingAmount": "100000000",   # 100 tokens
+        "makingAmount": "50000000",    # $50
     }
     return client
 
@@ -95,14 +98,13 @@ def test_none_price(mock_client, metadata):
     assert "No valid price" in trade.error
 
 
-def test_price_rounds_to_one(mock_client, metadata):
-    """If best_ask rounds to 1.0, trade is rejected (out of range)."""
+def test_price_capped_at_099(mock_client, metadata):
+    """If best_ask is 0.999, price caps to 0.99 (MAX_TOKEN_PRICE) and succeeds."""
     ex = ClobExecutor(mock_client)
     sample = {"up_token_best_ask": 0.999, "up_token_best_bid": 0.98}
     action = TradeAction(side="buy_up", amount=50.0)
     trade = ex.execute_trade(action, 0, metadata, sample, Position(cash=100.0))
-    assert trade.success is False
-    assert "out of range" in trade.error
+    assert trade.success is True
 
 
 def test_wide_spread_trades_at_market(mock_client, metadata):
@@ -264,8 +266,10 @@ def test_partial_fill_applies_only_filled_amount(mock_client, metadata, sample):
     assert trade.amount == 60.0
     assert trade.requested_tokens == 196  # logged for audit
     assert pos.up_tokens == 120.0
-    # Cash deducted by actual_tokens * price (120 * 0.51 = 61.2)
-    assert pos.cash == pytest.approx(38.8)
+    # Cash deducted by actual_tokens * price (120 * 0.51 = 61.2) + taker fee
+    from core.defaults import compute_taker_fee
+    expected_fee = compute_taker_fee(0.51, 120.0)
+    assert pos.cash == pytest.approx(38.8 - expected_fee)
 
 
 def test_success_false_preserves_position(mock_client, metadata, sample):
@@ -379,7 +383,9 @@ class TestClobCheckFills:
         assert fills[0].amount == pytest.approx(4.8)  # 6 * 0.80
         assert fills[0].success is True
         assert fills[0].side == "sell_down"
-        assert pos.cash == pytest.approx(14.8)  # 10 + 4.8
+        from core.defaults import compute_taker_fee
+        expected_fee = compute_taker_fee(0.80, 6.0)
+        assert pos.cash == pytest.approx(10.0 + 4.8 - expected_fee)
         assert len(orders) == 0  # removed from open orders
 
     def test_buy_fill_matched(self, mock_client):
@@ -426,7 +432,9 @@ class TestClobCheckFills:
         assert len(fills) == 1
         assert fills[0].tokens == 50.0
         assert fills[0].amount == pytest.approx(45.0)  # 50 * 0.90
-        assert pos.cash == pytest.approx(45.0)
+        from core.defaults import compute_taker_fee
+        expected_fee = compute_taker_fee(0.90, 50.0)
+        assert pos.cash == pytest.approx(45.0 - expected_fee)
 
     def test_cancelled_order_unreserves_tokens(self, mock_client):
         """Cancelled sell returns reserved tokens to position."""
@@ -465,8 +473,8 @@ class TestClobCheckFills:
         assert pos.cash == 10.0  # unchanged
 
     def test_api_error_keeps_order_pending(self, mock_client):
-        """If get_order raises, order stays in pending list for retry."""
-        mock_client.get_order.side_effect = RuntimeError("API timeout")
+        """If get_order raises a CLOB error, order stays in pending list for retry."""
+        mock_client.get_order.side_effect = ValueError("API timeout")
         ex = ClobExecutor(mock_client)
         ex._last_fill_check = 0
         pos = Position(cash=10.0, down_tokens=0.0)
@@ -522,7 +530,10 @@ class TestClobCheckFills:
         fills = ex.check_fills(orders, {"elapsed_seconds": 200.0}, pos)
 
         assert len(fills) == 2
-        assert pos.cash == pytest.approx(25.0)  # 10*0.90 + 20*0.80
+        from core.defaults import compute_taker_fee
+        fee1 = compute_taker_fee(0.90, 10.0)
+        fee2 = compute_taker_fee(0.80, 20.0)
+        assert pos.cash == pytest.approx(9.0 + 16.0 - fee1 - fee2)
         assert len(orders) == 0
 
 
@@ -559,8 +570,8 @@ class TestSimExecutorLimitOrders:
         assert order.dollars_reserved == 50.0
         assert pos.cash == 50.0  # cash reserved
 
-    def test_limit_buy_fills_when_midpoint_at_or_below_price(self):
-        """Buy limit at 0.55 fills when midpoint drops to 0.55."""
+    def test_limit_buy_fills_when_midpoint_below_price_minus_margin(self):
+        """Buy limit at 0.55 fills when midpoint drops below 0.55 - 0.02 = 0.53."""
         ex = SimExecutor()
         pos = Position(cash=100.0)
         action = TradeAction(side="buy_up", amount=55.0, price=0.55)
@@ -572,21 +583,20 @@ class TestSimExecutorLimitOrders:
 
         orders = [order]
 
-        # Midpoint at 0.60 — should NOT fill
-        no_fills = ex.check_fills(orders, self._make_sample(up_mid=0.60), pos)
+        # Midpoint at 0.55 — NOT below price - margin (0.53), no fill
+        no_fills = ex.check_fills(orders, self._make_sample(up_mid=0.55), pos)
         assert len(no_fills) == 0
         assert len(orders) == 1  # still pending
 
-        # Midpoint drops to 0.55 — should fill
-        fills = ex.check_fills(orders, self._make_sample(up_mid=0.55), pos)
+        # Midpoint drops to 0.53 — at price - margin, fills
+        fills = ex.check_fills(orders, self._make_sample(up_mid=0.53), pos)
         assert len(fills) == 1
         assert fills[0].side == "buy_up"
-        assert fills[0].order_type == "GTC"
         assert len(orders) == 0  # removed from list
         assert pos.up_tokens == 100  # 55/0.55 = 100 tokens
 
-    def test_limit_sell_fills_when_midpoint_at_or_above_price(self):
-        """Sell limit at 0.60 fills when midpoint rises to 0.60."""
+    def test_limit_sell_fills_when_midpoint_above_price_plus_margin(self):
+        """Sell limit at 0.60 fills when midpoint rises above 0.60 + 0.02 = 0.62."""
         ex = SimExecutor()
         pos = Position(cash=0.0, up_tokens=100.0)
         action = TradeAction(side="sell_up", amount=100.0, price=0.60)
@@ -600,14 +610,16 @@ class TestSimExecutorLimitOrders:
 
         orders = [order]
 
-        # Midpoint at 0.50 — should NOT fill
-        no_fills = ex.check_fills(orders, self._make_sample(up_mid=0.50), pos)
+        # Midpoint at 0.60 — NOT above price + margin (0.62), no fill
+        no_fills = ex.check_fills(orders, self._make_sample(up_mid=0.60), pos)
         assert len(no_fills) == 0
 
-        # Midpoint rises to 0.60 — should fill
-        fills = ex.check_fills(orders, self._make_sample(up_mid=0.60), pos)
+        # Midpoint rises to 0.62 — at price + margin, fills
+        fills = ex.check_fills(orders, self._make_sample(up_mid=0.62), pos)
         assert len(fills) == 1
-        assert pos.cash == 60.0  # 100 * 0.60
+        from core.defaults import compute_taker_fee
+        expected_fee = compute_taker_fee(0.60, 100.0)
+        assert pos.cash == pytest.approx(60.0 - expected_fee)  # 100 * 0.60 - fee
         assert pos.up_tokens == 0.0
 
     def test_cancel_returns_reserved_cash(self):
@@ -709,8 +721,8 @@ class TestTraderLimitOrders:
         assert len(trader._open_orders) == 1
         assert pos.cash == 50.0  # cash reserved
 
-        # Tick 1: midpoint drops to 0.50 → fills
-        trade = trader.process_tick(self._make_sample(up_mid=0.50))
+        # Tick 1: midpoint drops to 0.48 (below 0.50 - 0.02 margin) → fills
+        trade = trader.process_tick(self._make_sample(up_mid=0.48))
         assert len(trader.last_tick_fills) == 1
         assert trader.last_tick_fills[0].side == "buy_up"
         assert len(trader._open_orders) == 0

@@ -73,6 +73,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_status()
         elif self.path.startswith("/api/control/session-stats"):
             self._handle_session_stats()
+        elif self.path == "/api/control/known-markets":
+            self._handle_known_markets()
         elif self.path == "/api/control/optimizer-status":
             self._handle_optimizer_status()
         elif self.path == "/api/control/optimizer-events":
@@ -91,6 +93,7 @@ class _Handler(BaseHTTPRequestHandler):
             "/api/control/set-cash": self._handle_set_cash,
             "/api/control/reload": self._handle_reload,
             "/api/control/set-auto-exit": self._handle_set_auto_exit,
+            "/api/control/collector-stop": self._handle_collector_stop,
             "/api/control/kill": self._handle_kill,
             "/api/control/stop": self._handle_stop,
             "/api/control/optimizer-on": self._handle_optimizer_on,
@@ -127,6 +130,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
 
             runner = mgr.get_market(slug_prefix)
+            runner.refresh_stats_cache()
             cache = runner._stats_cache
 
             # Specific session lookup
@@ -167,12 +171,46 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
+    def _handle_known_markets(self):
+        try:
+            from core.markets import KNOWN_MARKETS
+            markets = []
+            for cfg in KNOWN_MARKETS.values():
+                # Derive asset from slug_prefix (e.g. "btc-updown-5m-" → "BTC")
+                asset = cfg.slug_prefix.split("-")[0].upper()
+                markets.append({
+                    "slug_prefix": cfg.slug_prefix,
+                    "window_duration_seconds": cfg.window_duration_seconds,
+                    "asset": asset,
+                    "example_title": "{} {}m Up/Down".format(
+                        asset, cfg.window_duration_seconds // 60
+                    ),
+                })
+            self._send_json({"slugs": markets})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
     def _handle_stop(self):
         mgr = self._require_app_manager()
         if mgr is None:
             return
         mgr.request_stop()
         self._send_json({"ok": True, "stopping": True})
+
+    def _handle_collector_stop(self):
+        mgr = self._require_app_manager()
+        if mgr is None:
+            return
+        try:
+            body = self._read_json_body()
+            slug_prefix = self._require_slug(body)
+            if slug_prefix is None:
+                return
+            slug_key = slug_prefix.rstrip("-")
+            mgr._stop_collector(slug_key)
+            self._send_json({"ok": True, "slug_prefix": slug_prefix})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
 
     def _handle_kill(self):
         mgr = self._require_app_manager()
@@ -404,13 +442,13 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             body = self._read_json_body()
             interval = body.get("interval", 30)
-            lookback = body.get("lookback", 30)
+            eval_sessions = body.get("eval_sessions", 30)
             min_sharpe = body.get("min_sharpe", 0.2)
             starting_cash = body.get("starting_cash", 100.0)
             max_edge_iters = body.get("max_edge_iters", 2)
             result = mgr.start_optimizer(
                 interval=int(interval),
-                lookback=int(lookback),
+                eval_sessions=int(eval_sessions),
                 min_sharpe=float(min_sharpe),
                 starting_cash=float(starting_cash),
                 max_edge_iters=int(max_edge_iters),
@@ -469,7 +507,7 @@ class _Handler(BaseHTTPRequestHandler):
             except (OSError, json.JSONDecodeError):
                 config = {}
             # Update with provided fields
-            for key in ("interval_minutes", "lookback", "min_sharpe", "starting_cash"):
+            for key in ("interval_minutes", "eval_sessions", "min_sharpe", "starting_cash"):
                 if key in body:
                     config[key] = body[key]
             # Save

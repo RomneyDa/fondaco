@@ -36,7 +36,7 @@ class PriceFetcher:
         self.session = session or requests.Session()
         self.session.headers.update({"Accept": "application/json"})
         self.rtds = rtds_client
-        self._pool = ThreadPoolExecutor(max_workers=20)
+        self._pool = ThreadPoolExecutor(max_workers=4)
         self._last_btc_price = None  # type: Optional[float]
 
     def get_btc_price(self) -> Optional[float]:

@@ -9,9 +9,10 @@ interface Props {
   botStatus: BotStatus | null;
   onRefresh: () => void;
   tradeRefresh: number;
+  livePrefixes?: string[];
 }
 
-export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
+export function BotPanel({ botStatus, onRefresh, tradeRefresh, livePrefixes = [] }: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -170,33 +171,58 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
       <h2 className="text-xl font-semibold mb-6">Trading</h2>
 
       {/* Status cards */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 mb-6">
-        <div className="bg-card border border-border rounded-lg px-4 py-3">
-          <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">Status</div>
-          <div className="text-base font-semibold flex items-center gap-2">
-            <span className={`inline-block w-2 h-2 rounded-full ${isRunning ? "bg-up animate-pulse-dot" : starting ? "bg-btc" : "bg-down"}`} />
-            {botStatus === null ? "Loading..." : isRunning ? "Running" : starting ? "Starting..." : "Offline"}
-          </div>
-        </div>
-        {isRunning && (
-          <div className="bg-card border border-border rounded-lg px-4 py-3">
-            <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">Markets</div>
-            <div className="text-base font-semibold">
-              {markets.length > 0
-                ? `${markets.length} active`
-                : <span className="text-dim">None</span>}
+      {(() => {
+        const marketSlugs = new Set(markets.map((m) => m.slug_key));
+        const streamOnly = livePrefixes.filter((p) => !marketSlugs.has(p));
+        return (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 mb-6">
+            <div className="bg-card border border-border rounded-lg px-4 py-3">
+              <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">App</div>
+              <div className="text-base font-semibold flex items-center gap-2">
+                <span className={`inline-block w-2 h-2 rounded-full ${
+                  isRunning
+                    ? markets.length > 0 ? "bg-up animate-pulse-dot" : "bg-dim"
+                    : starting ? "bg-btc" : "bg-down"
+                }`} />
+                {botStatus === null
+                  ? "Loading..."
+                  : isRunning
+                    ? markets.length > 0 ? "Running" : "Idle"
+                    : starting ? "Starting..." : "Offline"}
+              </div>
+              {isRunning && markets.length === 0 && (
+                <div className="text-[11px] text-dim mt-1">No markets registered</div>
+              )}
             </div>
-          </div>
-        )}
-        {isRunning && (
-          <div className="bg-card border border-border rounded-lg px-4 py-3">
-            <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">Strategies</div>
-            <div className="text-base font-semibold">
-              {markets.reduce((n, m) => n + (m.strategies?.length ?? 0), 0)}
+            <div className="bg-card border border-border rounded-lg px-4 py-3">
+              <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">Markets</div>
+              {markets.length > 0 ? (
+                <div className="text-base font-semibold">{markets.length} active</div>
+              ) : streamOnly.length > 0 ? (
+                <>
+                  <div className="text-base font-semibold flex items-center gap-2">
+                    <span className="inline-block w-2 h-2 rounded-full bg-btc animate-pulse-dot" />
+                    {streamOnly.length} collecting
+                  </div>
+                  <div className="text-[11px] text-dim mt-1">
+                    {streamOnly.join(", ")}
+                  </div>
+                </>
+              ) : (
+                <div className="text-base font-semibold text-dim">None</div>
+              )}
             </div>
+            {isRunning && (
+              <div className="bg-card border border-border rounded-lg px-4 py-3">
+                <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">Strategies</div>
+                <div className="text-base font-semibold">
+                  {markets.reduce((n, m) => n + (m.strategies?.length ?? 0), 0)}
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        );
+      })()}
 
       {isRunning && (
         <>
@@ -222,28 +248,58 @@ export function BotPanel({ botStatus, onRefresh, tradeRefresh }: Props) {
           </div>
 
           {/* Add Market */}
-          <div className="mt-6">
-            <div className="bg-card border border-border rounded-lg p-5 max-w-[360px]">
-              <h3 className="text-sm font-semibold mb-3">Add Market</h3>
-              <label className="flex flex-col gap-1.5 text-[13px] text-dim mb-4">
-                Market
-                <select value={selectedSlug} onChange={(e) => setSelectedSlug(e.target.value)}>
-                  {slugs.map((s) => (
-                    <option key={s.slug_prefix} value={s.slug_prefix}>
-                      {s.asset} {s.window_duration_seconds / 60}m ({s.slug_prefix})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                className="btn-primary w-full"
-                onClick={handleMarketOn}
-                disabled={loading || !selectedSlug}
-              >
-                Start Market
-              </button>
-            </div>
-          </div>
+          {(() => {
+            // slug_prefix has trailing dash (e.g. "btc-updown-5m-"), slug_key does not
+            const activeKeys = new Set(markets.map((m) => m.slug_key));
+            const liveKeys = new Set(livePrefixes);
+            const availableSlugs = slugs.filter((s) => !activeKeys.has(s.slug_prefix.replace(/-$/, "")));
+            const streamingSlugs = availableSlugs.filter((s) => liveKeys.has(s.slug_prefix.replace(/-$/, "")));
+            const freshSlugs = availableSlugs.filter((s) => !liveKeys.has(s.slug_prefix.replace(/-$/, "")));
+            return (
+              <div className="mt-6">
+                <div className="bg-card border border-border rounded-lg p-5 max-w-[360px]">
+                  <h3 className="text-sm font-semibold mb-3">Add Market</h3>
+                  {availableSlugs.length === 0 ? (
+                    <p className="text-dim text-[13px]">All markets are already active.</p>
+                  ) : (
+                    <>
+                      <label className="flex flex-col gap-1.5 text-[13px] text-dim mb-4">
+                        Market
+                        <select value={selectedSlug} onChange={(e) => setSelectedSlug(e.target.value)}>
+                          <option value="">Select...</option>
+                          {streamingSlugs.length > 0 && (
+                            <optgroup label="Collecting (collector running)">
+                              {streamingSlugs.map((s) => (
+                                <option key={s.slug_prefix} value={s.slug_prefix}>
+                                  {s.asset} {s.window_duration_seconds / 60}m
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {freshSlugs.length > 0 && (
+                            <optgroup label={streamingSlugs.length > 0 ? "Not collecting" : "Available"}>
+                              {freshSlugs.map((s) => (
+                                <option key={s.slug_prefix} value={s.slug_prefix}>
+                                  {s.asset} {s.window_duration_seconds / 60}m
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                        </select>
+                      </label>
+                      <button
+                        className="btn-primary w-full"
+                        onClick={handleMarketOn}
+                        disabled={loading || !selectedSlug}
+                      >
+                        Start Market
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* App-level actions */}
           <div className="flex gap-2.5 mt-6">

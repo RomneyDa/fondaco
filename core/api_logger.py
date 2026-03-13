@@ -36,6 +36,9 @@ MAX_BACKOFF_S = 30.0
 # Module-level lock for JSONL file writes
 _write_lock = threading.Lock()
 
+# Hosts that generate high-volume logs (GB/day). Only logged when verbose=True.
+_QUIET_HOSTS = {"clob.polymarket.com", "gamma-api.polymarket.com"}
+
 
 class LoggingSession(requests.Session):
     """A requests.Session that logs every request/response and retries on 429.
@@ -44,9 +47,10 @@ class LoggingSession(requests.Session):
     Connection pool sized for high-frequency parallel polling.
     """
 
-    def __init__(self, default_timeout=15):
+    def __init__(self, default_timeout=15, verbose=False):
         super().__init__()
         self._default_timeout = default_timeout
+        self._verbose = verbose
         adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20)
         self.mount("https://", adapter)
         self.mount("http://", adapter)
@@ -91,8 +95,7 @@ class LoggingSession(requests.Session):
                     entry["response_body"] = body_text
 
                 entry["error"] = None
-                # Skip logging for clob.polymarket.com (7.8 GB+ of logs)
-                if host != "clob.polymarket.com":
+                if self._verbose or host not in _QUIET_HOSTS:
                     _write_entry(host, ts, entry)
 
                 # Handle 429 rate limit
@@ -116,7 +119,7 @@ class LoggingSession(requests.Session):
                 entry["elapsed_ms"] = elapsed_ms
                 entry["response_body"] = None
                 entry["error"] = f"{type(e).__name__}: {e}"
-                if host != "clob.polymarket.com":
+                if self._verbose or host not in _QUIET_HOSTS:
                     _write_entry(host, ts, entry)
                 raise
 

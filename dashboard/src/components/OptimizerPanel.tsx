@@ -11,7 +11,7 @@ import type { OptimizerStatus, OptimizerEvent, OptimizerResult } from "../api";
 
 const DEFAULTS = {
   interval_minutes: 30,
-  lookback: 30,
+  eval_sessions: 30,
   min_sharpe: 0.2,
   starting_cash: 100,
 };
@@ -23,7 +23,7 @@ export function OptimizerPanel() {
   const [error, setError] = useState<string | null>(null);
 
   const [interval, setInterval_] = useState(DEFAULTS.interval_minutes);
-  const [lookback, setLookback] = useState(DEFAULTS.lookback);
+  const [evalSessions, setEvalSessions] = useState(DEFAULTS.eval_sessions);
   const [minSharpe, setMinSharpe] = useState(DEFAULTS.min_sharpe);
   const [startingCash, setStartingCash] = useState(DEFAULTS.starting_cash);
   const [configDirty, setConfigDirty] = useState(false);
@@ -38,7 +38,7 @@ export function OptimizerPanel() {
       setStatus(s);
       if (!configLoaded) {
         if (s.interval_minutes) setInterval_(s.interval_minutes);
-        if (s.lookback) setLookback(s.lookback);
+        if (s.eval_sessions) setEvalSessions(s.eval_sessions);
         if (s.min_sharpe != null) setMinSharpe(s.min_sharpe);
       }
     }
@@ -49,7 +49,7 @@ export function OptimizerPanel() {
   useEffect(() => {
     fetchOptimizerConfig().then((cfg) => {
       if (cfg.interval_minutes != null) setInterval_(cfg.interval_minutes);
-      if (cfg.lookback != null) setLookback(cfg.lookback);
+      if (cfg.eval_sessions != null) setEvalSessions(cfg.eval_sessions);
       if (cfg.min_sharpe != null) setMinSharpe(cfg.min_sharpe);
       if (cfg.starting_cash != null) setStartingCash(cfg.starting_cash);
       setConfigLoaded(true);
@@ -66,7 +66,7 @@ export function OptimizerPanel() {
     setError(null);
     const res = await startOptimizer({
       interval,
-      lookback,
+      eval_sessions: evalSessions,
       min_sharpe: minSharpe,
       starting_cash: startingCash,
     });
@@ -85,7 +85,7 @@ export function OptimizerPanel() {
     setError(null);
     const res = await updateOptimizerConfig({
       interval_minutes: interval,
-      lookback,
+      eval_sessions: evalSessions,
       min_sharpe: minSharpe,
       starting_cash: startingCash,
     });
@@ -153,11 +153,10 @@ export function OptimizerPanel() {
             onChange={(v) => { setInterval_(v); setConfigDirty(true); }}
           />
           <ConfigField
-            label="Lookback"
-            unit="sessions"
-            value={lookback}
+            label="Eval Sessions"
+            value={evalSessions}
             min={5}
-            onChange={(v) => { setLookback(v); setConfigDirty(true); }}
+            onChange={(v) => { setEvalSessions(v); setConfigDirty(true); }}
           />
           <ConfigField
             label="Min Sharpe"

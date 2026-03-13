@@ -1,8 +1,11 @@
-"""Central AppManager: manages multiple MarketRunners.
+"""Central AppManager: manages collectors and worker runners.
 
-One process, one port. Each market runs as a thread with its own
-data stream and worker processes. Shared resources (HTTP session,
-RTDS client) are owned here and passed to runners.
+Each market gets a standalone collector process (app/collector.py) that
+owns the data stream and survives app restarts. The AppManager manages
+bot worker processes via MarketRunner objects and the HTTP control server.
+
+`app stop` kills workers but leaves collectors running.
+`app market-off` stops both the collector and workers for that market.
 """
 
 import json
@@ -11,122 +14,199 @@ import os
 import signal
 import subprocess
 import sys
-import threading
 import time
 from typing import Any, Dict, Optional
 
-from core.api_logger import LoggingSession
 from core.defaults import (
     APP_STATE_FILE,
+    BASE_DIR,
     DEFAULT_CONTROL_PORT,
-    WINDOW_DURATION_SECONDS,
+    collector_pid_path,
+    collector_log_path,
+    market_data_dir,
 )
-from core import market_discovery
-from core.rtds_client import RTDSClient
+from core.markets import get_market_config
 
 from app.market_runner import MarketRunner
 
 logger = logging.getLogger(__name__)
 
 
+def _pid_alive(pid):
+    # type: (int) -> bool
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 class AppManager:
     """Central manager for multiple markets.
 
-    Owns shared resources and delegates per-market work to MarketRunner
-    instances running on threads.
+    Spawns collector processes for data streams and manages worker
+    processes via MarketRunner objects.
     """
 
-    def __init__(self, port=DEFAULT_CONTROL_PORT):
-        # type: (int) -> None
+    def __init__(self, port=DEFAULT_CONTROL_PORT, verbose_api_log=False):
+        # type: (int, bool) -> None
         self.port = port
+        self.verbose_api_log = verbose_api_log
         self.running = True
 
-        # Shared infrastructure
-        self.http_session = LoggingSession()
-        self.rtds = RTDSClient(symbol="btc/usd")
-        self.rtds.start()
-        market_discovery.set_session(self.http_session)
-
         # Markets (protected by lock)
+        import threading
         self._lock = threading.Lock()
         self._save_lock = threading.Lock()
         self._markets = {}  # type: Dict[str, MarketRunner]
-        self._threads = {}  # type: Dict[str, threading.Thread]
         self._optimizer_process = None  # type: Optional[subprocess.Popen]
         self._optimizer_log_fh = None  # type: Optional[Any]
 
-    def start_market(self, slug_prefix, window_duration=WINDOW_DURATION_SECONDS,
-                     market_type="updown", max_sessions=0):
-        # type: (str, int, str, int) -> MarketRunner
-        """Start data collection for a market. Returns the runner."""
+    # ----- Collector management -----
+
+    def _read_collector_pid(self, slug_key):
+        # type: (str) -> Optional[int]
+        """Read and validate collector PID from its PID file."""
+        pid_path = collector_pid_path(slug_key)
+        try:
+            with open(pid_path, "r") as f:
+                pid = int(f.read().strip())
+            if _pid_alive(pid):
+                return pid
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def _ensure_collector(self, slug_prefix, window_duration, max_sessions=0):
+        # type: (str, int, int) -> None
+        """Start a collector process if one isn't already running."""
         slug_key = slug_prefix.rstrip("-")
+
+        existing_pid = self._read_collector_pid(slug_key)
+        if existing_pid is not None:
+            logger.info("Collector for %s already running (PID %d)", slug_key, existing_pid)
+            return
+
+        log_path = collector_log_path(slug_key)
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        log_fh = open(log_path, "a")
+
+        cmd = [
+            sys.executable, "-m", "app.collector",
+            "--slug-prefix", slug_prefix,
+            "--window", str(window_duration),
+        ]
+        if max_sessions > 0:
+            cmd.extend(["--max-sessions", str(max_sessions)])
+        if self.verbose_api_log:
+            cmd.append("--verbose-api-log")
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            cwd=BASE_DIR,
+            start_new_session=True,
+        )
+        # Close parent's copy of the fd; child has its own via fork
+        log_fh.close()
+
+        logger.info("Collector started for %s (PID %d)", slug_key, process.pid)
+        # Give the collector a moment to write its PID file
+        time.sleep(1.0)
+
+    def _stop_collector(self, slug_key):
+        # type: (str) -> None
+        """Stop the collector process for a market via SIGTERM."""
+        pid = self._read_collector_pid(slug_key)
+        if pid is None:
+            logger.info("No running collector for %s", slug_key)
+            return
+
+        logger.info("Stopping collector %s (PID %d)", slug_key, pid)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as e:
+            logger.warning("Failed to signal collector %s: %s", slug_key, e)
+            return
+
+        # Wait for clean shutdown
+        for _ in range(30):
+            if not _pid_alive(pid):
+                logger.info("Collector %s stopped.", slug_key)
+                return
+            time.sleep(1)
+        logger.warning("Collector %s (PID %d) did not exit within 30s.", slug_key, pid)
+
+    def _signal_collector_stop_after_session(self, slug_key):
+        # type: (str) -> None
+        """Signal the collector to stop after the current session finishes."""
+        pid = self._read_collector_pid(slug_key)
+        if pid is None:
+            return
+        try:
+            os.kill(pid, signal.SIGUSR1)
+            logger.info("Collector %s signaled to stop after session (PID %d)", slug_key, pid)
+        except OSError as e:
+            logger.warning("Failed to signal collector %s: %s", slug_key, e)
+
+    # ----- Market management -----
+
+    def start_market(self, slug_prefix, window_duration=None,
+                     market_type="updown", max_sessions=0):
+        # type: (str, Optional[int], str, int) -> MarketRunner
+        """Start data collection and create a worker manager for a market."""
+        slug_key = slug_prefix.rstrip("-")
+
+        if window_duration is None:
+            window_duration = get_market_config(slug_prefix).window_duration_seconds
 
         with self._lock:
             if slug_key in self._markets:
                 raise ValueError("Market '{}' is already running.".format(slug_key))
 
+        # Start collector if not already running
+        self._ensure_collector(slug_prefix, window_duration, max_sessions)
+
+        # Create worker manager (no thread — just an object)
         runner = MarketRunner(
             slug_prefix=slug_prefix,
-            http_session=self.http_session,
-            rtds_client=self.rtds,
             market_type=market_type,
             window_duration=window_duration,
-            max_sessions=max_sessions,
-        )
-
-        thread = threading.Thread(
-            target=self._run_market,
-            args=(slug_key, runner),
-            daemon=True,
-            name="market-{}".format(slug_key),
         )
 
         with self._lock:
             self._markets[slug_key] = runner
-            self._threads[slug_key] = thread
 
-        thread.start()
         logger.info("Started market: %s (type=%s, window=%ds)",
                      slug_key, market_type, window_duration)
         self._save_state()
         return runner
 
-    def _run_market(self, slug_key, runner):
-        # type: (str, MarketRunner) -> None
-        """Thread target — runs the market runner and cleans up on exit."""
-        try:
-            runner.run()
-        except Exception:
-            logger.exception("Market %s crashed", slug_key)
-        finally:
-            with self._lock:
-                self._markets.pop(slug_key, None)
-                self._threads.pop(slug_key, None)
-            # Don't save state here — preserves markets list in app.json
-            # for --restore on next startup. Only explicit market-off or
-            # start_market should update app.json.
-            logger.info("Market %s stopped and cleaned up.", slug_key)
-
     def stop_market(self, slug_prefix, after_session=False):
         # type: (str, bool) -> None
-        """Stop a running market (kills bots + data stream)."""
+        """Stop a market (collector + workers)."""
         slug_key = slug_prefix.rstrip("-")
-        with self._lock:
-            runner = self._markets.get(slug_key)
-            thread = self._threads.get(slug_key)
-        if runner is None:
-            raise ValueError("Market '{}' is not running.".format(slug_key))
 
         if after_session:
-            runner.request_stop_after_session()
+            # Signal collector to stop after current session finishes
+            self._signal_collector_stop_after_session(slug_key)
+            # Mark runner for deferred cleanup
+            with self._lock:
+                runner = self._markets.get(slug_key)
+            if runner:
+                runner._stop_after_session = True
+            logger.info("Market %s will stop after current session.", slug_key)
         else:
-            runner.request_stop()
+            # Kill workers immediately
+            with self._lock:
+                runner = self._markets.pop(slug_key, None)
+            if runner:
+                runner.request_stop()
 
-        # Wait for thread to finish (with timeout)
-        if thread is not None:
-            thread.join(timeout=30)
-            if thread.is_alive():
-                logger.warning("Market %s thread did not exit within 30s.", slug_key)
+            # Stop collector
+            self._stop_collector(slug_key)
+            logger.info("Market %s stopped.", slug_key)
 
     def get_market(self, slug_prefix):
         # type: (str) -> MarketRunner
@@ -158,14 +238,16 @@ class AppManager:
             "optimizer": self.get_optimizer_status(),
         }
 
-    def start_optimizer(self, interval=30, lookback=30, min_sharpe=0.2, starting_cash=100.0,
+    # ----- Optimizer management (unchanged) -----
+
+    def start_optimizer(self, interval=30, eval_sessions=30, min_sharpe=0.2, starting_cash=100.0,
                         max_edge_iters=2):
         # type: (int, int, float, float, int) -> Dict[str, Any]
         """Start the optimizer subprocess."""
         if self._optimizer_process is not None and self._optimizer_process.poll() is None:
             return {"error": "Optimizer already running (PID {})".format(self._optimizer_process.pid)}
 
-        from core.defaults import BASE_DIR
+        from core.defaults import OPTIMIZER_DIR
         optimizer_dir = os.path.join(BASE_DIR, "data", "optimizer")
         os.makedirs(optimizer_dir, exist_ok=True)
         log_file = os.path.join(optimizer_dir, "optimizer.log")
@@ -175,7 +257,7 @@ class AppManager:
             sys.executable, "-m", "app.optimizer",
             "--port", str(self.port),
             "--interval", str(interval),
-            "--lookback", str(lookback),
+            "--eval-sessions", str(eval_sessions),
             "--min-sharpe", str(min_sharpe),
             "--cash", str(starting_cash),
             "--max-edge-iters", str(max_edge_iters),
@@ -238,10 +320,12 @@ class AppManager:
         result["running"] = alive  # override with actual process status
         return result
 
+    # ----- Lifecycle -----
+
     def request_stop(self):
         # type: () -> None
-        """Stop everything — all markets, workers, and optimizer."""
-        logger.info("App stop requested.")
+        """Stop workers and optimizer. Collectors keep running."""
+        logger.info("App stop requested. Collectors will keep running.")
         self.running = False
         self.stop_optimizer()
         with self._lock:
@@ -254,9 +338,9 @@ class AppManager:
         """Stop all markets after their current sessions finish."""
         logger.info("App kill requested — stopping all markets after session.")
         with self._lock:
-            runners = list(self._markets.values())
-        for runner in runners:
-            runner.request_stop_after_session()
+            for slug_key, runner in self._markets.items():
+                self._signal_collector_stop_after_session(slug_key)
+                runner._stop_after_session = True
 
     def run(self):
         # type: () -> None
@@ -267,12 +351,25 @@ class AppManager:
         try:
             while self.running:
                 time.sleep(1)
-                # Check if all markets exited
-                with self._lock:
-                    if not self._markets and not self.running:
-                        break
+                self._cleanup_stopped_collectors()
         finally:
             self._shutdown()
+
+    def _cleanup_stopped_collectors(self):
+        # type: () -> None
+        """Clean up markets whose collectors have stopped (after-session)."""
+        with self._lock:
+            to_remove = []
+            for slug_key, runner in self._markets.items():
+                if runner._stop_after_session:
+                    pid = self._read_collector_pid(slug_key)
+                    if pid is None:
+                        # Collector has stopped — kill workers and clean up
+                        runner.request_stop()
+                        to_remove.append(slug_key)
+            for slug_key in to_remove:
+                self._markets.pop(slug_key, None)
+                logger.info("Collector %s stopped after session, cleaned up workers.", slug_key)
 
     def _handle_shutdown(self, signum, frame):
         # type: (int, Any) -> None
@@ -281,16 +378,14 @@ class AppManager:
 
     def _shutdown(self):
         # type: () -> None
-        """Clean shutdown — stop all markets, wait for threads, close shared resources."""
+        """Clean shutdown — stop all workers, close resources.
+        Collectors are NOT stopped — they survive app restarts.
+        """
         with self._lock:
             runners = list(self._markets.values())
-            threads = list(self._threads.values())
 
         for runner in runners:
             runner.request_stop()
-
-        for thread in threads:
-            thread.join(timeout=30)
 
         # Stop optimizer
         if self._optimizer_process is not None and self._optimizer_process.poll() is None:
@@ -309,9 +404,10 @@ class AppManager:
             except OSError:
                 pass
             self._optimizer_log_fh = None
-        self.rtds.stop()
-        self.http_session.close()
-        logger.info("AppManager shutdown complete.")
+
+        logger.info("AppManager shutdown complete. Collectors still running.")
+
+    # ----- State persistence -----
 
     def _save_state(self):
         # type: () -> None
@@ -366,11 +462,9 @@ class AppManager:
             try:
                 runner = self.start_market(
                     slug_prefix=slug_prefix,
-                    window_duration=mc.get("window_duration", WINDOW_DURATION_SECONDS),
+                    window_duration=mc.get("window_duration"),
                     market_type=mc.get("market_type", "updown"),
                 )
-                # Give the runner a moment to start before restoring strategies
-                time.sleep(0.5)
                 runner.restore_strategies()
                 logger.info("Restored market: %s", slug_prefix)
             except Exception:

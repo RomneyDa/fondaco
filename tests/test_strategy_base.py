@@ -315,10 +315,10 @@ class TestCheckExpiredEntry:
 
 
 class TestCheckExit:
-    def _make_strategy(self, entry_mid=0.50, last_tick=-999):
+    def _make_strategy(self, entry_mid=0.50, last_time_s=-999.0):
         s = StubStrategy()
         s._entry_midpoint = entry_mid
-        s._last_sell_tick = last_tick
+        s._last_sell_time_s = last_time_s
         return s
 
     def test_no_position_returns_none(self):
@@ -333,7 +333,7 @@ class TestCheckExit:
 
     def test_stop_loss_triggers_sell(self):
         s = self._make_strategy(entry_mid=0.50)
-        ctx = make_tick_ctx(position=Position(cash=0, up_tokens=10.0), tick_index=100)
+        ctx = make_tick_ctx(position=Position(cash=0, up_tokens=10.0), elapsed_seconds=100.0)
         # mid=0.35 is 30% below 0.50, stop_loss at 20%
         action = s._check_exit(ctx, 0.35, 0.65, stop_loss_pct=0.20)
         assert action.side == "sell_up"
@@ -342,7 +342,7 @@ class TestCheckExit:
 
     def test_take_profit_triggers_sell(self):
         s = self._make_strategy(entry_mid=0.50)
-        ctx = make_tick_ctx(position=Position(cash=0, down_tokens=20.0), tick_index=100)
+        ctx = make_tick_ctx(position=Position(cash=0, down_tokens=20.0), elapsed_seconds=100.0)
         # down_mid=0.70 is 40% above 0.50, take_profit at 30%
         action = s._check_exit(ctx, 0.30, 0.70, stop_loss_pct=0.20, take_profit_pct=0.30)
         assert action.side == "sell_down"
@@ -350,54 +350,54 @@ class TestCheckExit:
         assert s._entry_midpoint == 0.0
 
     def test_cooldown_blocks_sell(self):
-        s = self._make_strategy(entry_mid=0.50, last_tick=90)
-        ctx = make_tick_ctx(position=Position(cash=0, up_tokens=10.0), tick_index=100)
-        # Stop loss triggered but within cooldown (100-90=10 < 36)
-        action = s._check_exit(ctx, 0.35, 0.65, stop_loss_pct=0.20, cooldown=36)
+        s = self._make_strategy(entry_mid=0.50, last_time_s=99.0)
+        ctx = make_tick_ctx(position=Position(cash=0, up_tokens=10.0), elapsed_seconds=100.0)
+        # Stop loss triggered but within cooldown (100-99=1s < 2s)
+        action = s._check_exit(ctx, 0.35, 0.65, stop_loss_pct=0.20, cooldown_ms=2000)
         assert action is HOLD
 
     def test_no_exit_condition_returns_none(self):
         s = self._make_strategy(entry_mid=0.50)
-        ctx = make_tick_ctx(position=Position(cash=0, up_tokens=10.0), tick_index=100)
+        ctx = make_tick_ctx(position=Position(cash=0, up_tokens=10.0), elapsed_seconds=100.0)
         # mid=0.48 is only 4% below, stop_loss at 20% — not triggered
         result = s._check_exit(ctx, 0.48, 0.52, stop_loss_pct=0.20)
         assert result is None
 
     def test_stop_loss_none_skips(self):
         s = self._make_strategy(entry_mid=0.50)
-        ctx = make_tick_ctx(position=Position(cash=0, up_tokens=10.0), tick_index=100)
+        ctx = make_tick_ctx(position=Position(cash=0, up_tokens=10.0), elapsed_seconds=100.0)
         # mid dropped hard but stop_loss is None
         result = s._check_exit(ctx, 0.10, 0.90, stop_loss_pct=None)
         assert result is None
 
-    def test_updates_last_sell_tick(self):
+    def test_updates_last_sell_time(self):
         s = self._make_strategy(entry_mid=0.50)
-        ctx = make_tick_ctx(position=Position(cash=0, up_tokens=10.0), tick_index=200)
+        ctx = make_tick_ctx(position=Position(cash=0, up_tokens=10.0), elapsed_seconds=200.0)
         s._check_exit(ctx, 0.35, 0.65, stop_loss_pct=0.20)
-        assert s._last_sell_tick == 200
+        assert s._last_sell_time_s == 200.0
 
 
 # ---------------------------------------------------------------------------
-# _update_last_trade_tick
+# _update_last_trade_time
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateLastTradeTick:
-    def test_updates_sell_tick(self):
+class TestUpdateLastTradeTime:
+    def test_updates_sell_time(self):
         s = StubStrategy()
-        s._last_sell_tick = 0
-        s._update_last_trade_tick(42)
-        assert s._last_sell_tick == 42
+        s._last_sell_time_s = 0.0
+        s._update_last_trade_time(42.0)
+        assert s._last_sell_time_s == 42.0
 
-    def test_updates_trade_tick(self):
+    def test_updates_trade_time(self):
         s = StubStrategy()
-        s._last_trade_tick = 0
-        s._update_last_trade_tick(42)
-        assert s._last_trade_tick == 42
+        s._last_trade_time_s = 0.0
+        s._update_last_trade_time(42.0)
+        assert s._last_trade_time_s == 42.0
 
     def test_no_attr_is_noop(self):
         s = StubStrategy()
-        s._update_last_trade_tick(42)  # should not raise
+        s._update_last_trade_time(42.0)  # should not raise
 
 
 # ---------------------------------------------------------------------------

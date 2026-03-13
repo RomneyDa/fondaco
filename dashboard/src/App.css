@@ -27,6 +27,9 @@
 }
 *::-webkit-scrollbar-thumb:hover { background: var(--color-dim); }
 
+.scrollbar-none { scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
 /* ---- Global resets ---- */
 *, *::before, *::after { box-sizing: border-box; }
 

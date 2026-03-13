@@ -1,0 +1,359 @@
+import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import {
+  fetchSlugs,
+  startBot, stopBot,
+  startCollector, stopCollector,
+} from "../api";
+import type { SlugInfo } from "../api";
+import type { BotStatus, MarketStatus, StrategySlotStatus } from "../types";
+
+interface Props {
+  botStatus: BotStatus | null;
+  onRefresh: () => void;
+  livePrefixes: string[];
+}
+
+/** Unified view of a market from all data sources */
+interface MarketView {
+  slugPrefix: string;
+  slugKey: string;
+  asset: string;
+  windowSeconds: number;
+  isCollecting: boolean;
+  isRegistered: boolean;
+  marketStatus: MarketStatus | null;
+  strategies: StrategySlotStatus[];
+}
+
+function toSlugKey(slugPrefix: string): string {
+  return slugPrefix.replace(/-$/, "");
+}
+
+function buildMarketList(
+  slugs: SlugInfo[],
+  livePrefixes: string[],
+  registeredMarkets: MarketStatus[]
+): MarketView[] {
+  const liveSet = new Set(livePrefixes);
+  const registeredMap = new Map<string, MarketStatus>();
+  for (const m of registeredMarkets) registeredMap.set(m.slug_key, m);
+
+  // Start from known slugs
+  const seen = new Set<string>();
+  const result: MarketView[] = [];
+
+  for (const s of slugs) {
+    const key = toSlugKey(s.slug_prefix);
+    seen.add(key);
+    const ms = registeredMap.get(key) ?? null;
+    result.push({
+      slugPrefix: s.slug_prefix,
+      slugKey: key,
+      asset: s.asset,
+      windowSeconds: s.window_duration_seconds,
+      isCollecting: liveSet.has(key),
+      isRegistered: ms != null,
+      marketStatus: ms,
+      strategies: ms?.strategies ?? [],
+    });
+  }
+
+  // Add any live/registered markets not in known slugs
+  for (const m of registeredMarkets) {
+    if (!seen.has(m.slug_key)) {
+      seen.add(m.slug_key);
+      result.push({
+        slugPrefix: m.slug_prefix,
+        slugKey: m.slug_key,
+        asset: m.slug_key.split("-")[0].toUpperCase(),
+        windowSeconds: 300,
+        isCollecting: liveSet.has(m.slug_key),
+        isRegistered: true,
+        marketStatus: m,
+        strategies: m.strategies ?? [],
+      });
+    }
+  }
+  for (const p of livePrefixes) {
+    if (!seen.has(p)) {
+      seen.add(p);
+      const parts = p.match(/^(\w+)-updown-(\d+)m$/);
+      result.push({
+        slugPrefix: p + "-",
+        slugKey: p,
+        asset: parts ? parts[1].toUpperCase() : p,
+        windowSeconds: parts ? parseInt(parts[2]) * 60 : 300,
+        isCollecting: true,
+        isRegistered: false,
+        marketStatus: null,
+        strategies: [],
+      });
+    }
+  }
+
+  // Sort: collecting+registered first, then collecting-only, then inactive
+  result.sort((a, b) => {
+    const score = (m: MarketView) =>
+      m.isCollecting && m.isRegistered ? 0 : m.isCollecting ? 1 : 2;
+    return score(a) - score(b);
+  });
+
+  return result;
+}
+
+export function HomePanel({ botStatus, onRefresh, livePrefixes }: Props) {
+  const [message, setMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const markets = botStatus?.markets ?? [];
+  const isRunning = botStatus?.running ?? false;
+
+  useEffect(() => {
+    if (isRunning && starting) setStarting(false);
+  }, [isRunning, starting]);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        clearInterval(refreshTimerRef.current);
+      }
+    };
+  }, []);
+
+  const [slugs, setSlugs] = useState<SlugInfo[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchSlugs().then((s) => { if (!cancelled) setSlugs(s); });
+    return () => { cancelled = true; };
+  }, []);
+
+  function flashMessage(msg: string) {
+    setMessage(msg);
+    setTimeout(() => setMessage(null), 5000);
+  }
+
+  function delayedRefresh(ms = 2000) {
+    refreshTimerRef.current = setTimeout(onRefresh, ms);
+  }
+
+  // --- App lifecycle ---
+
+  async function handleStartApp() {
+    setLoading(true);
+    setStarting(true);
+    const res = await startBot({ restore: true });
+    if (!res.ok) {
+      flashMessage(res.error || "Failed to start");
+      setStarting(false);
+    } else {
+      flashMessage(`Trading enabled (PID ${res.pid})`);
+      let attempts = 0;
+      const poll = setInterval(() => {
+        attempts++;
+        onRefresh();
+        if (attempts >= 10) { clearInterval(poll); setStarting(false); }
+      }, 1000);
+      refreshTimerRef.current = poll as unknown as ReturnType<typeof setTimeout>;
+    }
+    setLoading(false);
+  }
+
+  async function handleStopApp() {
+    setLoading(true);
+    const res = await stopBot();
+    flashMessage(res.ok ? "Trading disabled" : res.error || "Failed");
+    setLoading(false);
+    onRefresh();
+  }
+
+  // --- Collector lifecycle ---
+
+  async function handleStartCollector(slugPrefix: string, windowSeconds: number) {
+    setLoading(true);
+    const res = await startCollector({ slug_prefix: slugPrefix, window: windowSeconds });
+    flashMessage(
+      res.ok
+        ? `Collector started: ${toSlugKey(slugPrefix)}`
+        : res.error || "Failed"
+    );
+    setLoading(false);
+    delayedRefresh();
+  }
+
+  async function handleStopCollector(slugPrefix: string, afterSession?: boolean) {
+    setLoading(true);
+    const res = await stopCollector({ slug_prefix: slugPrefix, after_session: afterSession });
+    flashMessage(
+      res.ok
+        ? afterSession
+          ? `Collector will stop after session: ${toSlugKey(slugPrefix)}`
+          : `Collector stopped: ${toSlugKey(slugPrefix)}`
+        : res.error || "Failed"
+    );
+    setLoading(false);
+    delayedRefresh();
+  }
+
+  // --- Render ---
+
+  const marketViews = buildMarketList(slugs, livePrefixes, markets);
+  const totalStrategies = markets.reduce((n, m) => n + (m.strategies?.length ?? 0), 0);
+
+  return (
+    <div>
+      <h2 className="text-lg font-semibold mb-4">Trading</h2>
+      {/* Trading status */}
+      <div className="bg-card border border-border rounded-lg px-5 py-4 mb-6 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className={`inline-block w-3 h-3 rounded-full ${
+            isRunning ? "bg-up animate-pulse-dot" : starting ? "bg-btc" : "bg-dim"
+          }`} />
+          <div>
+            <div className={`text-[15px] font-semibold ${isRunning ? "text-up" : "text-txt"}`}>
+              {botStatus === null ? "..." : isRunning ? "Trading enabled" : starting ? "Starting..." : "Trading disabled"}
+            </div>
+            {isRunning && totalStrategies > 0 && (
+              <div className="text-dim text-xs mt-0.5">
+                {totalStrategies} strateg{totalStrategies !== 1 ? "ies" : "y"} active
+              </div>
+            )}
+          </div>
+        </div>
+        {isRunning ? (
+          <button className="btn-danger" onClick={handleStopApp} disabled={loading}>
+            Disable Trading
+          </button>
+        ) : botStatus !== null && !starting ? (
+          <button className="btn-primary" onClick={handleStartApp} disabled={loading}>
+            Enable Trading
+          </button>
+        ) : null}
+      </div>
+
+      {/* Markets */}
+      <h2 className="text-lg font-semibold mb-4">Markets</h2>
+      <div className="space-y-4">
+        {marketViews.map((mv) => (
+          <MarketCard
+            key={mv.slugKey}
+            mv={mv}
+            loading={loading}
+            onStartCollector={() => handleStartCollector(mv.slugPrefix, mv.windowSeconds)}
+            onStopCollector={(after) => handleStopCollector(mv.slugPrefix, after)}
+          />
+        ))}
+        {marketViews.length === 0 && (
+          <p className="text-dim text-sm">No known markets. Add entries to core/markets.py.</p>
+        )}
+      </div>
+
+      {message && (
+        <div className="mt-4 px-4 py-2.5 bg-accent/10 border border-accent/20 rounded-md text-[13px] text-accent">
+          {message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// MarketCard
+// ---------------------------------------------------------------------------
+
+function MarketCard({
+  mv,
+  loading,
+  onStartCollector,
+  onStopCollector,
+}: {
+  mv: MarketView;
+  loading: boolean;
+  onStartCollector: () => void;
+  onStopCollector: (afterSession?: boolean) => void;
+}) {
+  const activeStrategies = mv.strategies;
+
+  const dotColor = mv.isCollecting
+    ? activeStrategies.length > 0 ? "bg-up animate-pulse-dot" : "bg-btc animate-pulse-dot"
+    : "bg-dim";
+
+  const statusLabel = mv.isCollecting
+    ? activeStrategies.length > 0
+      ? `Collecting · ${activeStrategies.length} strateg${activeStrategies.length !== 1 ? "ies" : "y"}`
+      : "Collecting"
+    : "Inactive";
+
+  return (
+    <div className="bg-card border border-border rounded-lg overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+        <div className="flex items-center gap-2.5">
+          <span className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${dotColor}`} />
+          {mv.isCollecting ? (
+            <Link to={`/live/${mv.slugKey}`} className="text-[15px] font-semibold text-txt no-underline hover:text-accent transition-colors">
+              {mv.asset} {mv.windowSeconds / 60}m
+            </Link>
+          ) : (
+            <span className="text-[15px] font-semibold">{mv.asset} {mv.windowSeconds / 60}m</span>
+          )}
+          <span className="text-dim text-xs">{statusLabel}</span>
+          {mv.marketStatus?.session_count != null && mv.marketStatus.session_count > 0 && (
+            <span className="text-dim text-xs">{mv.marketStatus.session_count} sessions</span>
+          )}
+          {mv.marketStatus?.stop_after_session && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-down/15 text-down">STOPPING</span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {mv.isCollecting ? (
+            <>
+              <button
+                className="btn-warning btn-sm"
+                onClick={() => onStopCollector(true)}
+                disabled={loading}
+                title="Stop after current session"
+              >
+                Stop After Session
+              </button>
+              <button
+                className="btn-danger btn-sm"
+                onClick={() => onStopCollector(false)}
+                disabled={loading}
+                title="Stop collector now"
+              >
+                Stop
+              </button>
+            </>
+          ) : (
+            <button
+              className="btn-primary btn-sm"
+              onClick={onStartCollector}
+              disabled={loading}
+            >
+              Start Collecting
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Active strategies summary */}
+      {activeStrategies.length > 0 && (
+        <div className="px-4 py-2.5 border-t border-border">
+          <div className="flex flex-wrap gap-2">
+            {activeStrategies.map((s) => (
+              <Link key={s.name} to={`/sessions/${mv.slugKey}`} className="inline-flex items-center gap-1.5 text-[12px] text-dim no-underline hover:text-txt">
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.alive === false ? "bg-down" : "bg-up"}`} />
+                {s.name}
+                <span className="font-mono">${(s.bankroll ?? s.cash).toFixed(0)}</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

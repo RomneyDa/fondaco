@@ -19,7 +19,7 @@ v4: Sliding max_price for adaptive entry timing.
 from typing import Any, Dict, List, Optional
 
 from core.defaults import BPS_DIVISOR
-from core.math_utils import ols_slope_bps
+from core.math_utils import ols_slope_bps_timed
 from core.trader import HOLD, TradeAction, TickContext
 from core.strategies.base import Param, Strategy
 
@@ -33,7 +33,7 @@ class RegimeSniper(Strategy):
         "Sliding max_price allows cheap early entry and confirmed late "
         "entry. Holds to resolution — no stop-loss."
     )
-    version = "5"
+    version = "7"
     requires_full_session = True
 
     # --- Tunable params ---
@@ -44,45 +44,41 @@ class RegimeSniper(Strategy):
     price_slope = Param(default=0.60, min=0.30, max=0.60)
 
     # --- Fixed params ---
-    consistency_window = Param(default=100, tunable=False)
-    velocity_window = Param(default=18, tunable=False)
-    min_velocity_bps = Param(default=0.03, tunable=False)
+    consistency_window_ms = Param(default=5500, tunable=False)
+    velocity_window_ms = Param(default=1000, tunable=False)
+    min_velocity_bps_s = Param(default=0.55, tunable=False)
     no_new_after = Param(default=0.95, tunable=False)
     bet_fraction = Param(default=1.0, tunable=False)
 
     def __init__(self, **kwargs):
-        defs = self.param_defs()
-        for name, p in defs.items():
-            setattr(self, name, kwargs.get(name, p.default))
-        self._params = {name: getattr(self, name) for name in defs}
+        super().__init__(**kwargs)
+        self._reset_state()
 
-        # Per-session state
+    def _reset_state(self):
         self._btc_prices = []  # type: List[float]
+        self._btc_times = []  # type: List[float]
         self._midpoint_signs = []  # type: List[int]
+        self._midpoint_times = []  # type: List[float]
         self._entry_midpoint = 0.0
         self._entry_count = 0
-        self._last_sell_tick = -999
+        self._last_sell_time_s = -999.0
 
     def on_session_start(self, metadata):
         # type: (Dict[str, Any]) -> None
-        self._btc_prices = []
-        self._midpoint_signs = []
-        self._entry_midpoint = 0.0
-        self._entry_count = 0
-        self._last_sell_tick = -999
+        self._reset_state()
 
-    def _compute_consistency(self, direction):
-        # type: (str) -> float
-        """Fraction of recent ticks where midpoint favored the given direction."""
-        window = min(self.consistency_window, len(self._midpoint_signs))
-        if window == 0:
+    def _compute_consistency(self, direction, elapsed_seconds):
+        # type: (str, float) -> float
+        """Fraction of recent samples where midpoint favored the given direction."""
+        cutoff = elapsed_seconds - self.consistency_window_ms / 1000.0
+        recent = [s for t, s in zip(self._midpoint_times, self._midpoint_signs) if t >= cutoff]
+        if not recent:
             return 0.0
-        recent = self._midpoint_signs[-window:]
         if direction == "up":
             count = sum(1 for v in recent if v > 0)
         else:
             count = sum(1 for v in recent if v < 0)
-        return count / window
+        return count / len(recent)
 
     def _effective_max_price(self, elapsed_fraction):
         # type: (float) -> float
@@ -98,9 +94,11 @@ class RegimeSniper(Strategy):
 
         if btc is not None and btc > 0:
             self._btc_prices.append(btc)
+            self._btc_times.append(ctx.elapsed_seconds)
 
         if up_mid is not None:
             self._midpoint_signs.append(1 if up_mid > 0.50 else -1)
+            self._midpoint_times.append(ctx.elapsed_seconds)
 
         if btc is None or up_mid is None or down_mid is None:
             return HOLD
@@ -120,7 +118,8 @@ class RegimeSniper(Strategy):
         if self._check_timing_guards(ctx, self.min_elapsed, self.no_new_after):
             return HOLD
 
-        if ctx.initial_btc_price <= 0 or len(self._btc_prices) < self.velocity_window:
+        velocity_window_s = self.velocity_window_ms / 1000.0
+        if ctx.initial_btc_price <= 0 or ctx.elapsed_seconds < velocity_window_s:
             return HOLD
 
         # ---- Signal 1: BTC displacement ----
@@ -133,18 +132,20 @@ class RegimeSniper(Strategy):
         direction = "up" if displacement_bps > 0 else "down"
 
         # ---- Signal 2: BTC velocity confirms ----
-        velocity = ols_slope_bps(self._btc_prices, self.velocity_window)
+        cutoff = ctx.elapsed_seconds - velocity_window_s
+        idx = next((i for i in range(len(self._btc_times)) if self._btc_times[i] >= cutoff), len(self._btc_times))
+        velocity = ols_slope_bps_timed(self._btc_times[idx:], self._btc_prices[idx:])
         if velocity is None:
             return HOLD
 
-        if abs(velocity) < self.min_velocity_bps:
+        if abs(velocity) < self.min_velocity_bps_s:
             return HOLD
 
         if (displacement_bps > 0) != (velocity > 0):
             return HOLD
 
         # ---- Signal 3: Midpoint consistency ----
-        consistency = self._compute_consistency(direction)
+        consistency = self._compute_consistency(direction, ctx.elapsed_seconds)
         if consistency < self.min_consistency:
             return HOLD
 
@@ -174,4 +175,5 @@ class RegimeSniper(Strategy):
             side=side,
             amount=dollars,
             price=signal_mid,
-                    )
+            cancel_after_s=10,
+        )

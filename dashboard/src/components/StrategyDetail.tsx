@@ -82,6 +82,10 @@ export function StrategyDetail() {
           <div className="text-base font-semibold">{stats.sharpe.toFixed(3)}</div>
         </div>
         <div className="bg-card border border-border rounded-lg px-4 py-3">
+          <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">Entry Rate</div>
+          <div className="text-base font-semibold">{stats.entry_rate}%</div>
+        </div>
+        <div className="bg-card border border-border rounded-lg px-4 py-3">
           <div className="text-[11px] uppercase tracking-wide text-dim mb-1.5">Win Rate</div>
           <div className="text-base font-semibold">{stats.win_rate}%</div>
         </div>
@@ -119,7 +123,7 @@ export function StrategyDetail() {
       {equityCurve.length > 0 && (
         <div className="mb-6">
           <h3 className="text-sm font-semibold mb-3">Equity Curve (Cumulative PnL)</h3>
-          <EquityBar points={equityCurve} />
+          <EquityBar points={equityCurve as Array<{ timestamp: string; pnl: number; cumPnl: number; strategy_version?: string }>} />
         </div>
       )}
 
@@ -389,17 +393,36 @@ function ActiveTimer({
   );
 }
 
-/** Simple horizontal equity bar chart */
-function EquityBar({ points }: { points: Array<{ timestamp: string; pnl: number; cumPnl: number }> }) {
+/** Simple horizontal equity bar chart with version boundary markers */
+function EquityBar({ points }: { points: Array<{ timestamp: string; pnl: number; cumPnl: number; strategy_version?: string }> }) {
   if (points.length === 0) return null;
   const maxAbs = Math.max(...points.map((p) => Math.abs(p.cumPnl)), 0.01);
+
+  // Find indices where the version changes
+  const versionBoundaries = new Set<number>();
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1].strategy_version;
+    const curr = points[i].strategy_version;
+    if (prev && curr && prev !== curr) {
+      versionBoundaries.add(i);
+    }
+  }
 
   return (
     <div className="flex gap-px h-24 bg-card rounded-md px-2 py-1 border border-border">
       {points.map((p, i) => {
         const h = Math.max(Math.abs(p.cumPnl) / maxAbs * 40, 1);
+        const isBoundary = versionBoundaries.has(i);
+        const versionLabel = isBoundary ? `v${p.strategy_version}` : "";
+        const tooltip = `${fmtDateOnly(p.timestamp)}: ${p.pnl >= 0 ? "+" : ""}${p.pnl.toFixed(2)} (cum: ${p.cumPnl >= 0 ? "+" : ""}${p.cumPnl.toFixed(2)})${p.strategy_version ? ` [v${p.strategy_version}]` : ""}`;
         return (
-          <div key={i} className="flex-1 min-w-0.5 max-w-3 flex flex-col" title={`${fmtDateOnly(p.timestamp)}: ${p.pnl >= 0 ? "+" : ""}${p.pnl.toFixed(2)} (cum: ${p.cumPnl >= 0 ? "+" : ""}${p.cumPnl.toFixed(2)})`}>
+          <div key={i} className={`flex-1 min-w-0.5 max-w-3 flex flex-col relative${isBoundary ? " ml-1" : ""}`} title={tooltip}>
+            {isBoundary && (
+              <>
+                <div className="absolute left-[-3px] top-0 bottom-0 w-px bg-accent/50" />
+                <div className="absolute left-[-3px] top-[-2px] text-[8px] text-accent font-semibold whitespace-nowrap leading-none">{versionLabel}</div>
+              </>
+            )}
             <div className="flex-1 flex items-end justify-center">
               {p.cumPnl >= 0 && <div className="w-full rounded-sm opacity-80 bg-up" style={{ height: h }} />}
             </div>

@@ -33,7 +33,6 @@ from core.defaults import (
     APP_STATE_FILE,
     BASE_DIR,
     DEFAULT_CONTROL_PORT,
-    WINDOW_DURATION_SECONDS,
 )
 from bots import ALL_STRATEGIES
 
@@ -153,6 +152,16 @@ def _http_request(method, path, body=None):
         sys.exit(1)
 
 
+def _check_resp(resp, success_msg):
+    # type: (Dict[str, Any], str) -> None
+    """Print success/error from a control server response, exit on failure."""
+    if resp.get("ok"):
+        print(success_msg)
+    else:
+        print("Error: {}".format(resp.get("error", "unknown")))
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # CLI commands
 # ---------------------------------------------------------------------------
@@ -171,7 +180,7 @@ def cmd_start(args):
         sys.exit(1)
 
     port = args.port
-    mgr = AppManager(port=port)
+    mgr = AppManager(port=port, verbose_api_log=getattr(args, "verbose", False))
 
     server = ControlServer(mgr, port)
     server.start()
@@ -193,7 +202,7 @@ def cmd_market_on(args):
     body = {
         "slug_prefix": args.slug_prefix,
     }  # type: Dict[str, Any]
-    if args.window != WINDOW_DURATION_SECONDS:
+    if args.window is not None:
         body["window"] = args.window
     if getattr(args, "market_type", None):
         body["market_type"] = args.market_type
@@ -201,11 +210,7 @@ def cmd_market_on(args):
         body["restore"] = True
 
     resp = _http_request("POST", "/api/control/market-on", body)
-    if resp.get("ok"):
-        print("Market started: {}".format(resp.get("slug_key", args.slug_prefix)))
-    else:
-        print("Error: {}".format(resp.get("error", "unknown")))
-        sys.exit(1)
+    _check_resp(resp, "Market started: {}".format(resp.get("slug_key", args.slug_prefix)))
 
 
 def cmd_market_off(args):
@@ -217,11 +222,7 @@ def cmd_market_off(args):
         body["after_session"] = True
 
     resp = _http_request("POST", "/api/control/market-off", body)
-    if resp.get("ok"):
-        print("Market stopped: {}".format(args.slug_prefix))
-    else:
-        print("Error: {}".format(resp.get("error", "unknown")))
-        sys.exit(1)
+    _check_resp(resp, "Market stopped: {}".format(args.slug_prefix))
 
 
 def cmd_trade_on(args):
@@ -256,13 +257,8 @@ def cmd_trade_on(args):
         body["session_cash_ratio"] = {"ratio": float(parts[0]), "max": float(parts[1])}
 
     resp = _http_request("POST", "/api/control/trade-on", body)
-    if resp.get("ok"):
-        print("Trading enabled: strategy={} on {}".format(
-            resp.get("strategy"), resp.get("slug_prefix"),
-        ))
-    else:
-        print("Error: {}".format(resp.get("error", "unknown")))
-        sys.exit(1)
+    _check_resp(resp, "Trading enabled: strategy={} on {}".format(
+        resp.get("strategy"), resp.get("slug_prefix")))
 
 
 def cmd_trade_off(args):
@@ -273,14 +269,9 @@ def cmd_trade_off(args):
         body["strategy"] = strategy
 
     resp = _http_request("POST", "/api/control/trade-off", body)
-    if resp.get("ok"):
-        if strategy:
-            print("Trading disabled for {} on {}.".format(strategy, args.slug_prefix))
-        else:
-            print("All trading disabled on {}.".format(args.slug_prefix))
-    else:
-        print("Error: {}".format(resp.get("error", "unknown")))
-        sys.exit(1)
+    msg = "Trading disabled for {} on {}.".format(strategy, args.slug_prefix) if strategy \
+        else "All trading disabled on {}.".format(args.slug_prefix)
+    _check_resp(resp, msg)
 
 
 def cmd_set_cash(args):
@@ -302,11 +293,7 @@ def cmd_set_cash(args):
     if getattr(args, "clear_session_limit", False):
         body["clear_session_limit"] = True
     resp = _http_request("POST", "/api/control/set-cash", body)
-    if resp.get("ok"):
-        print("Cash updated: ${}".format(resp.get("cash")))
-    else:
-        print("Error: {}".format(resp.get("error", "unknown")))
-        sys.exit(1)
+    _check_resp(resp, "Cash updated: ${}".format(resp.get("cash")))
 
 
 def cmd_reload(args):
@@ -316,21 +303,13 @@ def cmd_reload(args):
         "strategy": args.strategy,
     }
     resp = _http_request("POST", "/api/control/reload", body)
-    if resp.get("ok"):
-        print("Reloaded worker: {} on {}".format(args.strategy, args.slug_prefix))
-    else:
-        print("Error: {}".format(resp.get("error", "unknown")))
-        sys.exit(1)
+    _check_resp(resp, "Reloaded worker: {} on {}".format(args.strategy, args.slug_prefix))
 
 
 def cmd_kill(args):
     """Signal the app to stop all markets after their current sessions finish."""
     resp = _http_request("POST", "/api/control/kill")
-    if resp.get("ok"):
-        print("Kill signal sent — all markets will stop after their current sessions.")
-    else:
-        print("Error: {}".format(resp.get("error", "unknown")))
-        sys.exit(1)
+    _check_resp(resp, "Kill signal sent — all markets will stop after their current sessions.")
 
 
 def cmd_status(args):
@@ -356,9 +335,12 @@ def cmd_status(args):
             if m.get("stop_after_session"):
                 stop_tag = " [STOPPING]"
 
+            col_pid = m.get("collector_pid")
+            col_tag = " collector=PID {}".format(col_pid) if col_pid else " [NO COLLECTOR]"
+
             strategies = m.get("strategies", [])
-            print("  {} | sessions={} | tick_clients={}{}".format(
-                slug, session_count, tick_clients, stop_tag,
+            print("  {} | sessions={} | tick_clients={}{} |{}".format(
+                slug, session_count, tick_clients, stop_tag, col_tag,
             ))
 
             if strategies:
@@ -384,7 +366,7 @@ def cmd_status(args):
 
 
 def cmd_stop(args):
-    """Stop the running app."""
+    """Stop the running app (workers + control server). Collectors keep running."""
     state = _read_state()
     if state is None:
         print("App is not running.")
@@ -396,6 +378,7 @@ def cmd_stop(args):
             print("Stop signal sent (PID {}). Waiting for graceful shutdown...".format(
                 state["pid"],
             ))
+            print("  Data collectors will keep running. Use 'market-off' to stop them.")
     except SystemExit:
         print("HTTP stop failed, sending SIGTERM to PID {}...".format(state["pid"]))
         try:
@@ -408,12 +391,95 @@ def cmd_stop(args):
     pid = state["pid"]
     for _ in range(30):
         if not _pid_alive(pid):
-            print("App stopped.")
+            print("App stopped. Collectors still running (use 'market-off' to stop).")
             _remove_state()
             return
         time.sleep(1)
 
     print("WARNING: App (PID {}) did not exit within 30s.".format(pid))
+
+
+def cmd_collector_stop(args):
+    """Stop the collector for a market (without needing app running)."""
+    from core.defaults import collector_pid_path
+    slug_key = args.slug_prefix.rstrip("-")
+    pid_path = collector_pid_path(slug_key)
+
+    try:
+        with open(pid_path, "r") as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        print("No collector running for {}.".format(slug_key))
+        return
+
+    if not _pid_alive(pid):
+        print("Collector PID {} is stale — not running.".format(pid))
+        try:
+            os.unlink(pid_path)
+        except OSError:
+            pass
+        return
+
+    print("Stopping collector for {} (PID {})...".format(slug_key, pid))
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as e:
+        print("Failed to signal collector: {}".format(e))
+        return
+
+    for _ in range(30):
+        if not _pid_alive(pid):
+            print("Collector stopped.")
+            return
+        time.sleep(1)
+    print("WARNING: Collector (PID {}) did not exit within 30s.".format(pid))
+
+
+def cmd_collector_status(args):
+    """Show status of all running collectors (works without app running)."""
+    from core.defaults import MARKETS_DIR, collector_pid_path, collector_state_path
+    import glob
+
+    if not os.path.isdir(MARKETS_DIR):
+        print("No markets directory found.")
+        return
+
+    found = False
+    for entry in sorted(os.listdir(MARKETS_DIR)):
+        market_dir = os.path.join(MARKETS_DIR, entry)
+        if not os.path.isdir(market_dir):
+            continue
+        pid_path = collector_pid_path(entry)
+        try:
+            with open(pid_path, "r") as f:
+                pid = int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+
+        alive = _pid_alive(pid)
+        if not alive:
+            continue
+
+        found = True
+        state_path = collector_state_path(entry)
+        state_info = ""
+        try:
+            with open(state_path, "r") as f:
+                state = json.load(f)
+            state_info = " | state={} | sessions={} | tick_clients={}".format(
+                state.get("state", "?"),
+                state.get("session_count", "?"),
+                state.get("tick_clients", "?"),
+            )
+            if state.get("stop_after_session"):
+                state_info += " [STOPPING]"
+        except (OSError, json.JSONDecodeError):
+            pass
+
+        print("  {} | PID={}{}".format(entry, pid, state_info))
+
+    if not found:
+        print("No collectors running.")
 
 
 def cmd_claim(args):
@@ -488,8 +554,8 @@ def cmd_optimizer_on(args):
     body = {}  # type: Dict[str, Any]
     if getattr(args, "interval", None) is not None:
         body["interval"] = args.interval
-    if getattr(args, "lookback", None) is not None:
-        body["lookback"] = args.lookback
+    if getattr(args, "eval_sessions", None) is not None:
+        body["eval_sessions"] = args.eval_sessions
     if getattr(args, "min_sharpe", None) is not None:
         body["min_sharpe"] = args.min_sharpe
     if getattr(args, "cash", None) is not None:
@@ -498,21 +564,13 @@ def cmd_optimizer_on(args):
         body["max_edge_iters"] = args.max_edge_iters
 
     resp = _http_request("POST", "/api/control/optimizer-on", body)
-    if resp.get("ok"):
-        print("Optimizer started (PID {})".format(resp.get("pid")))
-    else:
-        print("Error: {}".format(resp.get("error", "unknown")))
-        sys.exit(1)
+    _check_resp(resp, "Optimizer started (PID {})".format(resp.get("pid")))
 
 
 def cmd_optimizer_off(args):
     """Stop the live optimizer."""
     resp = _http_request("POST", "/api/control/optimizer-off")
-    if resp.get("ok"):
-        print("Optimizer stopped.")
-    else:
-        print("Error: {}".format(resp.get("error", "unknown")))
-        sys.exit(1)
+    _check_resp(resp, "Optimizer stopped.")
 
 
 def cmd_optimizer_config(args):
@@ -520,8 +578,8 @@ def cmd_optimizer_config(args):
     body = {}  # type: Dict[str, Any]
     if getattr(args, "interval", None) is not None:
         body["interval_minutes"] = args.interval
-    if getattr(args, "lookback", None) is not None:
-        body["lookback"] = args.lookback
+    if getattr(args, "eval_sessions", None) is not None:
+        body["eval_sessions"] = args.eval_sessions
     if getattr(args, "min_sharpe", None) is not None:
         body["min_sharpe"] = args.min_sharpe
     if getattr(args, "cash", None) is not None:
@@ -550,8 +608,8 @@ def cmd_optimizer_config(args):
             print("  State: {}".format(resp["state"]))
         if resp.get("interval_minutes"):
             print("  Interval: {}m".format(resp["interval_minutes"]))
-        if resp.get("lookback"):
-            print("  Lookback: {} sessions".format(resp["lookback"]))
+        if resp.get("eval_sessions"):
+            print("  Eval sessions: {}".format(resp["eval_sessions"]))
         if resp.get("min_sharpe") is not None:
             print("  Min Sharpe: {}".format(resp["min_sharpe"]))
         if resp.get("last_run"):
@@ -588,6 +646,10 @@ def main():
         "--restore", action="store_true",
         help="Restore all markets and strategies from last run",
     )
+    start_parser.add_argument(
+        "--verbose", action="store_true",
+        help="Enable verbose API logging (CLOB, gamma — generates GB/day)",
+    )
 
     # market-on
     market_on_parser = subparsers.add_parser("market-on", help="Start data collection for a market")
@@ -595,8 +657,8 @@ def main():
         "slug_prefix", help='Market slug prefix, e.g. "btc-updown-5m-"',
     )
     market_on_parser.add_argument(
-        "--window", type=int, default=WINDOW_DURATION_SECONDS,
-        help="Window duration in seconds (default: {})".format(WINDOW_DURATION_SECONDS),
+        "--window", type=int, default=None,
+        help="Window duration override in seconds (auto-detected from markets.py)",
     )
     market_on_parser.add_argument(
         "--market-type", default="updown",
@@ -703,6 +765,19 @@ def main():
     # stop
     subparsers.add_parser("stop", help="Stop the running app")
 
+    # collector-stop
+    col_stop_parser = subparsers.add_parser(
+        "collector-stop", help="Stop a collector (works without app running)",
+    )
+    col_stop_parser.add_argument(
+        "slug_prefix", help="Market slug prefix",
+    )
+
+    # collector-status
+    subparsers.add_parser(
+        "collector-status", help="Show running collectors (works without app running)",
+    )
+
     # claim
     claim_parser = subparsers.add_parser("claim", help="Claim/redeem resolved positions")
     claim_parser.add_argument(
@@ -714,8 +789,8 @@ def main():
     opt_on_parser = subparsers.add_parser("optimizer-on", help="Start the live optimizer")
     opt_on_parser.add_argument("--interval", type=int, default=30,
                                help="Minutes between optimization cycles (default: 30)")
-    opt_on_parser.add_argument("--lookback", type=int, default=30,
-                               help="Number of recent sessions to use (default: 30)")
+    opt_on_parser.add_argument("--eval-sessions", type=int, default=30,
+                               help="Number of recent sessions to evaluate (default: 30)")
     opt_on_parser.add_argument("--min-sharpe", type=float, default=0.2,
                                help="Min Sharpe to keep a strategy (default: 0.2)")
     opt_on_parser.add_argument("--cash", type=float, default=100.0,
@@ -730,8 +805,8 @@ def main():
     opt_cfg_parser = subparsers.add_parser("optimizer-config", help="View/update optimizer config")
     opt_cfg_parser.add_argument("--interval", type=int, default=None,
                                 help="Update interval (minutes)")
-    opt_cfg_parser.add_argument("--lookback", type=int, default=None,
-                                help="Update lookback (sessions)")
+    opt_cfg_parser.add_argument("--eval-sessions", type=int, default=None,
+                                help="Update eval sessions count")
     opt_cfg_parser.add_argument("--min-sharpe", type=float, default=None,
                                 help="Update min Sharpe threshold")
     opt_cfg_parser.add_argument("--cash", type=float, default=None,
@@ -752,6 +827,8 @@ def main():
         "kill": cmd_kill,
         "status": cmd_status,
         "stop": cmd_stop,
+        "collector-stop": cmd_collector_stop,
+        "collector-status": cmd_collector_status,
         "claim": cmd_claim,
         "optimizer-on": cmd_optimizer_on,
         "optimizer-off": cmd_optimizer_off,

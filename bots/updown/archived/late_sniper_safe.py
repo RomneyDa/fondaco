@@ -12,13 +12,13 @@ class LateSniperSafe(Strategy):
 
     name = "LateSniperSafe"
     description = "Ultra-conservative late entry — only trades when outcome is virtually decided."
-    version = "7"
+    version = "8"
 
     # --- Tunable params ---
     min_elapsed = Param(default=0.80, min=0.70, max=0.88)
     confidence_threshold = Param(default=0.965, min=0.93, max=0.98)
     max_price = Param(default=0.985, min=0.96, max=0.99)
-    confirm_ticks = Param(default=50, min=36, max=72)
+    confirm_ms = Param(default=2750, min=2000, max=4000)
     min_btc_move_pct = Param(default=MIN_BTC_MOVE_PCT, min=0.0, max=0.15, nullable=True)
 
     # --- Fixed params ---
@@ -31,12 +31,12 @@ class LateSniperSafe(Strategy):
         self._params = {name: getattr(self, name) for name in defs}
         self.min_elapsed_hint = self.min_elapsed
         self._entry_count = 0
-        self._confirm_count = 0
+        self._confirm_start_s = -999.0
         self._confirm_side = None  # type: Optional[str]
 
     def on_session_start(self, metadata):
         self._entry_count = 0
-        self._confirm_count = 0
+        self._confirm_start_s = -999.0
         self._confirm_side = None
 
     def on_tick(self, ctx):
@@ -66,19 +66,18 @@ class LateSniperSafe(Strategy):
                     return HOLD
 
         if best_mid >= self.confidence_threshold and best_mid <= self.max_price:
-            # Accumulate confirmation ticks — must be same side consistently
-            if best_side == self._confirm_side:
-                self._confirm_count += 1
-            else:
+            # Accumulate confirmation time — must be same side consistently
+            if best_side != self._confirm_side:
                 self._confirm_side = best_side
-                self._confirm_count = 1
+                self._confirm_start_s = ctx.elapsed_seconds
 
-            if self._confirm_count >= self.confirm_ticks:
+            confirm_elapsed_ms = (ctx.elapsed_seconds - self._confirm_start_s) * 1000.0
+            if confirm_elapsed_ms >= self.confirm_ms:
                 self._entry_count += 1
                 buy_side = "buy_up" if best_side == "up" else "buy_down"
-                self.log("BUY {}: mid={:.3f} at {:.0f}% elapsed, confirmed {} ticks".format(
+                self.log("BUY {}: mid={:.3f} at {:.0f}% elapsed, confirmed {:.0f}ms".format(
                     best_side.upper(), best_mid, ctx.elapsed_fraction * 100,
-                    self._confirm_count,
+                    confirm_elapsed_ms,
                 ))
                 return TradeAction(
                     side=buy_side,
@@ -87,7 +86,7 @@ class LateSniperSafe(Strategy):
                                     )
         else:
             # Reset confirmation if signal drops
-            self._confirm_count = 0
+            self._confirm_start_s = -999.0
             self._confirm_side = None
 
         return HOLD

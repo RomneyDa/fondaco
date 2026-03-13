@@ -6,14 +6,15 @@ interface Props {
   session: SessionData;
   trades?: BotTrade[];
   isDryRun?: boolean;
+  tickRate?: number | null;
 }
 
 const LAYOUT_BASE = {
-  height: 300,
+  height: 340,
   paper_bgcolor: "transparent",
   plot_bgcolor: "transparent",
   font: { color: "#e6edf3", size: 12 },
-  margin: { l: 60, r: 80, t: 30, b: 30 },
+  margin: { l: 60, r: 80, t: 30, b: 45 },
   xaxis: {
     gridcolor: "#30363d",
     zerolinecolor: "#30363d",
@@ -72,7 +73,43 @@ function buildTradeTraces(trades: BotTrade[], isDryRun: boolean) {
     }));
 }
 
-export function SessionCharts({ session, trades, isDryRun }: Props) {
+/** Build bid/ask spread traces as thin lines above/below the midpoint */
+function buildSpreadTraces(
+  elapsed: number[],
+  bids: (number | null)[],
+  asks: (number | null)[],
+  color: string,
+  name: string
+) {
+  const hasBids = bids.some((v) => v != null);
+  const hasAsks = asks.some((v) => v != null);
+  if (!hasBids || !hasAsks) return [];
+
+  return [
+    {
+      x: elapsed,
+      y: asks,
+      type: "scatter",
+      mode: "lines",
+      name: `${name} Ask`,
+      line: { color, width: 1, dash: "dot" },
+      showlegend: false,
+      hoverinfo: "skip",
+    },
+    {
+      x: elapsed,
+      y: bids,
+      type: "scatter",
+      mode: "lines",
+      name: `${name} Bid`,
+      line: { color, width: 1, dash: "dot" },
+      showlegend: false,
+      hoverinfo: "skip",
+    },
+  ];
+}
+
+export function SessionCharts({ session, trades, isDryRun, tickRate }: Props) {
   const samples = session.samples || [];
 
   const elapsed = useMemo(
@@ -94,6 +131,25 @@ export function SessionCharts({ session, trades, isDryRun }: Props) {
     }
     return { x, y };
   }, [samples]);
+
+  const spreadTraces = useMemo(() => {
+    if (samples.length === 0) return [];
+    const upSpread = buildSpreadTraces(
+      elapsed,
+      samples.map((s) => s.up_token_best_bid),
+      samples.map((s) => s.up_token_best_ask),
+      "rgba(63, 185, 80, 0.06)",
+      "Up"
+    );
+    const downSpread = buildSpreadTraces(
+      elapsed,
+      samples.map((s) => s.down_token_best_bid),
+      samples.map((s) => s.down_token_best_ask),
+      "rgba(248, 81, 73, 0.06)",
+      "Down"
+    );
+    return [...upSpread, ...downSpread];
+  }, [samples, elapsed]);
 
   const tradeTraces = useMemo(
     () => (trades && trades.length > 0 ? buildTradeTraces(trades, !!isDryRun) : []),
@@ -118,6 +174,7 @@ export function SessionCharts({ session, trades, isDryRun }: Props) {
             line: { color: "#f7931a", width: 1.5 },
             yaxis: "y2",
           },
+          ...spreadTraces,
           {
             x: elapsed,
             y: samples.map((s) => s.up_token_midpoint),
@@ -153,7 +210,9 @@ export function SessionCharts({ session, trades, isDryRun }: Props) {
         }}
         config={PLOT_CFG}
       />
-      <div className="absolute bottom-2.5 right-4 text-[11px] text-dim opacity-40">{samples.length} samples</div>
+      <div className="absolute bottom-1 right-4 text-[11px] text-dim opacity-40">
+        {samples.length} samples{tickRate != null ? ` · ${tickRate.toFixed(1)}/s` : ""}
+      </div>
     </div>
   );
 }

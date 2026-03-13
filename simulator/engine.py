@@ -80,7 +80,8 @@ class BacktestResult:
     sessions: List[SessionResult]
     total_pnl: float
     mean_pnl: float
-    win_rate: float
+    entry_rate: float  # fraction of sessions where strategy traded
+    win_rate: float    # fraction of traded sessions with positive PnL
     sharpe: float
     num_sessions: int
     # Kelly / geometric growth metrics
@@ -259,8 +260,9 @@ def convert_all_samples(sessions):
         _convert_samples(session_dict)
 
 
-def pre_slice_summaries(sessions, session_summaries=None, stats_cache=None):
-    # type: (List[Dict[str, Any]], Optional[List[Dict[str, Any]]], Any) -> None
+def pre_slice_summaries(sessions, session_summaries=None, stats_cache=None,
+                        window_duration=None):
+    # type: (List[Dict[str, Any]], Optional[List[Dict[str, Any]]], Any, Optional[float]) -> None
     """Pre-compute per-session prior summaries and attach to metadata.
 
     Without this, every variant × session combo filters the full summary
@@ -269,6 +271,15 @@ def pre_slice_summaries(sessions, session_summaries=None, stats_cache=None):
 
     If stats_cache (SessionStatsCache) is provided, uses its efficient
     bisect-based lookup. Falls back to linear scan of session_summaries.
+
+    Also attaches gap and density metadata when stats_cache is available:
+    - _gap_before_seconds: time since previous session ended (None if first)
+    - _data_density: fraction of expected sessions present in lookback window
+
+    Args:
+        window_duration: Window duration in seconds for this market. Used
+            to compute data density correctly. Required when stats_cache
+            is provided.
     """
     for session_dict in sessions:
         metadata = session_dict.get("metadata", {})
@@ -281,6 +292,12 @@ def pre_slice_summaries(sessions, session_summaries=None, stats_cache=None):
             # Use a large N; strategies will slice to their own lookback window
             prior = stats_cache.prior(before=ws, n=len(stats_cache))
             metadata["_prior_session_summaries"] = prior
+            # Gap and density metadata for regime-aware strategies
+            metadata["_gap_before_seconds"] = stats_cache.gap_before(ws)
+            metadata["_data_density"] = stats_cache.data_density(
+                before=ws, n=30,
+                expected_interval_s=float(window_duration) if window_duration else None,
+            )
         elif session_summaries is not None:
             try:
                 current_start = _parse_utc(ws)
@@ -291,22 +308,27 @@ def pre_slice_summaries(sessions, session_summaries=None, stats_cache=None):
                 pass
 
 
-def _compute_kelly_metrics(results, starting_cash, compound):
-    # type: (List[SessionResult], float, bool) -> Dict[str, float]
+def _compute_kelly_metrics(results, starting_cash, compound, bankroll_path=None):
+    # type: (List[SessionResult], float, bool, Optional[List[float]]) -> Dict[str, float]
     """Compute Kelly criterion and geometric growth metrics from session results.
 
     For a binary-outcome market with repeated bets, the Kelly criterion says
     bet f* = p/a - q/b where p=win prob, q=1-p, b=avg win return, a=avg loss.
     The geometric growth rate g = p*log(1+f*b) + q*log(1-f*a) is what Kelly
     maximizes — it's the metric that determines long-run bankroll growth.
+
+    When bankroll_path is provided (compound mode), drawdown and final_bankroll
+    are computed from the actual bankroll trajectory rather than from
+    session-level returns (which are relative to session cash, not bankroll).
     """
     n = len(results)
     if n == 0:
         return {"geo_mean_return": 0.0, "kelly_fraction": 0.0,
-                "log_growth": 0.0, "final_bankroll": starting_cash,
-                "max_drawdown": 0.0}
+                "dd_ratio": 1.0, "log_growth": 0.0,
+                "final_bankroll": starting_cash, "max_drawdown": 0.0}
 
-    # Per-session return fractions
+    # Per-session return fractions (relative to session cash).
+    # In compound mode these are returns on deployed capital, not on bankroll.
     returns = []  # type: List[float]
     for r in results:
         base = r.starting_cash if compound else starting_cash
@@ -315,37 +337,57 @@ def _compute_kelly_metrics(results, starting_cash, compound):
         else:
             returns.append(0.0)
 
-    # Log-wealth growth: sum of log(1 + r_i), skip sessions where bankroll went to 0
-    log_growth = 0.0
-    for ret in returns:
-        if 1.0 + ret > 0:
-            log_growth += math.log(1.0 + ret)
+    # Log-wealth growth and geometric mean return
+    if bankroll_path is not None and len(bankroll_path) > 1:
+        # Compound mode: derive from actual bankroll trajectory
+        final_b = bankroll_path[-1]
+        start_b = bankroll_path[0]
+        if final_b > 0 and start_b > 0:
+            log_growth = math.log(final_b / start_b)
+            geo_mean_return = math.exp(log_growth / n) - 1.0
         else:
             log_growth = float("-inf")
-            break
-
-    # Geometric mean return per session
-    if math.isfinite(log_growth) and n > 0:
-        geo_mean_return = math.exp(log_growth / n) - 1.0
+            geo_mean_return = -1.0
     else:
-        geo_mean_return = -1.0  # total ruin
+        log_growth = 0.0
+        for ret in returns:
+            if 1.0 + ret > 0:
+                log_growth += math.log(1.0 + ret)
+            else:
+                log_growth = float("-inf")
+                break
+        if math.isfinite(log_growth) and n > 0:
+            geo_mean_return = math.exp(log_growth / n) - 1.0
+        else:
+            geo_mean_return = -1.0  # total ruin
 
-    # Max drawdown (peak-to-trough on cumulative wealth)
-    wealth = 1.0
-    peak = 1.0
-    max_dd = 0.0
-    for ret in returns:
-        wealth *= (1.0 + ret)
-        if wealth > peak:
-            peak = wealth
-        dd = (peak - wealth) / peak if peak > 0 else 0.0
-        if dd > max_dd:
-            max_dd = dd
-
-    # Final bankroll (compound mode)
-    final_bankroll = starting_cash
-    for ret in returns:
-        final_bankroll *= (1.0 + ret)
+    # Max drawdown and final bankroll
+    if bankroll_path is not None and len(bankroll_path) > 1:
+        # Compound mode: use actual bankroll trajectory
+        peak = bankroll_path[0]
+        max_dd = 0.0
+        for b in bankroll_path[1:]:
+            if b > peak:
+                peak = b
+            dd = (peak - b) / peak if peak > 0 else 0.0
+            if dd > max_dd:
+                max_dd = dd
+        final_bankroll = bankroll_path[-1]
+    else:
+        # Flat mode: reconstruct from returns
+        wealth = 1.0
+        peak = 1.0
+        max_dd = 0.0
+        for ret in returns:
+            wealth *= (1.0 + ret)
+            if wealth > peak:
+                peak = wealth
+            dd = (peak - wealth) / peak if peak > 0 else 0.0
+            if dd > max_dd:
+                max_dd = dd
+        final_bankroll = starting_cash
+        for ret in returns:
+            final_bankroll *= (1.0 + ret)
 
     # Estimate optimal Kelly fraction numerically.
     # Ternary search on concave log-growth function (converges in ~50 iterations
@@ -558,7 +600,7 @@ class Simulator:
         self.slippage = slippage
         self.limit_fill_margin = limit_fill_margin
         self.latency_ms = latency_ms
-        self.compound = compound
+        self.compound = compound or (session_cash_ratio is not None)
         self.fees = fees
         self.session_cash_ratio = session_cash_ratio  # (ratio, max) or None
         # Pre-build sorted session summaries for strategies that need lookback.
@@ -606,7 +648,8 @@ class Simulator:
             last = samples[-1]
             window_duration = last.elapsed_seconds
         else:
-            window_duration = 300.0
+            # Degenerate session (0-1 samples) — use metadata if available
+            window_duration = float(metadata.get("_window_duration", 300))
 
         position = Position(cash=cash)
         executor = SimExecutor(self.execution_mode, self.slippage, fees=self.fees,
@@ -680,6 +723,7 @@ class Simulator:
         """
         results = []
         bankroll = self.starting_cash
+        bankroll_path = [bankroll]  # track actual bankroll for compound drawdown
 
         for s in sessions:
             if self.compound:
@@ -692,6 +736,7 @@ class Simulator:
                     session_cash = bankroll
                 result = self.run_session(strategy, s, session_cash=session_cash)
                 bankroll = (bankroll - session_cash) + result.final_position.cash
+                bankroll_path.append(bankroll)
             else:
                 result = self.run_session(strategy, s)
             results.append(result)
@@ -700,8 +745,10 @@ class Simulator:
         total_fees = sum(r.total_fees for r in results)
         n = len(results)
         mean_pnl = total_pnl / n if n > 0 else 0.0
-        wins = sum(1 for r in results if r.pnl > 0)
-        win_rate = wins / n if n > 0 else 0.0
+        traded = sum(1 for r in results if len(r.trades) > 0)
+        wins = sum(1 for r in results if len(r.trades) > 0 and r.pnl > 0)
+        entry_rate = traded / n if n > 0 else 0.0
+        win_rate = wins / traded if traded > 0 else 0.0
 
         # Sharpe: mean / std of per-session PnL
         if n > 1:
@@ -714,7 +761,8 @@ class Simulator:
             sharpe = 0.0
 
         # Kelly / geometric growth metrics
-        kelly = _compute_kelly_metrics(results, self.starting_cash, self.compound)
+        kelly = _compute_kelly_metrics(results, self.starting_cash, self.compound,
+                                       bankroll_path=bankroll_path if self.compound else None)
 
         return BacktestResult(
             strategy_name=strategy.name,
@@ -722,6 +770,7 @@ class Simulator:
             sessions=results,
             total_pnl=total_pnl,
             mean_pnl=mean_pnl,
+            entry_rate=entry_rate,
             win_rate=win_rate,
             sharpe=sharpe,
             num_sessions=n,

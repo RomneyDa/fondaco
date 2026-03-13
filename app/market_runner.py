@@ -1,11 +1,8 @@
-"""MarketRunner: data collection + worker management for a single market.
+"""MarketRunner: worker management for a single market.
 
-Refactored from the original Runner (app/runner.py) to run as a thread
-managed by AppManager. Owns the data stream (PriceFetcher, SessionRecorder,
-TickBroadcaster) and spawns/kills bot worker processes.
-
-Does NOT own shared resources (LoggingSession, RTDSClient) — those are
-passed in by AppManager and shared across markets.
+Data collection runs in a separate standalone collector process
+(app/collector.py). This class manages bot worker processes, strategy
+config, and provides status info by reading the collector's state file.
 """
 
 import json
@@ -16,35 +13,35 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from core.defaults import (
     BALANCE_CACHE_FILE,
     BASE_DIR,
-    POLL_INTERVAL_SECONDS,
     TOKEN_DECIMALS,
-    WINDOW_DURATION_SECONDS,
     market_data_dir,
     market_sessions_dir,
     market_socket_path,
     market_workers_dir,
     market_strategies_file,
+    collector_state_path,
+    collector_pid_path,
 )
-from core.models import SessionData
-from core.price_fetcher import PriceFetcher
-from core.session_recorder import SessionRecorder
 from bots import ALL_STRATEGIES, get_strategies_for_market
-from core.tick_broadcast import TickBroadcaster
 from core.session_cache import SessionStatsCache
-from core.window_ops import (
-    wait_for_next_window,
-    fetch_metadata_with_retry,
-)
 
 logger = logging.getLogger(__name__)
+
+
+def _pid_alive(pid):
+    # type: (int) -> bool
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -114,37 +111,25 @@ def _load_balance_cache():
 
 
 class MarketRunner:
-    """Data collection + worker process management for one market.
+    """Worker process management for one market.
 
-    Runs as a thread managed by AppManager. Owns the data stream and
-    tick broadcaster. Trading strategies run as independent worker processes.
+    Data collection runs in a separate collector process (app/collector.py).
+    This class manages bot worker processes and provides status info.
     """
 
     def __init__(
         self,
         slug_prefix,                                    # type: str
-        http_session,                                   # type: Any
-        rtds_client,                                    # type: Any
         market_type="updown",                           # type: str
-        window_duration=WINDOW_DURATION_SECONDS,        # type: int
-        poll_interval=POLL_INTERVAL_SECONDS,            # type: float
-        max_sessions=0,                                 # type: int
+        window_duration=None,                           # type: Optional[int]
     ):
         self.slug_prefix = slug_prefix
         self.slug_key = slug_prefix.rstrip("-")
         self.market_type = market_type
+        if window_duration is None:
+            from core.markets import get_market_config
+            window_duration = get_market_config(slug_prefix).window_duration_seconds
         self.window_duration = window_duration
-        self.poll_interval = poll_interval
-        self.max_sessions = max_sessions
-
-        # Shared infrastructure (from AppManager)
-        self.http_session = http_session
-        self.rtds = rtds_client
-
-        # Per-market infrastructure
-        self.fetcher = PriceFetcher(session=http_session, rtds_client=rtds_client)
-        self._sample_pool = ThreadPoolExecutor(max_workers=8)
-        self.recorder = SessionRecorder(slug_prefix)
 
         # Per-market paths
         self._market_dir = market_data_dir(self.slug_key)
@@ -152,19 +137,12 @@ class MarketRunner:
         self._strategies_file = market_strategies_file(self.slug_key)
         self._socket_path = market_socket_path(self.slug_key)
 
-        # Tick broadcaster
-        os.makedirs(os.path.dirname(self._socket_path), exist_ok=True)
-        self._broadcaster = TickBroadcaster(self._socket_path)
-
         # State
-        self.running = True
         self._stop_after_session = False
-        self.session_count = 0
 
-        # Session stats cache — loads all existing sessions on startup,
-        # updated in-memory after each session resolves. Bots receive stats
-        # via the session_start broadcast. File written for dashboard only.
+        # Session stats cache (for dashboard endpoint, refreshed periodically)
         self._stats_cache = self._init_stats_cache()
+        self._stats_cache_ts = time.time()
 
         # Worker processes (protected by lock)
         self._lock = threading.Lock()
@@ -193,13 +171,42 @@ class MarketRunner:
 
     def request_stop(self):
         # type: () -> None
-        logger.info("[%s] Stop requested.", self.slug_key)
-        self.running = False
+        """Kill all workers. Does NOT stop the collector."""
+        logger.info("[%s] Stopping all workers.", self.slug_key)
+        self._kill_all_workers()
 
-    def request_stop_after_session(self):
-        # type: () -> None
-        logger.info("[%s] Kill requested — will stop after current session.", self.slug_key)
-        self._stop_after_session = True
+    # ----- Collector state -----
+
+    def _read_collector_state(self):
+        # type: () -> Dict[str, Any]
+        """Read the collector's periodic state file."""
+        state_path = collector_state_path(self.slug_key)
+        try:
+            with open(state_path, "r") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _read_collector_pid(self):
+        # type: () -> Optional[int]
+        """Read and validate the collector's PID."""
+        pid_path = collector_pid_path(self.slug_key)
+        try:
+            with open(pid_path, "r") as f:
+                pid = int(f.read().strip())
+            if _pid_alive(pid):
+                return pid
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def refresh_stats_cache(self, max_age=60.0):
+        # type: (float) -> None
+        """Refresh stats cache from disk if older than max_age seconds."""
+        if time.time() - self._stats_cache_ts < max_age:
+            return
+        self._stats_cache = self._init_stats_cache()
+        self._stats_cache_ts = time.time()
 
     # ----- Worker management -----
 
@@ -605,6 +612,9 @@ class MarketRunner:
 
     def get_status(self):
         # type: () -> Dict[str, Any]
+        col_state = self._read_collector_state()
+        col_pid = self._read_collector_pid()
+
         with self._lock:
             strategies = []
             for w in self._workers:
@@ -638,346 +648,15 @@ class MarketRunner:
                 "slug_prefix": self.slug_prefix,
                 "slug_key": self.slug_key,
                 "market_type": self.market_type,
-                "running": self.running,
-                "stop_after_session": self._stop_after_session,
-                "session_count": self.session_count,
+                "running": col_pid is not None,
+                "collector_running": col_pid is not None,
+                "collector_pid": col_pid,
+                "stop_after_session": self._stop_after_session or col_state.get("stop_after_session", False),
+                "session_count": col_state.get("session_count", 0),
                 "trading_enabled": len(self._workers) > 0,
                 "strategies": strategies,
-                "tick_clients": self._broadcaster.client_count,
+                "tick_clients": col_state.get("tick_clients", 0),
             }
-
-    # ----- Main loop -----
-
-    def run(self):
-        # type: () -> None
-        """Main loop — data collection + tick broadcasting. Runs as thread target."""
-        self._broadcaster.start()
-        self._last_window_ts = None  # type: Optional[int]
-
-        completed = self.recorder.count_completed_sessions()
-        logger.info(
-            "[%s] MarketRunner started. %d sessions already collected.",
-            self.slug_key, completed,
-        )
-        self.recorder.append_log(
-            "MarketRunner started",
-            slug_prefix=self.slug_prefix,
-            existing_sessions=completed,
-        )
-
-        try:
-            while self.running:
-                try:
-                    self._run_one_session()
-                    self.session_count += 1
-                    logger.info("[%s] Sessions completed: %d",
-                                self.slug_key, self.session_count)
-                    if self._stop_after_session:
-                        logger.info("[%s] Kill signal — stopping after session %d.",
-                                    self.slug_key, self.session_count)
-                        break
-                    if self.max_sessions > 0 and self.session_count >= self.max_sessions:
-                        logger.info("[%s] Reached max sessions (%d). Stopping.",
-                                    self.slug_key, self.max_sessions)
-                        break
-                except Exception as e:
-                    if not self.running:
-                        break
-                    logger.error("[%s] Session error: %s", self.slug_key, e, exc_info=True)
-                    self.recorder.append_log("Session error", error=str(e))
-                    time.sleep(10)
-        finally:
-            self._kill_all_workers()
-            self._broadcaster.stop()
-            self._sample_pool.shutdown(wait=True)
-            # Only shut down the fetcher's thread pool; don't close the shared HTTP session
-            self.fetcher._pool.shutdown(wait=True)
-            logger.info("[%s] MarketRunner stopped. %d sessions completed.",
-                        self.slug_key, self.session_count)
-
-    # ----- Single session -----
-
-    def _run_one_session(self):
-        # type: () -> None
-        self._reap_dead_workers()
-
-        last_status_write = [0.0]
-
-        def _on_waiting(next_dt):
-            now = time.time()
-            if now - last_status_write[0] >= 5.0:
-                trading_info = None
-                workers = self._get_workers_snapshot()
-                if workers:
-                    first = workers[0]
-                    state = self._read_worker_state(first.strategy_name)
-                    first_cash = self._state_bankroll(state, first.cash)
-                    trading_info = {
-                        "enabled": True,
-                        "strategy": first.strategy_name,
-                        "cash": round(first_cash, TOKEN_DECIMALS),
-                        "strategies": [
-                            {
-                                "name": w.strategy_name,
-                                "cash": round(
-                                    self._state_bankroll(self._read_worker_state(w.strategy_name), w.cash),
-                                    4,
-                                ),
-                            }
-                            for w in workers
-                        ],
-                    }
-                self.recorder.write_live_status(
-                    "waiting",
-                    next_window_utc=next_dt.isoformat(),
-                    trading_info=trading_info,
-                )
-                self._broadcaster.broadcast({
-                    "type": "waiting",
-                    "next_window_utc": next_dt.isoformat(),
-                })
-                last_status_write[0] = now
-
-        window_ts = wait_for_next_window(
-            self.window_duration, lambda: self.running, on_waiting=_on_waiting,
-            after_window_ts=self._last_window_ts,
-        )
-        if not self.running:
-            return
-
-        metadata = fetch_metadata_with_retry(self.slug_prefix, window_ts)
-        if metadata is None:
-            logger.warning("[%s] Could not find market for window %d. Skipping.",
-                           self.slug_key, window_ts)
-            return
-
-        if self.recorder.session_exists(metadata.window_start_utc):
-            logger.info("[%s] Session %s already exists. Skipping.",
-                        self.slug_key, metadata.window_start_utc)
-            return
-
-        logger.info("[%s] COLLECTING: %s", self.slug_key, metadata.event_title)
-
-        session = SessionData(
-            metadata=metadata,
-            initial_btc_price_usd=None,
-            final_btc_price_usd=None,
-            outcome=None,
-            outcome_prices=None,
-            collection_started_utc=datetime.now(timezone.utc).isoformat(),
-        )
-
-        # Clear stale position data before broadcasting session_start.
-        # Workers delete their live_trades.json on session_end, but that
-        # happens asynchronously.  A dashboard poll in the gap can read the
-        # old file and re-populate the cache, making stale positions appear
-        # in the new session.  Clearing here guarantees a clean slate.
-        self.recorder.clear_live_session()
-        self._live_trades_cache.clear()
-
-        metadata_dict = asdict(metadata)
-        # Inject prior session stats so bots get lookback data via
-        # the broadcast — no disk reads needed in worker processes.
-        ws = metadata.window_start_utc if hasattr(metadata, 'window_start_utc') else ""
-        if ws and len(self._stats_cache) > 0:
-            prior = self._stats_cache.prior(before=ws, n=len(self._stats_cache))
-            metadata_dict["_prior_session_summaries"] = [s.to_dict() for s in prior]
-        self._broadcaster.broadcast({
-            "type": "session_start",
-            "metadata": metadata_dict,
-            "window_ts": window_ts,
-            "window_end_ts": window_ts + self.window_duration,
-        })
-
-        self._poll_and_broadcast(session, metadata, window_ts)
-
-        if session.samples:
-            session.final_btc_price_usd = session.samples[-1].btc_price_usd
-        session.collection_ended_utc = datetime.now(timezone.utc).isoformat()
-
-        if session.initial_btc_price_usd and session.final_btc_price_usd:
-            session.outcome = (
-                "Up" if session.final_btc_price_usd > session.initial_btc_price_usd
-                else "Down"
-            )
-            session.outcome_prices = (
-                ["1", "0"] if session.outcome == "Up" else ["0", "1"]
-            )
-
-        logger.info(
-            "[%s] Window ended. %d samples. BTC: $%s -> $%s.",
-            self.slug_key, len(session.samples),
-            session.initial_btc_price_usd, session.final_btc_price_usd,
-        )
-
-        self.recorder.clear_live_session()
-        self._live_trades_cache.clear()
-        filepath = self.recorder.save_session(session)
-
-        # Update in-memory session stats cache with the newly resolved session.
-        # Dashboard reads stats via the control server HTTP endpoint.
-        if session.outcome and session.initial_btc_price_usd and session.final_btc_price_usd:
-            ws = metadata.window_start_utc if hasattr(metadata, 'window_start_utc') else ""
-            self._stats_cache.add(
-                window_start=ws,
-                outcome=session.outcome,
-                initial_btc=session.initial_btc_price_usd,
-                final_btc=session.final_btc_price_usd,
-                source_file=filepath or "",
-            )
-
-        logger.info(
-            "[%s] Saved: %s | Outcome: %s | Samples: %d | Errors: %d",
-            self.slug_key, filepath, session.outcome,
-            len(session.samples), session.error_count,
-        )
-        self.recorder.append_log(
-            "Session saved",
-            filepath=filepath,
-            outcome=session.outcome,
-            samples=len(session.samples),
-            errors=session.error_count,
-        )
-
-        self._broadcaster.broadcast({
-            "type": "session_end",
-            "outcome": session.outcome,
-            "session_filepath": filepath,
-            "window_ts": window_ts,
-        })
-
-        self._last_window_ts = window_ts
-
-        if self._workers:
-            self._save_strategies_config()
-
-    # ----- Poll loop with broadcasting -----
-
-    def _poll_and_broadcast(self, session, metadata, window_ts):
-        # type: (SessionData, Any, int) -> None
-        window_end_ts = window_ts + self.window_duration
-        # Hard deadline: never collect past the window end
-        hard_deadline_ts = window_end_ts
-        next_sample_time = time.time()
-        pending = []
-        last_live_write = 0.0
-        tick_index = 0
-
-        while self.running:
-            now = time.time()
-
-            # Hard cutoff — never run past deadline regardless of pending futures
-            if now >= hard_deadline_ts:
-                if pending:
-                    logger.warning(
-                        "[%s] Hard deadline reached with %d pending futures — cancelling.",
-                        self.slug_key, len(pending),
-                    )
-                    for f in pending:
-                        f.cancel()
-                    pending = []
-                break
-
-            if now >= next_sample_time and next_sample_time < window_end_ts:
-                pending.append(
-                    self._sample_pool.submit(
-                        self.fetcher.take_sample,
-                        metadata.up_token_id,
-                        metadata.down_token_id,
-                        metadata.window_start_utc,
-                    )
-                )
-                next_sample_time += self.poll_interval
-
-            still_pending = []
-            for f in pending:
-                if f.done():
-                    try:
-                        sample = f.result()
-                        if session.initial_btc_price_usd is None:
-                            session.initial_btc_price_usd = sample.btc_price_usd
-                        session.samples.append(sample)
-
-                        sample_dict = asdict(sample)
-                        self._broadcaster.broadcast({
-                            "type": "tick",
-                            "sample": sample_dict,
-                            "tick_index": tick_index,
-                        })
-                        tick_index += 1
-
-                        logger.debug(
-                            "[%s] Sample %d: BTC=$%s Up=%s Down=%s",
-                            self.slug_key, len(session.samples),
-                            sample.btc_price_usd,
-                            sample.up_token_midpoint,
-                            sample.down_token_midpoint,
-                        )
-                    except Exception as e:
-                        session.error_count += 1
-                        if len(session.errors) < 500:
-                            session.errors.append(
-                                "{}: {}".format(datetime.now(timezone.utc).isoformat(), e)
-                            )
-                        logger.warning("[%s] Sample error: %s", self.slug_key, e)
-                else:
-                    still_pending.append(f)
-            pending = still_pending
-
-            if now - last_live_write >= 2.0 and session.samples:
-                trading_info = self._aggregate_worker_trading_info()
-                self.recorder.write_live_session(session, trading_info=trading_info)
-                last_live_write = now
-
-            if now >= window_end_ts and not pending:
-                break
-
-            sleep_for = min(0.01, next_sample_time - time.time())
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-
-    def _aggregate_worker_trading_info(self):
-        # type: () -> Optional[Dict[str, Any]]
-        workers = self._get_workers_snapshot()
-        if not workers:
-            return None
-
-        strategies_info = []
-        for w in workers:
-            live = self._read_worker_live_trades(w.strategy_name)
-            if live is not None:
-                self._live_trades_cache[w.strategy_name] = live
-            else:
-                live = self._live_trades_cache.get(w.strategy_name)
-            state = self._read_worker_state(w.strategy_name)
-            state_cash = self._state_bankroll(state, w.cash)
-            live_bankroll = live.get("bankroll", state_cash) if live else state_cash
-            info = {
-                "name": w.strategy_name,
-                "dry_run": w.dry_run,
-                "cash": live_bankroll,
-                "bankroll": state_cash,
-                "up_tokens": live.get("up_tokens", 0) if live else 0,
-                "down_tokens": live.get("down_tokens", 0) if live else 0,
-                "starting_cash": live.get("starting_cash", state_cash) if live else state_cash,
-                "trades": live.get("trades", []) if live else [],
-                "pending_orders": live.get("pending_orders", []) if live else [],
-            }
-            if w.session_cash_ratio is not None:
-                info["session_cash_ratio"] = w.session_cash_ratio
-            if w.session_cap is not None:
-                info["session_cap"] = w.session_cap
-            strategies_info.append(info)
-
-        first = strategies_info[0]
-        return {
-            "enabled": True,
-            "strategy": first["name"],
-            "dry_run": first["dry_run"],
-            "cash": first["cash"],
-            "trades": first["trades"],
-            "strategies": strategies_info,
-        }
 
     def _get_workers_snapshot(self):
         # type: () -> List[WorkerInfo]

@@ -33,3 +33,30 @@ def ols_slope_bps(prices, window):
         return None
     slope = (n * sum_xy - sum_x * sum_y) / denom
     return (slope / base) * BPS_DIVISOR
+
+
+def ols_slope_bps_timed(times, prices):
+    # type: (list, list) -> float
+    """OLS slope of prices vs time, returned in bps/second.
+
+    Args:
+        times: list of elapsed_seconds values.
+        prices: list of prices corresponding to times.
+
+    Returns bps/second or None if insufficient data.
+    """
+    n = len(prices)
+    if n < 2 or len(times) != n:
+        return None
+    base = prices[0]
+    if base <= 0:
+        return None
+    sum_x = sum(times)
+    sum_x2 = sum(t * t for t in times)
+    sum_y = sum(prices)
+    sum_xy = sum(t * p for t, p in zip(times, prices))
+    denom = n * sum_x2 - sum_x * sum_x
+    if denom == 0:
+        return None
+    slope = (n * sum_xy - sum_x * sum_y) / denom
+    return (slope / base) * BPS_DIVISOR

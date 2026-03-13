@@ -9,60 +9,6 @@ from core.trader import Position
 
 
 # ---------------------------------------------------------------------------
-# _save_position (per-strategy position persistence)
-# ---------------------------------------------------------------------------
-
-
-class TestPositionPersistence:
-    def test_save_and_load_roundtrip(self, tmp_path):
-        pos_dir = str(tmp_path / "bot_positions")
-        from app.bot_worker import _save_position
-        pos = Position(cash=42.5, up_tokens=10.0, down_tokens=5.0)
-        _save_position(pos_dir, "TestStrategy", pos)
-
-        filepath = os.path.join(pos_dir, "TestStrategy.json")
-        assert os.path.exists(filepath)
-        with open(filepath) as f:
-            data = json.load(f)
-        loaded = Position.from_dict(data)
-        assert loaded.cash == 42.5
-        assert loaded.up_tokens == 10.0
-        assert loaded.down_tokens == 5.0
-
-    def test_save_is_atomic(self, tmp_path):
-        """Verify atomic write: .tmp file should not persist after save."""
-        pos_dir = str(tmp_path / "bot_positions")
-        from app.bot_worker import _save_position
-        _save_position(pos_dir, "TestStrategy", Position(cash=99.0))
-        filepath = os.path.join(pos_dir, "TestStrategy.json")
-        assert os.path.exists(filepath)
-        assert not os.path.exists(filepath + ".tmp")
-
-    def test_save_overwrites(self, tmp_path):
-        pos_dir = str(tmp_path / "bot_positions")
-        from app.bot_worker import _save_position
-        _save_position(pos_dir, "TestStrategy", Position(cash=10.0))
-        _save_position(pos_dir, "TestStrategy", Position(cash=20.0))
-        filepath = os.path.join(pos_dir, "TestStrategy.json")
-        with open(filepath) as f:
-            data = json.load(f)
-        assert data["cash"] == 20.0
-
-    def test_multiple_strategies(self, tmp_path):
-        """Different strategy names write to different files."""
-        pos_dir = str(tmp_path / "bot_positions")
-        from app.bot_worker import _save_position
-        _save_position(pos_dir, "StratA", Position(cash=100.0))
-        _save_position(pos_dir, "StratB", Position(cash=200.0))
-        assert os.path.exists(os.path.join(pos_dir, "StratA.json"))
-        assert os.path.exists(os.path.join(pos_dir, "StratB.json"))
-        with open(os.path.join(pos_dir, "StratA.json")) as f:
-            assert json.load(f)["cash"] == 100.0
-        with open(os.path.join(pos_dir, "StratB.json")) as f:
-            assert json.load(f)["cash"] == 200.0
-
-
-# ---------------------------------------------------------------------------
 # _save_balance_cache / _load_balance_cache
 # ---------------------------------------------------------------------------
 
@@ -108,7 +54,7 @@ class TestStateFile:
             from app.__main__ import _read_state
             assert _read_state() is None
 
-    def test_stale_state_cleaned_up(self, tmp_path):
+    def test_stale_state_returns_none(self, tmp_path):
         state_file = str(tmp_path / "app.json")
         with open(state_file, "w") as f:
             json.dump({"pid": 999999999, "port": 8420}, f)
@@ -116,16 +62,23 @@ class TestStateFile:
             from app.__main__ import _read_state
             result = _read_state()
             assert result is None
-            assert not os.path.exists(state_file)
+            # File is preserved so _write_state can read the markets list
+            assert os.path.exists(state_file)
 
     def test_remove_state(self, tmp_path):
         state_file = str(tmp_path / "app.json")
         with open(state_file, "w") as f:
-            json.dump({"pid": 12345, "port": 8420}, f)
+            json.dump({"pid": 12345, "port": 8420, "markets": ["btc"]}, f)
         with patch("app.__main__.APP_STATE_FILE", state_file):
             from app.__main__ import _remove_state
             _remove_state()
-            assert not os.path.exists(state_file)
+            # File preserved with pid/port cleared, markets kept
+            assert os.path.exists(state_file)
+            with open(state_file) as f:
+                data = json.load(f)
+            assert "pid" not in data
+            assert "port" not in data
+            assert data["markets"] == ["btc"]
 
 
 # ---------------------------------------------------------------------------

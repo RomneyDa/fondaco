@@ -647,7 +647,6 @@ app.get("/api/strategies", async (_req: Request, res: Response) => {
 // --- Slugs & App start ---
 
 const PROJECT_ROOT = path.resolve(__dirname, "../..");
-const SLUGS_JSON = path.join(PROJECT_ROOT, "slugs.json");
 const AUTH_CACHE = path.join(PROJECT_ROOT, ".cache", "auth.json");
 const DATA_API_BASE = "https://data-api.polymarket.com";
 const USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
@@ -755,21 +754,16 @@ app.get("/api/positions", async (_req: Request, res: Response) => {
   res.json({ positions: positions ?? [], usdc });
 });
 
-app.get("/api/slugs", (_req: Request, res: Response) => {
+app.get("/api/slugs", async (_req: Request, res: Response) => {
   try {
-    // 1. Try slugs.json first (manually curated list)
-    if (fs.existsSync(SLUGS_JSON)) {
-      const data = JSON.parse(fs.readFileSync(SLUGS_JSON, "utf-8"));
-      const slugs = data.slug_prefixes || [];
-      if (slugs.length > 0) {
-        res.json({ slugs });
-        return;
-      }
+    // 1. Try control server (reads from core/markets.py KNOWN_MARKETS)
+    const proxy = await proxyToControl("/api/control/known-markets");
+    if (proxy.status === 200 && proxy.data?.slugs?.length > 0) {
+      res.json({ slugs: proxy.data.slugs });
+      return;
     }
 
-    // 2. Auto-discover from data/markets/ directories
-    // Directory names follow pattern: {asset}-updown-{duration}m
-    const marketsDir = path.join(PROJECT_ROOT, "data", "markets");
+    // 2. Fallback: parse KNOWN_MARKETS from core/markets.py
     const slugs: Array<{
       slug_prefix: string;
       window_duration_seconds: number;
@@ -777,21 +771,23 @@ app.get("/api/slugs", (_req: Request, res: Response) => {
       example_title: string;
     }> = [];
 
-    if (fs.existsSync(marketsDir)) {
-      const entries = fs.readdirSync(marketsDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const match = entry.name.match(/^(\w+)-updown-(\d+)m$/);
-        if (match) {
-          const asset = match[1].toUpperCase();
-          const durationMin = parseInt(match[2], 10);
-          slugs.push({
-            slug_prefix: `${entry.name}-`,
-            window_duration_seconds: durationMin * 60,
-            asset,
-            example_title: `${asset} ${durationMin}m Up/Down`,
-          });
-        }
+    const marketsFile = path.join(PROJECT_ROOT, "core", "markets.py");
+    if (fs.existsSync(marketsFile)) {
+      const content = fs.readFileSync(marketsFile, "utf-8");
+      const re = /MarketConfig\(\s*slug_prefix\s*=\s*"([^"]+)"[^)]*window_duration_seconds\s*=\s*(\d+)/gs;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(content)) !== null) {
+        const prefix = m[1];
+        const key = prefix.replace(/-$/, "");
+        const parts = key.match(/^(\w+)-updown-(\d+)m$/);
+        const asset = parts ? parts[1].toUpperCase() : key;
+        const durationMin = parts ? parseInt(parts[2], 10) : parseInt(m[2], 10) / 60;
+        slugs.push({
+          slug_prefix: prefix,
+          window_duration_seconds: parseInt(m[2], 10),
+          asset,
+          example_title: `${asset} ${durationMin}m Up/Down`,
+        });
       }
     }
 
@@ -840,6 +836,90 @@ app.post("/api/bot/start", async (req: Request, res: Response) => {
     res.json({ ok: true, pid: child.pid });
   } catch (err) {
     res.status(500).json({ error: `Failed to start: ${err}` });
+  }
+});
+
+// --- Collector lifecycle (app-independent) ---
+
+app.post("/api/collector/start", async (req: Request, res: Response) => {
+  try {
+    const { slug_prefix, window } = req.body;
+    if (!slug_prefix) {
+      res.status(400).json({ error: "Missing slug_prefix" });
+      return;
+    }
+    const slugKey = slug_prefix.replace(/-$/, "");
+
+    // Check if already running via PID file
+    const pidFile = `/tmp/eros-pm-${slugKey}-collector.pid`;
+    if (fs.existsSync(pidFile)) {
+      try {
+        const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+        process.kill(pid, 0); // throws if dead
+        res.json({ ok: true, already_running: true, pid });
+        return;
+      } catch {
+        // Stale PID file, continue
+      }
+    }
+
+    const args = [
+      "run", "python", "-m", "app.collector",
+      "--slug-prefix", slug_prefix,
+    ];
+    if (window) args.push("--window", String(window));
+
+    const child = spawn("uv", args, {
+      cwd: PROJECT_ROOT,
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+
+    // Wait briefly for collector to write PID file
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    res.json({ ok: true, pid: child.pid });
+  } catch (err) {
+    res.status(500).json({ error: `Failed to start collector: ${err}` });
+  }
+});
+
+app.post("/api/collector/stop", async (req: Request, res: Response) => {
+  try {
+    const { slug_prefix, after_session } = req.body;
+    if (!slug_prefix) {
+      res.status(400).json({ error: "Missing slug_prefix" });
+      return;
+    }
+    const slugKey = slug_prefix.replace(/-$/, "");
+    const pidFile = `/tmp/eros-pm-${slugKey}-collector.pid`;
+
+    if (!fs.existsSync(pidFile)) {
+      res.json({ ok: false, error: "No collector PID file found" });
+      return;
+    }
+
+    const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+    try {
+      process.kill(pid, 0); // check alive
+    } catch {
+      res.json({ ok: false, error: "Collector not running (stale PID)" });
+      return;
+    }
+
+    // SIGUSR1 = stop after current session, SIGTERM = stop now
+    const sig = after_session ? "SIGUSR1" : "SIGTERM";
+    process.kill(pid, sig);
+
+    // If the app is running, also tell it to unregister the market
+    if (!after_session) {
+      proxyToControl("/api/control/market-off", "POST", { slug_prefix }).catch(() => {});
+    }
+
+    res.json({ ok: true, signal: sig, pid });
+  } catch (err) {
+    res.status(500).json({ error: `Failed to stop collector: ${err}` });
   }
 });
 
@@ -1216,6 +1296,7 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
         total_pnl: Math.round(totalPnl * 100) / 100,
         wins,
         losses,
+        entry_rate: resolvedSessions.length > 0 ? Math.round((tradedSessions.length / resolvedSessions.length) * 1000) / 10 : 0,
         win_rate: tradedSessions.length > 0 ? Math.round((wins / tradedSessions.length) * 1000) / 10 : 0,
         sharpe: Math.round(sharpe * 1000) / 1000,
         current_cash: (() => {
@@ -1371,7 +1452,22 @@ function startWatcher() {
     awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 250 },
   });
 
+  // Debounce app.json unlink — os.replace() atomic writes trigger
+  // unlink+add on macOS FSEvents, causing a brief "offline" flicker.
+  let appJsonUnlinkTimer: ReturnType<typeof setTimeout> | null = null;
+
   watcher.on("add", (filepath: string) => {
+    if (filepath === APP_JSON) {
+      // Cancel any pending unlink timer (atomic write: unlink → add)
+      if (appJsonUnlinkTimer) {
+        clearTimeout(appJsonUnlinkTimer);
+        appJsonUnlinkTimer = null;
+      }
+      proxyToControl("/api/control/status")
+        .then(({ data }) => broadcast("bot-status", data))
+        .catch(() => {});
+      return;
+    }
     const rel = path.relative(MARKETS_DIR, filepath);
     const parts = rel.split(path.sep);
     if (parts.length >= 3 && parts[1] === "live") {
@@ -1383,6 +1479,11 @@ function startWatcher() {
 
   watcher.on("change", (filepath: string) => {
     if (filepath === APP_JSON) {
+      // Cancel any pending unlink timer (atomic write: unlink → add/change)
+      if (appJsonUnlinkTimer) {
+        clearTimeout(appJsonUnlinkTimer);
+        appJsonUnlinkTimer = null;
+      }
       proxyToControl("/api/control/status")
         .then(({ data }) => broadcast("bot-status", data))
         .catch(() => {});
@@ -1424,7 +1525,14 @@ function startWatcher() {
 
   watcher.on("unlink", (filepath: string) => {
     if (filepath === APP_JSON) {
-      broadcast("bot-status", { running: false });
+      // Delay: if the file reappears quickly (atomic write), cancel the offline broadcast
+      if (appJsonUnlinkTimer) clearTimeout(appJsonUnlinkTimer);
+      appJsonUnlinkTimer = setTimeout(() => {
+        if (!fs.existsSync(APP_JSON)) {
+          broadcast("bot-status", { running: false });
+        }
+        appJsonUnlinkTimer = null;
+      }, 500);
       return;
     }
     const rel = path.relative(MARKETS_DIR, filepath);
