@@ -57,7 +57,9 @@ export function SessionDetail() {
   }
 
   const anyDryRun = strategyEntries.some((s) => s.dry_run);
-  const sessionPnl = strategyEntries.reduce((sum: number, s: any) => sum + (s.pnl ?? 0), 0);
+  const realPnl = strategyEntries.filter((s) => !s.dry_run).reduce((sum: number, s: any) => sum + (s.pnl ?? 0), 0);
+  const dryPnl = strategyEntries.filter((s) => s.dry_run).reduce((sum: number, s: any) => sum + (s.pnl ?? 0), 0);
+  const sessionPnl = realPnl;
   const hasPnl = strategyEntries.some((s: any) => s.pnl != null);
 
   const handleArchive = async () => {
@@ -132,6 +134,11 @@ export function SessionDetail() {
             }`}>
               {sessionPnl >= 0 ? "+$" : "-$"}{Math.abs(sessionPnl).toFixed(2)}
             </span>
+            {anyDryRun && dryPnl !== 0 && (
+              <span className="text-[12px] tabular-nums text-accent opacity-70 mt-0.5">
+                {dryPnl >= 0 ? "+" : ""}{dryPnl.toFixed(2)} dry
+              </span>
+            )}
           </div>
           <button
             className="!p-2 bg-card border border-border text-dim inline-flex items-center justify-center leading-none hover:border-down hover:text-down"

@@ -417,6 +417,7 @@ export interface MarketPnl {
   last_24h: number;
   last_1h: number;
   by_strategy: Record<string, { overall: number; last_24h: number; last_1h: number }>;
+  dry_run?: { overall: number; last_24h: number; last_1h: number };
 }
 
 export async function fetchMarketPnl(prefix: string): Promise<MarketPnl | null> {

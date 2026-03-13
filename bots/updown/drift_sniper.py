@@ -113,8 +113,7 @@ class DriftSniper(Strategy):
                     side="buy_up",
                     amount=ctx.position.cash * self.bet_fraction,
                     price=up_mid,
-                    expiration_seconds=10,
-                )
+                                    )
         else:
             if down_mid <= self.max_price:
                 self._entry_count += 1
@@ -126,8 +125,7 @@ class DriftSniper(Strategy):
                     side="buy_down",
                     amount=ctx.position.cash * self.bet_fraction,
                     price=down_mid,
-                    expiration_seconds=10,
-                )
+                                    )
 
         return HOLD
 

@@ -28,8 +28,15 @@ export function StrategyTable({ rows, showBankroll, showPosition, showFinalCash 
   let totalPosValue = 0;
   let totalTrades = 0;
   let totalFees = 0;
+  let dryPnl = 0;
+  let hasDry = false;
   for (const r of rows) {
-    totalPnl += r.pnl;
+    if (r.dry_run) {
+      dryPnl += r.pnl;
+      hasDry = true;
+    } else {
+      totalPnl += r.pnl;
+    }
     totalPosValue += r.posValue;
     totalTrades += r.trades;
     totalFees += r.fees;
@@ -118,6 +125,11 @@ export function StrategyTable({ rows, showBankroll, showPosition, showFinalCash 
               <td className={`text-right mono !border-b-0 ${totalPnl > 0 ? "!text-up" : totalPnl < 0 ? "!text-down" : ""}`}>
                 {totalPnl >= 0 ? "+$" : "-$"}
                 {Math.abs(totalPnl).toFixed(2)}
+                {hasDry && (
+                  <span className="text-accent text-[11px] ml-1.5 font-normal opacity-70">
+                    ({dryPnl >= 0 ? "+" : ""}{dryPnl.toFixed(2)} dry)
+                  </span>
+                )}
               </td>
               <td className="text-right mono text-dim !border-b-0">
                 {totalFees > 0 ? `$${totalFees.toFixed(2)}` : ""}

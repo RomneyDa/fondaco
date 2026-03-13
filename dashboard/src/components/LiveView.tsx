@@ -205,7 +205,7 @@ export function LiveView({ liveData }: Props) {
       </div>
 
       {pnl && (pnl.overall !== 0 || pnl.last_24h !== 0 || pnl.last_1h !== 0) && (
-        <PnlCard overall={pnl.overall} last24h={pnl.last_24h} last1h={pnl.last_1h ?? 0} />
+        <PnlCard overall={pnl.overall} last24h={pnl.last_24h} last1h={pnl.last_1h ?? 0} dryRun={pnl.dry_run} />
       )}
 
       {payload && isSessionData(payload) && payload.samples?.length > 0 && (() => {

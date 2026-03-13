@@ -168,8 +168,7 @@ class GapFader(Strategy):
                         self._entry_count, current_mid, self._entry_midpoint, gain_pct))
                     self._entry_midpoint = 0.0
                     self._entry_side = None
-                    return TradeAction(side=sell_side, amount=tokens, price=current_mid,
-                                       expiration_seconds=10)
+                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
 
                 # Stop-loss
                 if current_mid <= self._entry_midpoint * (1.0 - self.stop_loss_pct):
@@ -179,8 +178,7 @@ class GapFader(Strategy):
                         self._entry_count, current_mid, self._entry_midpoint, drop_pct))
                     self._entry_midpoint = 0.0
                     self._entry_side = None
-                    return TradeAction(side=sell_side, amount=tokens, price=current_mid,
-                                       expiration_seconds=10)
+                    return TradeAction(side=sell_side, amount=tokens, price=current_mid)
 
             return HOLD
 
@@ -237,6 +235,6 @@ class GapFader(Strategy):
                      eff_max, self._vol_boost, dollars,
                      ctx.elapsed_fraction * 100))
 
-        return TradeAction(side=side, amount=dollars, price=price,
-                           expiration_seconds=10)
+        return TradeAction(side=side, amount=dollars, price=price)
+
 

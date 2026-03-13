@@ -49,11 +49,14 @@ API_TIMEOUT_SHORT = 5              # External price APIs (Coinbase, CoinGecko, C
 API_TIMEOUT_DEFAULT = 10           # Internal/control API calls, RPC, market discovery
 API_TIMEOUT_LONG = 30              # Long-running control API operations
 
+# Regime filter: skip trades when BTC has barely moved (session is a coin flip)
+MIN_BTC_MOVE_PCT = 0.06                # Skip entry if |btc_now - btc_start| / btc_start < this %
+
 # Latency simulation
 DEFAULT_LATENCY_MS = 200               # Simulated API round-trip (ms) for backtests
 
 # Default order expiration
-DEFAULT_EXPIRATION_SECONDS = 30.0  # Default TTL for limit orders (GTD)
+DEFAULT_EXPIRATION_SECONDS = 120.0  # Default TTL for limit orders (GTD)
 
 # CLOB taker fee (crypto up/down markets)
 # Ref: https://docs.polymarket.com/trading/fees

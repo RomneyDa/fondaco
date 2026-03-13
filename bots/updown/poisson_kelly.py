@@ -204,6 +204,5 @@ class PoissonKelly(Strategy):
                      self._up_jumps, self._down_jumps,
                      ctx.elapsed_fraction * 100))
 
-        return TradeAction(side=side, amount=dollars, price=midpoint,
-                           expiration_seconds=10)
+        return TradeAction(side=side, amount=dollars, price=midpoint)
 

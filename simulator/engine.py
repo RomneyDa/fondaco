@@ -448,8 +448,9 @@ def _ternary_kelly_search(returns, lo=0.001, hi=1.0, tol=0.005):
 KELLY_FRACTION = 0.5
 
 
-def compute_kelly_sizing(results, starting_cash, kelly_multiplier=KELLY_FRACTION):
-    # type: (List[SessionResult], float, float) -> Dict[str, float]
+def compute_kelly_sizing(results, starting_cash, kelly_multiplier=KELLY_FRACTION,
+                         laplace_losses=None):
+    # type: (List[SessionResult], float, float, Optional[int]) -> Dict[str, float]
     """Compute optimal position sizing from raw (unscaled) session returns.
 
     Phase 2 of the two-phase backtest: given a strategy's per-session return
@@ -475,6 +476,10 @@ def compute_kelly_sizing(results, starting_cash, kelly_multiplier=KELLY_FRACTION
     implied loss rate shrinks as 1/n — so 200 sessions → 0.5% loss rate →
     Kelly f*=0.55 → half-Kelly 28%. With rule-of-three scaling, 200 sessions
     → 3 synthetic losses → ~1.5% loss rate → much more conservative sizing.
+
+    Args:
+        laplace_losses: Override number of synthetic losses to inject when
+            no losses are observed. None = rule-of-three (default).
     """
     # Extract per-session return fractions (on deployed capital)
     returns = []  # type: List[float]
@@ -489,12 +494,15 @@ def compute_kelly_sizing(results, starting_cash, kelly_multiplier=KELLY_FRACTION
         return {"kelly_f": 0.0, "cash_pct": 0.0, "projected_geo_return": 0.0,
                 "projected_final": starting_cash, "projected_max_dd": 0.0}
 
-    # Laplace smoothing via Rule of Three.
+    # Laplace smoothing via Rule of Three (or explicit override).
     traded_returns = [r for r in returns if r != 0.0]
     loss_count = sum(1 for r in traded_returns if r < 0)
     if loss_count == 0 and len(traded_returns) > 0:
-        n_traded = len(traded_returns)
-        n_inject = max(1, round(3.0 * n_traded / (n_traded + 3)))
+        if laplace_losses is not None:
+            n_inject = max(0, laplace_losses)
+        else:
+            n_traded = len(traded_returns)
+            n_inject = max(1, round(3.0 * n_traded / (n_traded + 3)))
         smoothed_returns = returns + [-1.0] * n_inject
     else:
         smoothed_returns = returns

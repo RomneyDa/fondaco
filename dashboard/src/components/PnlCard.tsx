@@ -1,5 +1,10 @@
 /** Unified PnL display: all-time, 24h, 1h in a single card. */
-export function PnlCard({ overall, last24h, last1h }: { overall: number; last24h: number; last1h: number }) {
+export function PnlCard({ overall, last24h, last1h, dryRun }: {
+  overall: number;
+  last24h: number;
+  last1h: number;
+  dryRun?: { overall: number; last_24h: number; last_1h: number };
+}) {
   return (
     <div className="flex gap-4 mb-5">
       <span className="flex items-baseline gap-1.5">
@@ -20,6 +25,14 @@ export function PnlCard({ overall, last24h, last1h }: { overall: number; last24h
           {overall >= 0 ? "+" : ""}{overall.toFixed(2)}
         </span>
       </span>
+      {dryRun && (dryRun.overall !== 0 || dryRun.last_24h !== 0 || dryRun.last_1h !== 0) && (
+        <span className="flex items-baseline gap-1.5 ml-2 pl-3 border-l border-border">
+          <span className="text-[11px] font-semibold text-accent">DRY</span>
+          <span className="text-sm tabular-nums text-accent opacity-70">
+            {dryRun.overall >= 0 ? "+" : ""}{dryRun.overall.toFixed(2)}
+          </span>
+        </span>
+      )}
     </div>
   );
 }

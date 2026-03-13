@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
+from core.defaults import MIN_BTC_MOVE_PCT
 from core.trader import HOLD, TradeAction
 from core.strategies.base import Param, Strategy
 
@@ -11,14 +12,15 @@ class LateSniper(Strategy):
 
     name = "LateSniper"
     description = "Waits until late in the window when the outcome is more predictable, then buys the likely winner."
-    version = "10"
+    version = "11"
 
     # --- Tunable params ---
-    min_elapsed = Param(default=0.54, min=0.40, max=0.70)
-    confidence_threshold = Param(default=0.67, min=0.55, max=0.80)
-    max_price = Param(default=0.98, min=0.90, max=0.99)
-    stop_loss_pct = Param(default=0.12, min=0.05, max=0.20, nullable=True)
+    min_elapsed = Param(default=0.70, min=0.40, max=0.70)
+    confidence_threshold = Param(default=0.80, min=0.55, max=0.80)
+    max_price = Param(default=0.90, min=0.90, max=0.99)
+    stop_loss_pct = Param(default=0.20, min=0.05, max=0.20, nullable=True)
     take_profit_pct = Param(default=None, min=0.15, max=0.45, nullable=True)
+    min_btc_move_pct = Param(default=MIN_BTC_MOVE_PCT, min=0.0, max=0.15, nullable=True)
 
     # --- Fixed params ---
     no_new_after = Param(default=0.95, tunable=False)
@@ -62,22 +64,29 @@ class LateSniper(Strategy):
         if self._check_timing_guards(ctx, self.min_elapsed, self.no_new_after):
             return HOLD
 
+        # Skip if BTC hasn't moved enough — flat sessions are coin flips
+        if self.min_btc_move_pct is not None and ctx.initial_btc_price and ctx.initial_btc_price > 0:
+            btc_now = ctx.sample.get("btc_price_usd")
+            if btc_now:
+                btc_move = abs(btc_now - ctx.initial_btc_price) / ctx.initial_btc_price * 100
+                if btc_move < self.min_btc_move_pct:
+                    return HOLD
+
         if up_mid >= self.confidence_threshold and up_mid <= self.max_price:
             self._entry_count += 1
             self._entry_midpoint = up_mid
             self.log("BUY UP: mid={:.3f} at {:.0f}% elapsed".format(
                 up_mid, ctx.elapsed_fraction * 100,
             ))
-            return TradeAction(side="buy_up", amount=ctx.position.cash * self.bet_fraction, price=up_mid,
-                               expiration_seconds=10)
+            return TradeAction(side="buy_up", amount=ctx.position.cash * self.bet_fraction, price=up_mid)
+
         elif down_mid >= self.confidence_threshold and down_mid <= self.max_price:
             self._entry_count += 1
             self._entry_midpoint = down_mid
             self.log("BUY DOWN: mid={:.3f} at {:.0f}% elapsed".format(
                 down_mid, ctx.elapsed_fraction * 100,
             ))
-            return TradeAction(side="buy_down", amount=ctx.position.cash * self.bet_fraction, price=down_mid,
-                               expiration_seconds=10)
+            return TradeAction(side="buy_down", amount=ctx.position.cash * self.bet_fraction, price=down_mid)
 
         return HOLD
 

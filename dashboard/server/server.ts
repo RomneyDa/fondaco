@@ -255,11 +255,19 @@ app.get(
             const windowEnd = new Date(windowStart.getTime() + 5 * 60 * 1000);
             const byStrategy: Record<string, any[]> = {};
 
+            const resolutionsByStrategy: Record<string, any> = {};
             for (const line of lines) {
               if (!line) continue;
               try {
                 const entry = JSON.parse(line);
-                if (entry.type === "resolution" || !entry.timestamp || !entry.strategy) continue;
+                if (entry.type === "resolution" && entry.strategy) {
+                  const ts = new Date(entry.timestamp);
+                  if (ts >= windowStart && ts < new Date(windowEnd.getTime() + 60000)) {
+                    resolutionsByStrategy[entry.strategy] = entry;
+                  }
+                  continue;
+                }
+                if (!entry.timestamp || !entry.strategy) continue;
                 // Skip unfilled GTC/GTD placements (fee is null for placements,
                 // non-null for actual fills). Including these creates phantom
                 // trades that never executed. But keep successful trades even
@@ -365,7 +373,7 @@ app.get(
                   starting_cash: logEntry ? (logEntry.cash - (logEntry.pnl ?? 0)) : null,
                   final_cash: logEntry?.cash ?? null,
                   outcome: outcome ?? logEntry?.outcome ?? null,
-                  dry_run: false,
+                  dry_run: resolutionsByStrategy[name]?.dry_run ?? logEntry?.dry_run ?? false,
                 };
               });
               res.json({ strategies });
@@ -749,12 +757,45 @@ app.get("/api/positions", async (_req: Request, res: Response) => {
 
 app.get("/api/slugs", (_req: Request, res: Response) => {
   try {
-    if (!fs.existsSync(SLUGS_JSON)) {
-      res.json({ slugs: [] });
-      return;
+    // 1. Try slugs.json first (manually curated list)
+    if (fs.existsSync(SLUGS_JSON)) {
+      const data = JSON.parse(fs.readFileSync(SLUGS_JSON, "utf-8"));
+      const slugs = data.slug_prefixes || [];
+      if (slugs.length > 0) {
+        res.json({ slugs });
+        return;
+      }
     }
-    const data = JSON.parse(fs.readFileSync(SLUGS_JSON, "utf-8"));
-    res.json({ slugs: data.slug_prefixes || [] });
+
+    // 2. Auto-discover from data/markets/ directories
+    // Directory names follow pattern: {asset}-updown-{duration}m
+    const marketsDir = path.join(PROJECT_ROOT, "data", "markets");
+    const slugs: Array<{
+      slug_prefix: string;
+      window_duration_seconds: number;
+      asset: string;
+      example_title: string;
+    }> = [];
+
+    if (fs.existsSync(marketsDir)) {
+      const entries = fs.readdirSync(marketsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const match = entry.name.match(/^(\w+)-updown-(\d+)m$/);
+        if (match) {
+          const asset = match[1].toUpperCase();
+          const durationMin = parseInt(match[2], 10);
+          slugs.push({
+            slug_prefix: `${entry.name}-`,
+            window_duration_seconds: durationMin * 60,
+            asset,
+            example_title: `${asset} ${durationMin}m Up/Down`,
+          });
+        }
+      }
+    }
+
+    res.json({ slugs });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -960,7 +1001,7 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
         if (!line) continue;
         try {
           const entry = JSON.parse(line);
-          if (entry.strategy === strategy && entry.pnl !== undefined) {
+          if (entry.strategy === strategy && entry.pnl !== undefined && entry.dry_run !== true) {
             sessions.push(entry);
           }
         } catch {}
@@ -1221,6 +1262,10 @@ app.get("/api/market/:prefix/pnl", (req: Request, res: Response) => {
     let last24h = 0;
     let last1h = 0;
     const byStrategy: Record<string, { overall: number; last_24h: number; last_1h: number }> = {};
+    let dryOverall = 0;
+    let dryLast24h = 0;
+    let dryLast1h = 0;
+    let hasDry = false;
 
     for (const line of lines) {
       if (!line) continue;
@@ -1229,20 +1274,29 @@ app.get("/api/market/:prefix/pnl", (req: Request, res: Response) => {
         const pnl = entry.pnl as number;
         if (pnl === undefined || pnl === null) continue;
 
-        const strat = entry.strategy || "unknown";
-        if (!byStrategy[strat]) byStrategy[strat] = { overall: 0, last_24h: 0, last_1h: 0 };
-
-        overall += pnl;
-        byStrategy[strat].overall += pnl;
-
+        const isDry = entry.dry_run === true;
         const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
-        if (ts >= cutoff24h) {
-          last24h += pnl;
-          byStrategy[strat].last_24h += pnl;
-        }
-        if (ts >= cutoff1h) {
-          last1h += pnl;
-          byStrategy[strat].last_1h += pnl;
+
+        if (isDry) {
+          hasDry = true;
+          dryOverall += pnl;
+          if (ts >= cutoff24h) dryLast24h += pnl;
+          if (ts >= cutoff1h) dryLast1h += pnl;
+        } else {
+          const strat = entry.strategy || "unknown";
+          if (!byStrategy[strat]) byStrategy[strat] = { overall: 0, last_24h: 0, last_1h: 0 };
+
+          overall += pnl;
+          byStrategy[strat].overall += pnl;
+
+          if (ts >= cutoff24h) {
+            last24h += pnl;
+            byStrategy[strat].last_24h += pnl;
+          }
+          if (ts >= cutoff1h) {
+            last1h += pnl;
+            byStrategy[strat].last_1h += pnl;
+          }
         }
       } catch {}
     }
@@ -1258,7 +1312,11 @@ app.get("/api/market/:prefix/pnl", (req: Request, res: Response) => {
       byStrategy[k].last_1h = round(byStrategy[k].last_1h);
     }
 
-    res.json({ overall, last_24h: last24h, last_1h: last1h, by_strategy: byStrategy });
+    const result: any = { overall, last_24h: last24h, last_1h: last1h, by_strategy: byStrategy };
+    if (hasDry) {
+      result.dry_run = { overall: round(dryOverall), last_24h: round(dryLast24h), last_1h: round(dryLast1h) };
+    }
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

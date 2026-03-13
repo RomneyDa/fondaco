@@ -9,6 +9,7 @@ from bots.updown.drift_sniper import DriftSniper
 from bots.updown.wave_rider import WaveRider
 from bots.updown.poisson_kelly_dynamic import PoissonKellyDynamic
 from bots.updown.gap_fader import GapFader
+from bots.updown.regime_sniper import RegimeSniper
 
 STRATEGIES = {
     "LateSniper": LateSniper,
@@ -18,4 +19,5 @@ STRATEGIES = {
     "DriftSniper": DriftSniper,
     "WaveRider": WaveRider,
     "GapFader": GapFader,
+    "RegimeSniper": RegimeSniper,
 }  # type: Dict[str, type]

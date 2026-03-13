@@ -509,6 +509,7 @@ class BotWorker:
             "pnl": round(pnl, TOKEN_DECIMALS),
             "credit": round(credit, TOKEN_DECIMALS),
             "session_number": self.session_count,
+            "dry_run": self.dry_run,
         }
         try:
             with open(self._bot_session_log, "a") as f:

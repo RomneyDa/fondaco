@@ -171,10 +171,10 @@ def parse_param_overrides(param_args):
     return overrides
 
 
-def build_variants(strategy_cls, grid_overrides=None):
-    # type: (type, Optional[dict]) -> list
+def build_variants(strategy_cls, grid_overrides=None, sweep=False):
+    # type: (type, Optional[dict], bool) -> list
     """Build all parameter combinations from a strategy's param_grid."""
-    grid = strategy_cls().param_grid()
+    grid = strategy_cls().param_grid() if (sweep or grid_overrides) else {}
 
     if grid_overrides:
         # Validate override keys exist in param_defs or constructor signature
@@ -470,6 +470,14 @@ def main():
              "1.0 = full Kelly (aggressive), 0.25 = quarter-Kelly (conservative).".format(KELLY_FRACTION),
     )
     parser.add_argument(
+        "--laplace",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Override Laplace smoothing: inject N synthetic losses when no losses observed "
+             "(default: rule-of-three ~3). Lower = more aggressive Kelly sizing.",
+    )
+    parser.add_argument(
         "--execution",
         default="book",
         choices=["midpoint_slippage", "midpoint", "book"],
@@ -517,6 +525,12 @@ def main():
         default=[],
         metavar="KEY=v1,v2,...",
         help="Override param grid values (repeatable). e.g. --param min_elapsed=0.4,0.5,0.6",
+    )
+    parser.add_argument(
+        "--sweep",
+        action="store_true",
+        help="Run full param_grid() sweep. Without this flag, only default params are tested. "
+             "Use with --param to narrow the grid, or --screen to speed up large grids.",
     )
     parser.add_argument(
         "--screen",
@@ -619,7 +633,7 @@ def main():
     all_variants = []  # type: list
     for name in strategy_names:
         cls = ALL_STRATEGIES[name]
-        all_variants.extend(build_variants(cls, grid_overrides))
+        all_variants.extend(build_variants(cls, grid_overrides, sweep=args.sweep))
 
     total_variants = len(all_variants)
 
@@ -708,7 +722,8 @@ def main():
         best = max(variants, key=sort_key)
 
         # Compute Kelly sizing from raw (unscaled) session returns
-        kelly = compute_kelly_sizing(best.sessions, starting_cash, kelly_multiplier=kelly_mult)
+        kelly = compute_kelly_sizing(best.sessions, starting_cash, kelly_multiplier=kelly_mult,
+                                     laplace_losses=args.laplace)
 
         print("{:<20} {:>8.3f} {:>8.3f} {:>7.1f}% {:>10.2f} {:>7.1f}% {:>7.3f}% {:>7.1f}%  {}".format(
             name,

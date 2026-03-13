@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
+from core.defaults import MIN_BTC_MOVE_PCT
 from core.trader import HOLD, TradeAction
 from core.strategies.base import Param, Strategy
 
@@ -11,13 +12,14 @@ class LateSniperSafe(Strategy):
 
     name = "LateSniperSafe"
     description = "Ultra-conservative late entry — only trades when outcome is virtually decided."
-    version = "5"
+    version = "7"
 
     # --- Tunable params ---
-    min_elapsed = Param(default=0.85, min=0.75, max=0.92)
-    confidence_threshold = Param(default=0.9, min=0.85, max=0.96)
-    max_price = Param(default=0.98, min=0.95, max=0.99)
-    confirm_ticks = Param(default=18, min=9, max=72)
+    min_elapsed = Param(default=0.80, min=0.70, max=0.88)
+    confidence_threshold = Param(default=0.965, min=0.93, max=0.98)
+    max_price = Param(default=0.985, min=0.96, max=0.99)
+    confirm_ticks = Param(default=50, min=36, max=72)
+    min_btc_move_pct = Param(default=MIN_BTC_MOVE_PCT, min=0.0, max=0.15, nullable=True)
 
     # --- Fixed params ---
     bet_fraction = Param(default=1.0, tunable=False)
@@ -55,6 +57,14 @@ class LateSniperSafe(Strategy):
         best_mid = max(up_mid, down_mid)
         best_side = "up" if up_mid >= down_mid else "down"
 
+        # Skip if BTC hasn't moved enough — flat sessions are coin flips
+        if self.min_btc_move_pct is not None and ctx.initial_btc_price and ctx.initial_btc_price > 0:
+            btc_now = ctx.sample.get("btc_price_usd")
+            if btc_now:
+                btc_move = abs(btc_now - ctx.initial_btc_price) / ctx.initial_btc_price * 100
+                if btc_move < self.min_btc_move_pct:
+                    return HOLD
+
         if best_mid >= self.confidence_threshold and best_mid <= self.max_price:
             # Accumulate confirmation ticks — must be same side consistently
             if best_side == self._confirm_side:
@@ -74,8 +84,7 @@ class LateSniperSafe(Strategy):
                     side=buy_side,
                     amount=ctx.position.cash * self.bet_fraction,
                     price=best_mid,
-                    expiration_seconds=5,
-                )
+                                    )
         else:
             # Reset confirmation if signal drops
             self._confirm_count = 0

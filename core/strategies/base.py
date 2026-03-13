@@ -186,8 +186,7 @@ class Strategy(ABC):
                 entry_mid,
             ))
             self._entry_midpoint = 0.0
-            return TradeAction(side=sell_side, amount=tokens, price=current_mid,
-                               expiration_seconds=10)
+            return TradeAction(side=sell_side, amount=tokens, price=current_mid)
 
         # Take-profit
         if take_profit_pct is not None and current_mid >= entry_mid * (1.0 + take_profit_pct):
@@ -200,8 +199,7 @@ class Strategy(ABC):
                 entry_mid,
             ))
             self._entry_midpoint = 0.0
-            return TradeAction(side=sell_side, amount=tokens, price=current_mid,
-                               expiration_seconds=10)
+            return TradeAction(side=sell_side, amount=tokens, price=current_mid)
 
         return None
 

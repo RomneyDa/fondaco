@@ -6,6 +6,8 @@ Trade crypto up/down prediction markets on Polymarket. Built for the **5-minute 
 
 New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 (Chainlink oracle). Book is thin (best_bid=0.01, best_ask=0.99). The **midpoint** is the real signal (~0.50 at open → ~0.99 on winning side). Edge comes from picking direction, not better fills.
 
+**Limit orders, not FAK.** A Fill-And-Kill (FAK) order crosses the spread and fills at best_ask (buys) or best_bid (sells). With a 0.01/0.99 book, FAK buys pay 0.99 and FAK sells get 0.01 — virtually no edge. Limit orders post at the midpoint, getting filled at a fair price. Always use limit orders with `expiration_seconds`.
+
 ## CRITICAL RULES — REAL MONEY
 
 1. **All trades through `ClobExecutor.execute_trade`** — no ad-hoc order scripts
@@ -27,6 +29,11 @@ New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 
 - **Strategies:** base class at `core/strategies/base.py`, implementations at `bots/updown/`, registries at `bots/__init__.py`. Import from `bots`, not `core.strategies`.
 - **`requires_full_session = True`** when strategy accumulates state from tick 0 (jump counts, warmup windows, running sums)
 - **No magic numbers** — numeric constants belong in `core/defaults.py` with a descriptive name and comment, then import where needed. Never inline raw numbers in logic or CLI defaults.
+
+## Process Reliability
+
+- When starting long-running services (app, workers, dashboard) via shell tools, always launch **detached** (`nohup ... &` / equivalent).
+- Tool-runner sessions can be killed/timed out; attached child processes may die with them, silently stopping bots.
 
 ## Quick Reference
 
@@ -65,7 +72,7 @@ Compare results with and without `--latency 200` to see how sensitive a strategy
 Time = variants × sessions × ticks. **Reduce variants first** — that's the biggest lever.
 
 - **`--screen 50`** for large grids (>500 variants): screens on 1/3 of sessions, validates top 50 on full set. 3-5x faster.
-- **Iterative refinement, not giant grids:** Coarse (full `param_grid()` + `--screen 50`) → Refine (`--param` with 2-3 values near winner) → Polish (stop when top results cluster within Sharpe 0.05)
+- **Iterative refinement, not giant grids:** Coarse (full `param_grid()` + `--screen 50`) → Refine (`--param` with 2-3 values near winner) → Polish (stop when top results cluster within Sharpe 0.05). **Fewer params = more sessions** — grid granularity and session count should be inversely proportional (e.g. coarse grid on 30, refined grid on 60, final validation on 500).
 - **Independent params → sweep one at a time.** If params don't interact, no grid needed — just vary one while holding others at sensible defaults. A 6-param grid with 4 values each is 4,096 combos; sweeping one-at-a-time is 6×4 = 24.
 - **Keep `param_grid()` lean:** 3-4 values per param max. Test `None` (optional features) separately before tuning values.
 - **One strategy at a time** for targeted work. `--strategy all` only for broad comparison with `--screen`.

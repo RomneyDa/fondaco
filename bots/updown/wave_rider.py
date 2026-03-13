@@ -196,8 +196,7 @@ class WaveRider(Strategy):
                 self.log("BUY UP #{} on pullback: pb={:.2f}bps mid={:.3f} ${:.2f} at {:.0f}%".format(
                     self._entry_count, pullback, up_mid, dollars,
                     ctx.elapsed_fraction * 100))
-                return TradeAction(side="buy_up", amount=dollars, price=up_mid,
-                                   expiration_seconds=10)
+                return TradeAction(side="buy_up", amount=dollars, price=up_mid)
         else:
             if down_mid <= self.max_price and down_mid > 0:
                 self._entry_count += 1
@@ -208,8 +207,7 @@ class WaveRider(Strategy):
                 self.log("BUY DOWN #{} on pullback: pb={:.2f}bps mid={:.3f} ${:.2f} at {:.0f}%".format(
                     self._entry_count, pullback, down_mid, dollars,
                     ctx.elapsed_fraction * 100))
-                return TradeAction(side="buy_down", amount=dollars, price=down_mid,
-                                   expiration_seconds=10)
+                return TradeAction(side="buy_down", amount=dollars, price=down_mid)
 
         return HOLD
 

@@ -353,6 +353,5 @@ class PoissonKellyDynamic(Strategy):
                      self._effective_jump_bps,
                      ctx.elapsed_fraction * 100))
 
-        return TradeAction(side=side, amount=dollars, price=midpoint,
-                           expiration_seconds=10)
+        return TradeAction(side=side, amount=dollars, price=midpoint)
 
