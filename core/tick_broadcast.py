@@ -23,13 +23,15 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _ENCODING = "utf-8"
+_SEND_TIMEOUT = 2.0  # seconds — drop clients that can't drain in time
 
 
 class TickBroadcaster:
     """Server-side tick broadcaster over a Unix domain socket.
 
     Accepts multiple client connections and broadcasts tick messages
-    to all of them. Non-blocking sends — slow/dead clients get dropped.
+    to all of them. Client sockets have a send timeout so a dead/slow
+    client can never block the main polling thread.
     """
 
     def __init__(self, socket_path):
@@ -97,7 +99,7 @@ class TickBroadcaster:
             for c in self._clients:
                 try:
                     c.sendall(data)
-                except (BrokenPipeError, ConnectionResetError, OSError):
+                except (BrokenPipeError, ConnectionResetError, OSError, socket.timeout):
                     dead.append(c)
             for c in dead:
                 self._clients.remove(c)
@@ -120,6 +122,7 @@ class TickBroadcaster:
                 readable, _, _ = select.select([self._server], [], [], 1.0)
                 if readable:
                     conn, _ = self._server.accept()
+                    conn.settimeout(_SEND_TIMEOUT)
                     # Replay session_start so mid-session joiners can trade
                     replay = self._last_session_start
                     if replay is not None:
@@ -127,7 +130,7 @@ class TickBroadcaster:
                         replay_data = (json.dumps(replayed_msg, separators=(',', ':')) + "\n").encode(_ENCODING)
                         try:
                             conn.sendall(replay_data)
-                        except (BrokenPipeError, ConnectionResetError, OSError):
+                        except (BrokenPipeError, ConnectionResetError, OSError, socket.timeout):
                             try:
                                 conn.close()
                             except OSError:

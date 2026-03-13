@@ -14,6 +14,7 @@ from bots.updown.confirmed_late import ConfirmedLate
 from bots.updown.poisson_kelly_gated import PoissonKellyGated
 from bots.updown.late_sniper_cb import LateSniperCB
 from bots.updown.scalper import Scalper
+from bots.updown.mary_poppins import MaryPoppins
 
 STRATEGIES = {
     "PoissonKelly": PoissonKelly,
@@ -28,4 +29,5 @@ STRATEGIES = {
     "PoissonKellyGated": PoissonKellyGated,
     "LateSniperCB": LateSniperCB,
     "Scalper": Scalper,
+    "MaryPoppins": MaryPoppins,
 }  # type: Dict[str, type]

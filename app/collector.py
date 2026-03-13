@@ -200,6 +200,7 @@ class Collector:
             self.http_session.close()
             _remove_pid(self._pid_path)
             self._remove_state_file()
+            self.recorder.clear_live_session()
             logger.info("[%s] Collector stopped. %d sessions completed.",
                         self.slug_key, self.session_count)
 
@@ -299,7 +300,7 @@ class Collector:
         # the broadcast — no disk reads needed in worker processes.
         ws = metadata.window_start_utc if hasattr(metadata, 'window_start_utc') else ""
         if ws and len(self._stats_cache) > 0:
-            prior = self._stats_cache.prior(before=ws, n=len(self._stats_cache))
+            prior = self._stats_cache.prior(before=ws, n=min(200, len(self._stats_cache)))
             metadata_dict["_prior_session_summaries"] = [s.to_dict() for s in prior]
         self._broadcaster.broadcast({
             "type": "session_start",

@@ -453,7 +453,20 @@ app.get("/api/live", (_req: Request, res: Response) => {
     const live: string[] = [];
     for (const prefix of listMarketPrefixes()) {
       const liveFile = path.join(MARKETS_DIR, prefix, "live", "session.json");
-      if (fs.existsSync(liveFile)) {
+      if (!fs.existsSync(liveFile)) continue;
+
+      // Cross-check: is the collector process actually alive?
+      const pidFile = `/tmp/eros-pm-${prefix}-collector.pid`;
+      let alive = false;
+      try {
+        const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+        process.kill(pid, 0); // signal 0 = check alive
+        alive = true;
+      } catch {
+        // PID file missing or process dead — clean up stale live file
+        try { fs.unlinkSync(liveFile); } catch {}
+      }
+      if (alive) {
         live.push(prefix);
       }
     }
