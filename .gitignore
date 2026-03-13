@@ -36,6 +36,9 @@ dashboard/dist/
 # Claude Code
 .claude/
 
+# Model outputs
+models/out/
+
 # OS
 .DS_Store
 Thumbs.db
