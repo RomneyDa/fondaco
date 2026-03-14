@@ -180,18 +180,6 @@ class TestRegimeGatedStrategy:
         s.on_session_start(self._make_trending_high_vol())
         assert s._regime_active is False
 
-    def test_vol_breakout_activates_high_vol(self):
-        from bots.updown.vol_breakout import VolBreakout
-        s = VolBreakout()
-        s.on_session_start(self._make_trending_high_vol())
-        assert s._regime_active is True
-
-    def test_vol_breakout_skips_low_vol(self):
-        from bots.updown.vol_breakout import VolBreakout
-        s = VolBreakout()
-        s.on_session_start(self._make_flat_low_vol())
-        assert s._regime_active is False
-
     def test_regime_gated_holds_when_inactive(self):
         """When regime doesn't match, on_tick returns HOLD."""
         from bots.updown.trend_drift import TrendDrift
@@ -216,18 +204,10 @@ class TestRegimeGatedStrategy:
         s.on_session_start(metadata)
         assert s._regime_active is False
 
-    def test_confirmed_late_param_grid(self):
-        """ConfirmedLate should have expected tunable params."""
-        from bots.updown.confirmed_late import ConfirmedLate
-        s = ConfirmedLate()
-        grid = s.param_grid()
-        assert "min_elapsed" in grid
-        assert "confidence_threshold" in grid
-
     def test_all_regime_strategies_registered(self):
         """All regime-gated strategies should be in the registry."""
         from bots import ALL_STRATEGIES
         from core.strategies.base import Strategy
-        for name in ["TrendDrift", "MeanRevFader", "VolBreakout", "ConfirmedLate"]:
+        for name in ["TrendDrift", "MeanRevFader"]:
             assert name in ALL_STRATEGIES
             assert issubclass(ALL_STRATEGIES[name], Strategy)

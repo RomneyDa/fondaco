@@ -203,6 +203,23 @@ class BotWorker:
                 "[%s] Config update: bankroll $%.2f -> $%.2f",
                 self.strategy_name, old, new_bankroll,
             )
+            # Log adjustment so dashboard PnL sum stays correct
+            adjustment = new_bankroll - old
+            if abs(adjustment) > 0.001:
+                adj_entry = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "strategy": self.strategy_name,
+                    "type": "adjustment",
+                    "pnl": round(adjustment, TOKEN_DECIMALS),
+                    "cash": round(new_bankroll, TOKEN_DECIMALS),
+                    "credit": 0.0,
+                    "session_number": self.session_count,
+                }
+                try:
+                    with open(self._bot_session_log, "a") as f:
+                        f.write(json.dumps(adj_entry) + "\n")
+                except OSError as e:
+                    logger.warning("Failed to log bankroll adjustment: %s", e)
         if "session_cash_ratio" in pending or "session_cap" in pending:
             self.session_cash_ratio = pending.get("session_cash_ratio")
             self.session_cap = pending.get("session_cap")

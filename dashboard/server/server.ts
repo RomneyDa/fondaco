@@ -1326,7 +1326,14 @@ app.get("/api/strategy/:market/:strategy", (req: Request, res: Response) => {
         current_version: currentVersion,
         total_fees: Math.round(totalFees * 100) / 100,
       },
-      sessions: sessions.slice(-200),
+      sessions: (() => {
+        // Keep all sessions with trades or adjustments; truncate idle-only tail
+        const limit = parseInt(req.query.limit as string) || 200;
+        if (sessions.length <= limit) return sessions;
+        const cutoff = sessions.length - limit;
+        const early = sessions.slice(0, cutoff).filter((s: any) => s.trades > 0 || s.type === "adjustment" || s.pnl !== 0);
+        return [...early, ...sessions.slice(cutoff)];
+      })(),
       trades: trades.slice(0, 500),
       resolutions: resolutions.slice(-200),
       version_summary: versionSummary,

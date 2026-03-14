@@ -1067,12 +1067,41 @@ class ClobExecutor(Executor):
                 status = resp.get("status", "").upper() if isinstance(resp, dict) else ""
 
                 if status == "MATCHED":
-                    # MATCHED = fully filled. Use order.tokens directly;
-                    # the API's size_matched is unreliable (returns 0 for sells).
-                    filled_tokens = order.tokens
+                    is_buy = order.side in ("buy_up", "buy_down")
+
+                    # Parse actual fill amount from API.
+                    # size_matched is reliable for buys but returns 0 for
+                    # sells, so sells still use order.tokens.
+                    if is_buy:
+                        filled_tokens = float(resp.get("size_matched", "0"))
+                        filled_tokens = min(filled_tokens, order.tokens)
+                    else:
+                        filled_tokens = order.tokens
+
+                    # Unfilled buy: MATCHED but size_matched=0
+                    if is_buy and filled_tokens <= 0:
+                        position.unreserve_for_order(
+                            order.side, order.dollars_reserved, order.tokens_reserved,
+                        )
+                        logger.warning(
+                            "Buy order MATCHED but size_matched=0 — treating as "
+                            "unfilled: %s %.0f tokens (order_id=%s)",
+                            order.side, order.tokens, order.order_id,
+                        )
+                        continue
+
+                    # Partial fill: return cash for unfilled portion
+                    if is_buy and filled_tokens < order.tokens:
+                        unfilled_cash = (order.tokens - filled_tokens) * order.price
+                        position.cash += unfilled_cash
+                        logger.warning(
+                            "Partial fill: %s %.4f/%.4f tokens @ %.2f (order_id=%s)",
+                            order.side, filled_tokens, order.tokens, order.price,
+                            order.order_id,
+                        )
 
                     # Order filled — apply to position
-                    if order.side in ("buy_up", "buy_down"):
+                    if is_buy:
                         if order.side == "buy_up":
                             position.up_tokens += filled_tokens
                         else:
@@ -1094,6 +1123,7 @@ class ClobExecutor(Executor):
                         price=order.price,
                         amount=filled_tokens * order.price,
                         tokens=filled_tokens,
+                        requested_tokens=order.tokens,
                         order_id=order.order_id,
                         token_id=order.token_id,
                         success=True,
@@ -1171,8 +1201,34 @@ class ClobExecutor(Executor):
 
                 if status == "MATCHED":
                     # Order filled between last check_fills and now — apply fill
-                    filled_tokens = order.tokens
-                    if order.side in ("buy_up", "buy_down"):
+                    is_buy = order.side in ("buy_up", "buy_down")
+
+                    if is_buy:
+                        filled_tokens = float(resp.get("size_matched", "0"))
+                        filled_tokens = min(filled_tokens, order.tokens)
+                    else:
+                        filled_tokens = order.tokens
+
+                    # Unfilled buy: MATCHED but size_matched=0
+                    if is_buy and filled_tokens <= 0:
+                        position.unreserve_for_order(
+                            order.side, order.dollars_reserved, order.tokens_reserved,
+                        )
+                        cancelled += 1
+                        continue
+
+                    # Partial fill: return cash for unfilled portion
+                    if is_buy and filled_tokens < order.tokens:
+                        unfilled_cash = (order.tokens - filled_tokens) * order.price
+                        position.cash += unfilled_cash
+                        logger.warning(
+                            "Partial fill at cancel: %s %.4f/%.4f tokens @ %.2f "
+                            "(order_id=%s)",
+                            order.side, filled_tokens, order.tokens, order.price,
+                            order.order_id,
+                        )
+
+                    if is_buy:
                         if order.side == "buy_up":
                             position.up_tokens += filled_tokens
                         else:
@@ -1187,6 +1243,7 @@ class ClobExecutor(Executor):
                     fill_trade = Trade(
                         tick_index=0, side=order.side, price=order.price,
                         amount=filled_tokens * order.price, tokens=filled_tokens,
+                        requested_tokens=order.tokens,
                         order_id=order.order_id, token_id=order.token_id,
                         success=True, order_type="GTC",
                         fee=fill_fee,
