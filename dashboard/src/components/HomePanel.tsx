@@ -1,20 +1,10 @@
+"use client";
+
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import {
-  fetchSlugs,
-  startBot, stopBot,
-  startCollector, stopCollector,
-} from "../api";
-import type { SlugInfo } from "../api";
-import type { BotStatus, MarketStatus, StrategySlotStatus } from "../types";
+import Link from "next/link";
+import { trpc } from "@/trpc/client";
+import type { BotStatus, MarketStatus, StrategySlotStatus } from "@/types";
 
-interface Props {
-  botStatus: BotStatus | null;
-  onRefresh: () => void;
-  livePrefixes: string[];
-}
-
-/** Unified view of a market from all data sources */
 interface MarketView {
   slugPrefix: string;
   slugKey: string;
@@ -31,7 +21,7 @@ function toSlugKey(slugPrefix: string): string {
 }
 
 function buildMarketList(
-  slugs: SlugInfo[],
+  slugs: Array<{ slug_prefix: string; window_duration_seconds: number; asset: string }>,
   livePrefixes: string[],
   registeredMarkets: MarketStatus[]
 ): MarketView[] {
@@ -39,7 +29,6 @@ function buildMarketList(
   const registeredMap = new Map<string, MarketStatus>();
   for (const m of registeredMarkets) registeredMap.set(m.slug_key, m);
 
-  // Start from known slugs
   const seen = new Set<string>();
   const result: MarketView[] = [];
 
@@ -59,7 +48,6 @@ function buildMarketList(
     });
   }
 
-  // Add any live/registered markets not in known slugs
   for (const m of registeredMarkets) {
     if (!seen.has(m.slug_key)) {
       seen.add(m.slug_key);
@@ -92,7 +80,6 @@ function buildMarketList(
     }
   }
 
-  // Sort: collecting+registered first, then collecting-only, then inactive
   result.sort((a, b) => {
     const score = (m: MarketView) =>
       m.isCollecting && m.isRegistered ? 0 : m.isCollecting ? 1 : 2;
@@ -102,14 +89,30 @@ function buildMarketList(
   return result;
 }
 
-export function HomePanel({ botStatus, onRefresh, livePrefixes }: Props) {
+export function HomePanel() {
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const markets = botStatus?.markets ?? [];
+  const botStatusQuery = trpc.bot.status.useQuery(undefined, { refetchInterval: 5000 });
+  const botStatus = (botStatusQuery.data ?? null) as BotStatus | null;
+  const markets = Array.isArray(botStatus?.markets) ? botStatus.markets : [];
   const isRunning = botStatus?.running ?? false;
+
+  const livePrefixesQuery = trpc.live.prefixes.useQuery(undefined, { refetchInterval: 10000 });
+  const livePrefixes = livePrefixesQuery.data ?? [];
+
+  const slugsQuery = trpc.portfolio.slugs.useQuery();
+  const slugs = slugsQuery.data ?? [];
+
+  const botStartMutation = trpc.bot.start.useMutation();
+  const botStopMutation = trpc.bot.stop.useMutation();
+  const collectorStartMutation = trpc.collector.start.useMutation();
+  const collectorStopMutation = trpc.collector.stop.useMutation();
+  const collectorRestartMutation = trpc.collector.restart.useMutation();
+
+  const utils = trpc.useUtils();
 
   useEffect(() => {
     if (isRunning && starting) setStarting(false);
@@ -124,37 +127,28 @@ export function HomePanel({ botStatus, onRefresh, livePrefixes }: Props) {
     };
   }, []);
 
-  const [slugs, setSlugs] = useState<SlugInfo[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    fetchSlugs().then((s) => { if (!cancelled) setSlugs(s); });
-    return () => { cancelled = true; };
-  }, []);
-
   function flashMessage(msg: string) {
     setMessage(msg);
     setTimeout(() => setMessage(null), 5000);
   }
 
   function delayedRefresh(ms = 2000) {
-    refreshTimerRef.current = setTimeout(onRefresh, ms);
+    refreshTimerRef.current = setTimeout(() => utils.bot.status.invalidate(), ms);
   }
-
-  // --- App lifecycle ---
 
   async function handleStartApp() {
     setLoading(true);
     setStarting(true);
-    const res = await startBot({ restore: true });
+    const res = await botStartMutation.mutateAsync({ restore: true });
     if (!res.ok) {
       flashMessage(res.error || "Failed to start");
       setStarting(false);
     } else {
-      flashMessage(`Trading enabled (PID ${res.pid})`);
+      flashMessage(`Orchestrator started (PID ${(res as any).pid})`);
       let attempts = 0;
       const poll = setInterval(() => {
         attempts++;
-        onRefresh();
+        utils.bot.status.invalidate();
         if (attempts >= 10) { clearInterval(poll); setStarting(false); }
       }, 1000);
       refreshTimerRef.current = poll as unknown as ReturnType<typeof setTimeout>;
@@ -164,29 +158,23 @@ export function HomePanel({ botStatus, onRefresh, livePrefixes }: Props) {
 
   async function handleStopApp() {
     setLoading(true);
-    const res = await stopBot();
-    flashMessage(res.ok ? "Trading disabled" : res.error || "Failed");
+    const res = await botStopMutation.mutateAsync();
+    flashMessage(res.ok ? "Orchestrator stopped" : res.error || "Failed");
     setLoading(false);
-    onRefresh();
+    utils.bot.status.invalidate();
   }
-
-  // --- Collector lifecycle ---
 
   async function handleStartCollector(slugPrefix: string, windowSeconds: number) {
     setLoading(true);
-    const res = await startCollector({ slug_prefix: slugPrefix, window: windowSeconds });
-    flashMessage(
-      res.ok
-        ? `Collector started: ${toSlugKey(slugPrefix)}`
-        : res.error || "Failed"
-    );
+    const res = await collectorStartMutation.mutateAsync({ slug_prefix: slugPrefix, window: windowSeconds });
+    flashMessage(res.ok ? `Collector started: ${toSlugKey(slugPrefix)}` : res.error || "Failed");
     setLoading(false);
     delayedRefresh();
   }
 
   async function handleStopCollector(slugPrefix: string, afterSession?: boolean) {
     setLoading(true);
-    const res = await stopCollector({ slug_prefix: slugPrefix, after_session: afterSession });
+    const res = await collectorStopMutation.mutateAsync({ slug_prefix: slugPrefix, after_session: afterSession });
     flashMessage(
       res.ok
         ? afterSession
@@ -198,15 +186,23 @@ export function HomePanel({ botStatus, onRefresh, livePrefixes }: Props) {
     delayedRefresh();
   }
 
-  // --- Render ---
+  async function handleRestartCollector(slugPrefix: string) {
+    setLoading(true);
+    const res = await collectorRestartMutation.mutateAsync({ slug_prefix: slugPrefix, rebuild: true });
+    flashMessage(
+      res.ok
+        ? `Rebuild & restart queued: ${toSlugKey(slugPrefix)} (${(res as any).status})`
+        : (res as any).error || "Failed"
+    );
+    setLoading(false);
+  }
 
   const marketViews = buildMarketList(slugs, livePrefixes, markets);
   const totalStrategies = markets.reduce((n, m) => n + (m.strategies?.length ?? 0), 0);
 
   return (
     <div>
-      <h2 className="text-lg font-semibold mb-4">Trading</h2>
-      {/* Trading status */}
+      <h2 className="text-lg font-semibold mb-4">Orchestrator</h2>
       <div className="bg-card border border-border rounded-lg px-5 py-4 mb-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <span className={`inline-block w-3 h-3 rounded-full ${
@@ -214,27 +210,37 @@ export function HomePanel({ botStatus, onRefresh, livePrefixes }: Props) {
           }`} />
           <div>
             <div className={`text-[15px] font-semibold ${isRunning ? "text-up" : "text-txt"}`}>
-              {botStatus === null ? "..." : isRunning ? "Trading enabled" : starting ? "Starting..." : "Trading disabled"}
+              {botStatus === null ? "..." : isRunning ? "Orchestrator running" : starting ? "Starting..." : "Orchestrator stopped"}
             </div>
-            {isRunning && totalStrategies > 0 && (
-              <div className="text-dim text-xs mt-0.5">
-                {totalStrategies} strateg{totalStrategies !== 1 ? "ies" : "y"} active
+            {isRunning && (totalStrategies > 0 || botStatus?.clob_bridge) && (
+              <div className="text-dim text-xs mt-0.5 flex items-center gap-2">
+                {totalStrategies > 0 && (
+                  <span>{totalStrategies} strateg{totalStrategies !== 1 ? "ies" : "y"} active</span>
+                )}
+                {totalStrategies > 0 && botStatus?.clob_bridge && <span className="text-border">·</span>}
+                {botStatus?.clob_bridge && (
+                  <span className="flex items-center gap-1">
+                    <span className={`w-1.5 h-1.5 rounded-full ${botStatus.clob_bridge.healthy ? "bg-up" : "bg-down"}`} />
+                    <span className={botStatus.clob_bridge.healthy ? "" : "text-down"}>
+                      clob-bridge {botStatus.clob_bridge.healthy ? "" : "down"}
+                    </span>
+                  </span>
+                )}
               </div>
             )}
           </div>
         </div>
         {isRunning ? (
           <button className="btn-danger" onClick={handleStopApp} disabled={loading}>
-            Disable Trading
+            Stop Orchestrator
           </button>
         ) : botStatus !== null && !starting ? (
           <button className="btn-primary" onClick={handleStartApp} disabled={loading}>
-            Enable Trading
+            Start Orchestrator
           </button>
         ) : null}
       </div>
 
-      {/* Markets */}
       <h2 className="text-lg font-semibold mb-4">Markets</h2>
       <div className="space-y-4">
         {marketViews.map((mv) => (
@@ -244,10 +250,11 @@ export function HomePanel({ botStatus, onRefresh, livePrefixes }: Props) {
             loading={loading}
             onStartCollector={() => handleStartCollector(mv.slugPrefix, mv.windowSeconds)}
             onStopCollector={(after) => handleStopCollector(mv.slugPrefix, after)}
+            onRestartCollector={() => handleRestartCollector(mv.slugPrefix)}
           />
         ))}
         {marketViews.length === 0 && (
-          <p className="text-dim text-sm">No known markets. Add entries to core/markets.py.</p>
+          <p className="text-dim text-sm">No known markets. Add entries to src/markets.rs.</p>
         )}
       </div>
 
@@ -260,22 +267,30 @@ export function HomePanel({ botStatus, onRefresh, livePrefixes }: Props) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// MarketCard
-// ---------------------------------------------------------------------------
-
 function MarketCard({
   mv,
   loading,
   onStartCollector,
   onStopCollector,
+  onRestartCollector,
 }: {
   mv: MarketView;
   loading: boolean;
   onStartCollector: () => void;
   onStopCollector: (afterSession?: boolean) => void;
+  onRestartCollector: () => void;
 }) {
   const activeStrategies = mv.strategies;
+  const bookSourceQuery = trpc.collector.bookSource.useQuery(
+    { slug_prefix: mv.slugPrefix },
+    { enabled: mv.isCollecting, refetchInterval: 5000 },
+  );
+  const toggleBookSourceMutation = trpc.collector.toggleBookSource.useMutation({
+    onSuccess: () => {
+      setTimeout(() => bookSourceQuery.refetch(), 500);
+    },
+  });
+  const bookSource = bookSourceQuery.data?.book_source ?? "rest";
 
   const dotColor = mv.isCollecting
     ? activeStrategies.length > 0 ? "bg-up animate-pulse-dot" : "bg-btc animate-pulse-dot"
@@ -283,18 +298,17 @@ function MarketCard({
 
   const statusLabel = mv.isCollecting
     ? activeStrategies.length > 0
-      ? `Collecting · ${activeStrategies.length} strateg${activeStrategies.length !== 1 ? "ies" : "y"}`
+      ? `Collecting \u00B7 ${activeStrategies.length} strateg${activeStrategies.length !== 1 ? "ies" : "y"}`
       : "Collecting"
     : "Inactive";
 
   return (
     <div className="bg-card border border-border rounded-lg overflow-hidden">
-      {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2.5">
           <span className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${dotColor}`} />
           {mv.isCollecting ? (
-            <Link to={`/live/${mv.slugKey}`} className="text-[15px] font-semibold text-txt no-underline hover:text-accent transition-colors">
+            <Link href={`/live/${mv.slugKey}`} className="text-[15px] font-semibold text-txt no-underline hover:text-accent transition-colors">
               {mv.asset} {mv.windowSeconds / 60}m
             </Link>
           ) : (
@@ -311,6 +325,31 @@ function MarketCard({
         <div className="flex items-center gap-1.5">
           {mv.isCollecting ? (
             <>
+              <button
+                className="btn-sm"
+                style={{
+                  background: bookSource === "ws" ? "var(--up)" : "var(--dim)",
+                  color: "var(--bg)",
+                  minWidth: 70,
+                  fontSize: 11,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                }}
+                onClick={() => toggleBookSourceMutation.mutate({ slug_prefix: mv.slugPrefix })}
+                disabled={toggleBookSourceMutation.isPending}
+                title={`Book source: ${bookSource.toUpperCase()}. Click to toggle.`}
+              >
+                Book: {bookSource}
+              </button>
+              <button
+                className="btn-sm"
+                style={{ background: "var(--accent)", color: "var(--bg)" }}
+                onClick={onRestartCollector}
+                disabled={loading}
+                title="Rebuild Rust binary and restart collector at next window boundary"
+              >
+                Rebuild &amp; Restart
+              </button>
               <button
                 className="btn-warning btn-sm"
                 onClick={() => onStopCollector(true)}
@@ -340,15 +379,14 @@ function MarketCard({
         </div>
       </div>
 
-      {/* Active strategies summary */}
       {activeStrategies.length > 0 && (
         <div className="px-4 py-2.5 border-t border-border">
           <div className="flex flex-wrap gap-2">
             {activeStrategies.map((s) => (
-              <Link key={s.name} to={`/sessions/${mv.slugKey}`} className="inline-flex items-center gap-1.5 text-[12px] text-dim no-underline hover:text-txt">
+              <Link key={s.name} href={`/sessions/${mv.slugKey}`} className="inline-flex items-center gap-1.5 text-[12px] text-dim no-underline hover:text-txt">
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.alive === false ? "bg-down" : "bg-up"}`} />
                 {s.name}
-                <span className="font-mono">${(s.bankroll ?? s.cash).toFixed(0)}</span>
+                <span className="font-mono">${(s.bankroll ?? s.cash ?? 0).toFixed(0)}</span>
               </Link>
             ))}
           </div>

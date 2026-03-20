@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
-import { fetchTrades } from "../api";
-import type { TradeLogEntry } from "../types";
-import { fmtTimeOnly, fmtDateOnly } from "../utils/formatTime";
+"use client";
+
+import { useState } from "react";
+import { trpc } from "@/trpc/client";
+import type { TradeLogEntry } from "@/types";
+import { fmtTimeOnly, fmtDateOnly } from "@/utils/formatTime";
 
 interface Props {
   refreshTrigger: number;
@@ -10,18 +12,15 @@ interface Props {
 type Filter = "all" | "success" | "failure" | "resolutions";
 
 export function TradingLog({ refreshTrigger }: Props) {
-  const [trades, setTrades] = useState<TradeLogEntry[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
   const [limit, setLimit] = useState(100);
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    setLoading(true);
-    fetchTrades(limit).then((t) => {
-      setTrades(t);
-      setLoading(false);
-    });
-  }, [limit, refreshTrigger]);
+  const tradesQuery = trpc.bot.trades.useQuery({ limit }, {
+    refetchInterval: 5000,
+  });
+
+  const trades = (tradesQuery.data ?? []) as TradeLogEntry[];
+  const loading = tradesQuery.isLoading;
 
   const filtered = trades.filter((t) => {
     if (filter === "success") return t._type !== "resolution" && t.success === true;
@@ -29,9 +28,6 @@ export function TradingLog({ refreshTrigger }: Props) {
     if (filter === "resolutions") return t._type === "resolution";
     return true;
   });
-
-  const formatTime = fmtTimeOnly;
-  const formatDate = fmtDateOnly;
 
   return (
     <div className="mt-8 bg-card border border-border rounded-lg overflow-hidden">
@@ -92,8 +88,8 @@ export function TradingLog({ refreshTrigger }: Props) {
                         <span className="font-mono text-xs text-dim">
                           {t.timestamp ? (
                             <>
-                              <span className="text-dim mr-1.5 text-[11px]">{formatDate(t.timestamp)}</span>
-                              {formatTime(t.timestamp)}
+                              <span className="text-dim mr-1.5 text-[11px]">{fmtDateOnly(t.timestamp)}</span>
+                              {fmtTimeOnly(t.timestamp)}
                             </>
                           ) : "\u2014"}
                         </span>
@@ -120,17 +116,10 @@ export function TradingLog({ refreshTrigger }: Props) {
                     <td className="font-mono text-xs">
                       {t.timestamp ? (
                         <>
-                          <span className="text-dim mr-1.5 text-[11px]">{formatDate(t.timestamp)}</span>
-                          {formatTime(t.timestamp)}
+                          <span className="text-dim mr-1.5 text-[11px]">{fmtDateOnly(t.timestamp)}</span>
+                          {fmtTimeOnly(t.timestamp)}
                         </>
-                      ) : t.session_start ? (
-                        <>
-                          <span className="text-dim mr-1.5 text-[11px]">{formatDate(t.session_start)}</span>
-                          {formatTime(t.session_start)}
-                        </>
-                      ) : (
-                        "\u2014"
-                      )}
+                      ) : "\u2014"}
                     </td>
                     <td>{t.elapsed_seconds != null ? `${t.elapsed_seconds.toFixed(1)}s` : "\u2014"}</td>
                     <td>

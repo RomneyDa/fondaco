@@ -26,12 +26,7 @@ import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Add project root to sys.path so claim-server wrappers can import from core/
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
-from core.logging_setup import setup_logging
+from logging_setup import setup_logging
 
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claim-server.log")
 logger = setup_logging("claim-server", log_file=LOG_FILE)

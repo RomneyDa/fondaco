@@ -1,90 +1,132 @@
 # Polymarket Up/Down Trading System
 
-Trade crypto up/down prediction markets on Polymarket. Supports multiple market durations simultaneously (e.g. `btc-updown-5m-` and `btc-updown-15m-`). See `README.md` for full architecture, usage, file structure, and technical reference.
+Trade crypto up/down prediction markets on Polymarket. Multiple market durations (e.g. `btc-updown-5m-`, `btc-updown-15m-`).
+
+## Architecture
+
+**Rust** (`src/`) — strategies, backtester, position math, volatility, session cache, live collector + bot workers.
+**Dashboard** (`dashboard/`) — Next.js 15 (App Router) + tRPC + Express, port 3456.
+**clob-bridge** (`clob-bridge/`) — Python Flask wrapper around py_clob_client, port 8421.
+**claim-server** (`claim-server/`) — Python claim/redeem service, port 8080.
+
+See the `/architecture` page in the dashboard for the full visual reference. **If you change the architecture (new binaries, IPC, modules, ports), update `dashboard/src/components/Architecture.tsx`.**
+
+### Key binaries
+- `collector` — 1 per market, RTDS + CLOB polling, writes sessions, broadcasts ticks via Unix socket
+- `bot-worker` — 1 per strategy, reads ticks from collector's socket, trades via clob-bridge
+- `orchestrator` — optional process manager (:8420), spawns collector/workers/clob-bridge
+- `backtest` — offline param sweeps with rayon parallelism
+
+Collectors and bot-workers run independently — the orchestrator is optional convenience.
 
 ## The Market
 
-New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 (Chainlink oracle). Book is thin (best_bid=0.01, best_ask=0.99). The **midpoint** is the real signal (~0.50 at open → ~0.99 on winning side). Edge comes from picking direction, not better fills.
+New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 (Chainlink oracle). Book is thin (best_bid=0.01, best_ask=0.99). The **midpoint** is the real signal (~0.50 at open -> ~0.99 on winning side). Edge comes from picking direction, not better fills.
 
-**Limit orders, not FAK.** A Fill-And-Kill (FAK) order crosses the spread and fills at best_ask (buys) or best_bid (sells). With a 0.01/0.99 book, FAK buys pay 0.99 and FAK sells get 0.01 — virtually no edge. Limit orders post at the midpoint, getting filled at a fair price. Always use limit orders with `expiration_seconds`.
+**Limit orders, not FAK.** Always use limit orders with `expiration_seconds` and `cancel_after_s`.
 
 ## CRITICAL RULES — REAL MONEY
 
-1. **All trades through `ClobExecutor.execute_trade`** — no ad-hoc order scripts
+1. **All trades through `ClobExecutor`** — no ad-hoc order scripts
 2. **Read before modifying** execution code (`execute_trade`, `compute_trade_size`, `apply_trade`, `resolve`, `process_tick`)
 3. **Position in sync** — `apply_trade()` only after successful CLOB order
-4. **Private keys sacred** — `.env` via `python-dotenv`, never logged/committed
+4. **Private keys sacred** — `.env`, never logged/committed
 5. **Log everything** — trades, sessions, API calls, backtests all to `data/`
 6. **When in doubt, do not trade**
 
 ## Rules
 
-- **Trading logic in `core/` only** — never add trading behavior only in `app/`. Simulator and bot share all core logic via `core/`.
+- **Trading logic in `src/`** — strategies, position math, trade sizing, simulation all live in Rust.
 - **Bump strategy version** on logic changes (once per editing session)
 - **`--recent 30`** for coarse grid sweeps, **`--recent 500`** for final validation
-- **uv** for packages (`uv sync`, `uv add`, `uv run python -m`)
-- **Python >=3.10** — use `typing.Optional`/`typing.Union`, not `X | Y`
-- **All HTTP through `LoggingSession`** — no bare `requests.get()`
-- **Auth:** `.env` has `POLYMARKET_PRIVATE_KEY`, derives Safe via Polygon RPC, caches in `.cache/auth.json`
-- **Strategies:** base class at `core/strategies/base.py`, regime-gated base at `core/strategies/regime_gated.py`, implementations at `bots/updown/`, registries at `bots/__init__.py`. Import from `bots`, not `core.strategies`.
-- **Regime-gated strategies** extend `RegimeGatedStrategy` and set `required_vol`/`required_trend` as class-level sets. Regime thresholds are NOT tunable params — if you optimize the gate you're back to overfitting. Implement `on_tick_active()` instead of `on_tick()`, and `_on_session_start_inner()` instead of `on_session_start()`.
-- **`requires_full_session = True`** when strategy accumulates state from tick 0 (jump counts, warmup windows, running sums)
-- **No magic numbers** — global constants (API URLs, price precision, fee rates) belong in `core/defaults.py`; market-specific constants (window duration, session gap thresholds) belong in `core/markets.py`. Never inline raw numbers in logic or CLI defaults.
-- **Tests must pass after changes.** After implementing a group of changes, run the test suite (`uv run pytest`) and fix any failures before considering the work done. Update or add tests to cover new/changed behavior.
-
-## Process Reliability
-
-- When starting long-running services (app, workers, dashboard) via shell tools, always launch **detached** (`nohup ... &` / equivalent).
-- Tool-runner sessions can be killed/timed out; attached child processes may die with them, silently stopping bots.
+- **Rust toolchain:** `cargo build --release`, `cargo test`, `cargo run --bin backtest`
+- **Strategies:** trait at `src/strategy.rs`, implementations at `src/strategies/`, registry at `src/strategies/mod.rs` (`all_strategies()`).
+- **Regime-gated strategies** check vol/trend regime at session start and set `_regime_active`. In `on_tick`, return `hold()` when inactive. Regime thresholds are NOT tunable params.
+- **`requires_full_session = true`** when strategy accumulates state from tick 0 (jump counts, warmup windows, running sums)
+- **No magic numbers** — global constants in `src/defaults.rs`; market-specific in `src/markets.rs`.
+- **Tests must pass after changes.** Run `cargo test` and fix any failures before considering work done.
+- **Dashboard:** Next.js 15 App Router, tRPC, Tailwind v4. Pages in `dashboard/src/app/`, components in `dashboard/src/components/`, tRPC routers in `dashboard/src/server/routers/`.
 
 ## Quick Reference
 
-**CLI commands:** `uv run python -m app <command>` / `uv run python -m simulator.backtest`
-- App: `start [--restore]`, `stop`, `kill`, `status`
-- Markets: `market-on`, `market-off [--after-session]`
-- Bots: `trade-on`, `trade-off`, `reload`, `set-cash` (require `--strategy` and slug prefix)
-- Optimizer: `optimizer-on`, `optimizer-off`, `optimizer-config`
-- Backtest: `uv run python -m simulator.backtest btc-updown-5m --strategy <name> --recent 30`
+**Backtest CLI:** `./target/release/backtest <data_dir> [options]`
 
-**Per-session cash limits:** `--session-cash-ratio R:M` deploys `min(R × bankroll, M)` per session (e.g. `--cash 20 --session-cash-ratio 0.25:3` → 25% up to $3). Works in both the live app and the backtester (enables compound mode). Update live with `set-cash`. Alternatives: `--session-cap N` (fixed), `--per-session` (reset each session).
+```bash
+# Run all strategies on 30 recent sessions
+./target/release/backtest data/markets/btc-updown-5m/sessions --strategy all --recent 30
+
+# Single strategy with param sweep
+./target/release/backtest data/markets/btc-updown-5m/sessions --strategy PoissonKelly --sweep --recent 30
+
+# Param overrides
+./target/release/backtest data/markets/btc-updown-5m/sessions --strategy DriftSniper --recent 30 \
+  --param min_elapsed=0.4,0.5,0.6 --param stop_loss_pct=0.05,0.10
+
+# Compound mode
+./target/release/backtest data/markets/btc-updown-5m/sessions --strategy PoissonKelly --recent 700 \
+  --cash 100 --session-cash-ratio 0.20:99999
+```
+
+## Collector Management
+
+Collectors run independently — no orchestrator required.
+
+**Start:** `./target/release/collector --slug-prefix btc-updown-5m-`
+
+**Signals:** SIGTERM/SIGINT = stop immediately. SIGUSR1 = finish current session then exit.
+
+**Dashboard API (port 3456):**
+
+```bash
+# Start collector
+curl -X POST localhost:3456/api/collector/start -H 'Content-Type: application/json' \
+  -d '{"slug_prefix": "btc-updown-5m-"}'
+
+# Stop (immediate or after session)
+curl -X POST localhost:3456/api/collector/stop -H 'Content-Type: application/json' \
+  -d '{"slug_prefix": "btc-updown-5m-", "after_session": true}'
+
+# Restart at next window boundary (rebuild binary from latest code)
+curl -X POST localhost:3456/api/collector/restart -H 'Content-Type: application/json' \
+  -d '{"slug_prefix": "btc-updown-5m-", "rebuild": true}'
+```
 
 ## Strategy Pitfalls
 
-Common bugs found across strategies. Avoid these when writing or modifying any strategy.
+- **Stuck state on expired buy orders.** If a limit buy expires, the strategy must detect `entry_midpoint > 0` but `held_side() is None` and reset. Use `check_expired_entry()`.
+- **Use `entry_count` instead of boolean flags.**
+- **Use `cancel_after_s` for soft cancellation.** Set `cancel_after_s: Some(10.0)` on buy TradeActions.
+- **Use `held_side()` and `has_position()` from `strategy.rs`.** Don't reimplement.
+- **Add `no_new_after` guard.** Stop new entries at ~95% elapsed.
+- **Sell retry: use time-based cooldown.** Throttled retry via elapsed seconds.
+- **No tick-based decisions.** Use `ctx.elapsed_seconds` / `ctx.elapsed_fraction`, never `ctx.tick_index`.
+- **Circuit breaker.** Track recent outcomes across sessions. Suspend after losses, shadow-pick to validate recovery.
 
-- **Stuck state on expired buy orders.** If a limit buy expires without filling, the strategy must detect that `_entry_midpoint > 0` but `_held_side(ctx) is None` and reset entry state. Otherwise the strategy freezes — thinks it entered, never re-enters, never sells. Always add: `if self._entry_midpoint > 0: self._entry_midpoint = 0.0` in the "no position" branch.
-- **Use `_entry_count` instead of `_entered` flags.** Boolean flags like `_entered = True` can't distinguish "order pending" from "order filled" from "order expired." Use `_entry_count` (increment on buy attempt) and check actual position via `_held_side(ctx)`.
-- **Use `cancel_after_s` for soft order cancellation.** Polymarket enforces a ~60s minimum on GTD expiry, too long for 5-min markets. Instead, set `cancel_after_s=10` on buy `TradeAction`s — the Trader will explicitly cancel unfilled orders after that timeout. `expiration_seconds` (default 120s GTD) is the CLOB-enforced backstop. `cancel_after_s` has no default — strategies must opt in.
-- **Use `_held_side()` and `_has_position()` from base class.** Don't reimplement — they're on `Strategy` in `core/strategies/base.py`.
-- **Add `no_new_after` guard.** Strategies that can enter late should stop new entries at ~95% elapsed. The CLOB orderbook gets deleted before the window officially ends — late entries hit "orderbook does not exist" errors.
-- **Sell retry: use time-based cooldown, not one-shot flags.** One-shot (`_exit_sell_attempted = True`) abandons tokens if the sell fails. Throttled retry (`if ctx.elapsed_seconds - self._last_sell_time_s < 2.0: return HOLD`) retries on new ticks at updated prices.
-- **No tick-based decisions.** All timing decisions (cooldowns, confirmation windows, velocity windows) must use `ctx.elapsed_seconds` or `ctx.elapsed_fraction`, never `ctx.tick_index`. The tick rate may change. Use `cooldown_ms`, `confirm_ms`, `velocity_window_ms` etc. for time-based params in milliseconds.
-- **Circuit breaker (shadow picks).** Track recent trade outcomes across sessions. If losses exceed a threshold (e.g. 2 of last 6), stop executing and instead record "shadow picks" — what the strategy *would* have bought. Resume live trading after a shadow pick proves correct. State persists on the instance across sessions (`__init__`, not `on_session_start`). Score the previous trade in `_on_session_start_inner` by comparing `_last_bought_side` against the prior session's outcome from `_prior_session_summaries[-1]["outcome"]`. See `PoissonKellyGated` for reference implementation.
+## Notifications
+
+Configured in `settings.json`. Two mediums: **desktop** (macOS Notification Center) and **ntfy** (mobile push via ntfy.sh). Each medium has `enabled` + `events` list. Events are hierarchical (`trades` catches `trades:buys` + `trades:sells`). Full docs in `NOTIFICATIONS.md`.
+
+Event types: `trades`, `trades:buys`, `trades:sells`, `session:end`, `session:end:win`, `session:end:loss`, `error`, `process:start`, `process:stop`, `clob_down`, `report:hourly`.
+
+Each process loads `NotificationManager::load()` independently — no central notification service. Bot workers and orchestrator both send their own notifications.
+
+## Flatline Detection
+
+`FlatlineDetector` (`src/trader.rs`) suppresses trades when both up/down midpoints are unchanged for `FLATLINE_THRESHOLD_SECONDS` (15s, in `src/defaults.rs`). This indicates the CLOB API is stale. Trading resumes automatically as soon as midpoints move again — it's temporary, not session-scoped. The strategy's `on_tick` still runs during flatline so state stays consistent; only trade execution is suppressed. Triggers a `clob_down` notification.
 
 ## Latency Simulation
 
-`--latency MS` models the network round-trip to the CLOB API (~190-200ms measured). When set, the strategy decides on tick T's data but the order executes at tick T+delay's prices — the first tick where `elapsed_seconds >= decision_time + latency_ms/1000`.
+`--latency MS` models network round-trip (~200ms). Strategy decides on tick T's data but order executes at tick T+delay's prices. Cash/tokens reserved immediately. Deferred actions cancelled at session end.
 
-Cash (for buys) and tokens (for sells) are reserved immediately when deferred, so strategies can't double-spend while orders are in-flight. Deferred actions that haven't executed by session end are cancelled and funds unreserved.
+## Backtest Speed
 
-Usage: `uv run python -m simulator.backtest btc-updown-5m --strategy <name> --latency 200 --recent 30`
-
-Compare results with and without `--latency 200` to see how sensitive a strategy is to execution delay. Strategies that degrade significantly under latency rely on stale prices and may underperform in production.
-
-## Backtest Speed & Iterative Optimization
-
-Time = variants × sessions × ticks. **Reduce variants first** — that's the biggest lever.
-
-- **`--screen 50`** for large grids (>500 variants): screens on 1/3 of sessions, validates top 50 on full set. 3-5x faster.
-- **Iterative refinement, not giant grids:** Coarse (full `param_grid()` + `--screen 50`) → Refine (`--param` with 2-3 values near winner) → Polish (stop when top results cluster within Sharpe 0.05). **Fewer params = more sessions** — grid granularity and session count should be inversely proportional (e.g. coarse grid on 30, refined grid on 60, final validation on 500).
-- **Independent params → sweep one at a time.** If params don't interact, no grid needed — just vary one while holding others at sensible defaults. A 6-param grid with 4 values each is 4,096 combos; sweeping one-at-a-time is 6×4 = 24.
-- **Keep `param_grid()` lean:** 3-4 values per param max. Test `None` (optional features) separately before tuning values.
-- **One strategy at a time** for targeted work. `--strategy all` only for broad comparison with `--screen`.
-- **`--recent 15`** for exploration, **`--recent 30`** for coarse grid sweeps, **`--recent 500`** for final validation. 30 sessions is enough to find promising directions but will overfit — always validate winners on 500+ sessions (~a few days of data) before trusting Sharpe numbers.
-- **`--session-cash-ratio R:M`** in backtester enables compound mode: deploys `R × bankroll` per session (capped at `$M`), bankroll carries forward. Without this flag, each session gets flat `--cash`.
+- **`--screen 50`** for large grids: screens on 1/3 of sessions, validates top 50 on full set.
+- **Iterative refinement:** Coarse -> Refine -> Polish. Stop when top results cluster within Sharpe 0.05.
+- **Rayon parallelism:** Rust backtester uses all cores automatically via rayon.
+- **`--recent 15`** for exploration, **`--recent 30`** for sweeps, **`--recent 500`** for validation.
 
 ## Backtest Metrics
 
-- **Entry%** (`entry_rate`): fraction of sessions where the strategy made at least one trade. Regime-gated strategies may only trade 2-5% of sessions.
-- **Win%** (`win_rate`): fraction of *traded* sessions with positive PnL. Only counts sessions where the strategy entered — sitting out is not a loss. A strategy with 3% Entry and 87% Win is very selective but highly accurate.
-- These are distinct: a strategy that trades 20/700 sessions and wins 17 has Entry=2.9%, Win=85% — not Win=2.4%.
+- **Entry%** (`entry_rate`): fraction of sessions with at least one trade.
+- **Win%** (`win_rate`): fraction of *traded* sessions with positive PnL.
+- These are distinct: 20/700 sessions traded, 17 won -> Entry=2.9%, Win=85%.

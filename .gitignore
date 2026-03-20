@@ -1,5 +1,6 @@
 # All runtime data (sessions, logs, workers, sockets, etc.)
 data/
+backup/
 
 # Fetched slug prefixes (may go stale)
 slugs.json
@@ -8,6 +9,7 @@ slugs.json
 .env
 !.env.example
 .cache/
+settings.json
 
 # Python
 __pycache__/
@@ -32,6 +34,8 @@ env/
 # Dashboard
 dashboard/node_modules/
 dashboard/dist/
+dashboard/.next/
+dashboard/tsconfig.tsbuildinfo
 
 # Claude Code
 .claude/
@@ -52,5 +56,11 @@ data.zip
 # Claim server logs
 claim-server/claim-server.log
 
-# Rust (WIP)
-rust/
+# Python venvs (the projects themselves are tracked)
+**/.venv/
+**/__pycache__/
+
+
+# Added by cargo
+
+/target

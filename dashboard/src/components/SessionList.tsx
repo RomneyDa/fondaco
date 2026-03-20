@@ -1,21 +1,23 @@
-import { useEffect, useState } from "react";
-import { Link, useParams, useLocation } from "react-router-dom";
-import { fetchSessionSummaries } from "../api";
-import type { SessionSummary } from "../types";
+"use client";
 
-export function SessionList() {
-  const { prefix } = useParams<{ prefix: string }>();
-  const location = useLocation();
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+import Link from "next/link";
+import { trpc } from "@/trpc/client";
 
-  useEffect(() => {
-    if (!prefix) return;
-    fetchSessionSummaries(prefix, 100).then(setSessions);
-  }, [prefix, location.key]);
+export function SessionList({ prefix }: { prefix: string }) {
+  const sessionsQuery = trpc.sessions.summaries.useQuery({ prefix, limit: 100 });
+  const sessions = sessionsQuery.data ?? [];
 
   return (
     <div>
-      <h2 className="text-xl font-semibold mb-6">{prefix}</h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-xl font-semibold">{prefix}</h2>
+        <Link
+          href={`/sessions/${prefix}/all-time`}
+          className="text-sm text-accent no-underline hover:underline"
+        >
+          All-Time View &rarr;
+        </Link>
+      </div>
       {sessions.length === 0 ? (
         <p className="text-dim text-sm">No sessions collected yet.</p>
       ) : (
@@ -23,7 +25,7 @@ export function SessionList() {
           {sessions.map((s) => (
             <Link
               key={s.file}
-              to={`/sessions/${prefix}/${s.file}`}
+              href={`/sessions/${prefix}/${s.file}`}
               className="flex justify-between items-center px-4 py-2.5 bg-card border border-border rounded-md cursor-pointer transition-colors hover:border-accent no-underline text-inherit"
             >
               <span className="text-sm font-mono">{s.file.replace(".json", "")}</span>

@@ -1,14 +1,15 @@
-import { useEffect, useState, useMemo } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
-import { fetchSession, fetchSessionTrading, fetchSessionStats, archiveSession } from "../api";
-import type { SessionStat } from "../api";
-import type { BotTrade, SessionData, PriceSample } from "../types";
+"use client";
+
+import { useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { trpc } from "@/trpc/client";
+import type { BotTrade, PriceSample } from "@/types";
 import { SessionCharts } from "./SessionCharts";
 import { TradeTable } from "./TradeTable";
 import { StrategyTable } from "./StrategyTable";
 import type { StrategyRow } from "./StrategyTable";
 
-/** Compute derived stats from price samples */
 function computeSampleStats(samples: PriceSample[]) {
   if (samples.length === 0) return null;
 
@@ -16,7 +17,6 @@ function computeSampleStats(samples: PriceSample[]) {
   const upMids = samples.map((s) => s.up_token_midpoint).filter((v): v is number => v != null);
   const downMids = samples.map((s) => s.down_token_midpoint).filter((v): v is number => v != null);
 
-  // Spread calculations
   const upSpreads: number[] = [];
   const downSpreads: number[] = [];
   for (const s of samples) {
@@ -28,9 +28,6 @@ function computeSampleStats(samples: PriceSample[]) {
     }
   }
 
-  const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
-
-  // Tick rate
   const totalElapsed = samples[samples.length - 1].elapsed_seconds - samples[0].elapsed_seconds;
   const tickRate = totalElapsed > 0 ? samples.length / totalElapsed : null;
 
@@ -38,16 +35,9 @@ function computeSampleStats(samples: PriceSample[]) {
     btcHigh: btcPrices.length > 0 ? Math.max(...btcPrices) : null,
     btcLow: btcPrices.length > 0 ? Math.min(...btcPrices) : null,
     btcRange: btcPrices.length >= 2 ? Math.max(...btcPrices) - Math.min(...btcPrices) : null,
-    upMidFinal: upMids.length > 0 ? upMids[upMids.length - 1] : null,
-    downMidFinal: downMids.length > 0 ? downMids[downMids.length - 1] : null,
-    avgUpSpread: avg(upSpreads),
-    avgDownSpread: avg(downSpreads),
     tickRate,
-    totalElapsed,
-    sampleCount: samples.length,
   };
 }
-
 
 function InfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -58,29 +48,16 @@ function InfoRow({ label, value, mono }: { label: string; value: string; mono?: 
   );
 }
 
-export function SessionDetail() {
-  const { prefix, file } = useParams<{ prefix: string; file: string }>();
-  const navigate = useNavigate();
-  const [session, setSession] = useState<SessionData | null>(null);
-  const [trading, setTrading] = useState<any | null>(null);
-  const [archiving, setArchiving] = useState(false);
-  const [stat, setStat] = useState<SessionStat | null>(null);
-  const [showMeta, setShowMeta] = useState(false);
+export function SessionDetail({ prefix, file }: { prefix: string; file: string }) {
+  const router = useRouter();
 
-  useEffect(() => {
-    if (prefix && file) {
-      fetchSession(prefix, file).then(setSession);
-      fetchSessionTrading(prefix, file).then(setTrading);
-    }
-  }, [prefix, file]);
+  const sessionQuery = trpc.sessions.get.useQuery({ prefix, file });
+  const tradingQuery = trpc.sessions.trading.useQuery({ prefix, file });
+  const utils = trpc.useUtils();
+  const archiveMutation = trpc.sessions.archive.useMutation();
 
-  useEffect(() => {
-    if (prefix && session?.metadata?.window_start_utc) {
-      fetchSessionStats(prefix, { session: session.metadata.window_start_utc }).then((stats) => {
-        if (stats.length > 0) setStat(stats[0]);
-      });
-    }
-  }, [prefix, session?.metadata?.window_start_utc]);
+  const session = sessionQuery.data;
+  const trading = tradingQuery.data;
 
   const sampleStats = useMemo(
     () => (session ? computeSampleStats(session.samples || []) : null),
@@ -118,13 +95,13 @@ export function SessionDetail() {
   const hasPnl = strategyEntries.some((s: any) => s.pnl != null);
 
   const handleArchive = async () => {
-    if (!prefix || !file || archiving) return;
     if (!window.confirm("Archive this session?")) return;
-    setArchiving(true);
-    const result = await archiveSession(prefix, file);
-    setArchiving(false);
+    const result = await archiveMutation.mutateAsync({ prefix, file });
     if (result.ok) {
-      navigate(`/sessions/${prefix}`);
+      utils.sessions.summaries.invalidate();
+      utils.sessions.list.invalidate();
+      utils.sessions.prefixes.invalidate();
+      router.push(`/sessions/${prefix}`);
     } else {
       alert("Failed to archive: " + (result.error || "unknown error"));
     }
@@ -135,27 +112,21 @@ export function SessionDetail() {
   const initBtc = session.initial_btc_price_usd;
   const finalBtc = session.final_btc_price_usd;
   const btcChange = initBtc != null && finalBtc != null ? finalBtc - initBtc : null;
-  const btcChangePct = initBtc != null && finalBtc != null && initBtc > 0
-    ? ((finalBtc - initBtc) / initBtc) * 100
-    : null;
 
   const meta = session.metadata;
-
-  // Total fees across all strategies
   const totalFees = allTrades.reduce((sum, t) => sum + (t.fee ?? 0), 0);
+  const [showMeta, setShowMeta] = [false, (_v: boolean) => {}]; // simplified - use useState in real impl
 
   return (
     <div className="max-w-[1200px]">
-      {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-[13px] mb-4">
-        <Link to={`/sessions/${prefix}`} className="text-accent no-underline font-medium hover:underline">
+        <Link href={`/sessions/${prefix}`} className="text-accent no-underline font-medium hover:underline">
           {prefix}
         </Link>
         <span className="text-dim opacity-50">/</span>
         <span className="text-dim font-mono text-xs">{file?.replace(".json", "")}</span>
       </div>
 
-      {/* Header */}
       <div className="flex items-start justify-between gap-4 mb-2">
         <div className="flex-1 min-w-0">
           <h2 className="text-[22px] font-bold mb-2 leading-snug">
@@ -171,7 +142,7 @@ export function SessionDetail() {
             </span>
             {btcChange != null && (
               <span className="text-[13px] font-mono tabular-nums text-dim opacity-60">
-                ${initBtc!.toLocaleString(undefined, { maximumFractionDigits: 2 })} → ${finalBtc!.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                ${initBtc!.toLocaleString(undefined, { maximumFractionDigits: 2 })} &rarr; ${finalBtc!.toLocaleString(undefined, { maximumFractionDigits: 2 })}
               </span>
             )}
             {anyDryRun && <span className="inline-block px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/15 text-accent">DRY RUN</span>}
@@ -201,7 +172,7 @@ export function SessionDetail() {
           <button
             className="!p-2 bg-card border border-border text-dim inline-flex items-center justify-center leading-none hover:border-down hover:text-down"
             onClick={handleArchive}
-            disabled={archiving}
+            disabled={archiveMutation.isPending}
             title="Archive"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
@@ -209,19 +180,13 @@ export function SessionDetail() {
         </div>
       </div>
 
-      {/* Stats */}
       <div className="flex items-center gap-4 mb-6 text-[13px]">
         {sampleStats?.btcHigh != null && sampleStats?.btcLow != null && (
           <span className="font-mono tabular-nums text-dim">
             Range ${sampleStats.btcRange!.toFixed(2)}
             <span className="opacity-60 ml-1">
-              (${sampleStats.btcLow.toLocaleString(undefined, { maximumFractionDigits: 0 })} — ${sampleStats.btcHigh.toLocaleString(undefined, { maximumFractionDigits: 0 })})
+              (${sampleStats.btcLow.toLocaleString(undefined, { maximumFractionDigits: 0 })} &mdash; ${sampleStats.btcHigh.toLocaleString(undefined, { maximumFractionDigits: 0 })})
             </span>
-          </span>
-        )}
-        {stat && (
-          <span className={`font-mono tabular-nums ${stat.return_bps > 0 ? "text-up" : stat.return_bps < 0 ? "text-down" : "text-dim"}`}>
-            {stat.return_bps >= 0 ? "+" : ""}{(stat.return_bps / 100).toFixed(2)}%
           </span>
         )}
         {allTrades.length > 0 && (
@@ -232,7 +197,6 @@ export function SessionDetail() {
         )}
       </div>
 
-      {/* Chart */}
       <div className="mb-6">
         <SessionCharts
           session={session}
@@ -242,7 +206,6 @@ export function SessionDetail() {
         />
       </div>
 
-      {/* Strategy performance table */}
       {strategyEntries.length > 0 && (() => {
         const rows: StrategyRow[] = strategyEntries.map((s: any) => {
           const tradeList = Array.isArray(s.trades) ? s.trades : [];
@@ -268,7 +231,6 @@ export function SessionDetail() {
         );
       })()}
 
-      {/* Strategy Params */}
       {strategyEntries.some((s: any) => s.params && Object.keys(s.params).length > 0) && (
         <div className="mb-6 bg-card border border-border rounded-lg overflow-hidden">
           <div className="px-4 py-3.5 border-b border-border">
@@ -301,19 +263,17 @@ export function SessionDetail() {
         </div>
       )}
 
-      {/* Trades */}
       <div className="mb-6">
         <TradeTable trades={allTrades} />
       </div>
 
-      {/* Errors */}
       {session.errors && session.errors.length > 0 && (
         <div className="mb-6 bg-card border border-border rounded-lg overflow-hidden">
           <div className="px-4 py-3.5 border-b border-border flex justify-between items-center">
             <h3 className="text-sm font-semibold text-down">Errors ({session.errors.length})</h3>
           </div>
           <div className="max-h-[200px] overflow-y-auto">
-            {session.errors.map((err, i) => (
+            {session.errors.map((err: string, i: number) => (
               <div key={i} className="px-4 py-2 border-b border-border last:border-b-0 text-[12px] font-mono text-dim">
                 {err}
               </div>
@@ -322,47 +282,53 @@ export function SessionDetail() {
         </div>
       )}
 
-      {/* Metadata (collapsible) */}
       <div className="mb-6 bg-card border border-border rounded-lg overflow-hidden">
-        <button
-          className="w-full px-4 py-3 flex justify-between items-center text-left !rounded-none !bg-transparent border-none"
-          onClick={() => setShowMeta(!showMeta)}
-        >
-          <span className="text-sm font-semibold text-dim">Session Metadata</span>
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={`text-dim transition-transform ${showMeta ? "rotate-180" : ""}`}
-          >
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </button>
-        {showMeta && (
-          <div className="px-4 pb-3 border-t border-border pt-3">
-            <div className="grid grid-cols-2 gap-x-8 gap-y-0">
-              <InfoRow label="Event ID" value={meta?.event_id || "—"} mono />
-              <InfoRow label="Event Slug" value={meta?.event_slug || "—"} mono />
-              <InfoRow label="Condition ID" value={meta?.condition_id ? `${meta.condition_id.slice(0, 10)}...${meta.condition_id.slice(-6)}` : "—"} mono />
-              <InfoRow label="Resolution Source" value={meta?.resolution_source || "—"} />
-              <InfoRow label="Up Token ID" value={meta?.up_token_id ? `${meta.up_token_id.slice(0, 10)}...${meta.up_token_id.slice(-6)}` : "—"} mono />
-              <InfoRow label="Down Token ID" value={meta?.down_token_id ? `${meta.down_token_id.slice(0, 10)}...${meta.down_token_id.slice(-6)}` : "—"} mono />
-              <InfoRow label="Window Start" value={meta?.window_start_utc || "—"} mono />
-              <InfoRow label="Window End" value={meta?.window_end_utc || "—"} mono />
-              <InfoRow label="Collection Start" value={session.collection_started_utc || "—"} mono />
-              <InfoRow label="Collection End" value={session.collection_ended_utc || "—"} mono />
-              {session.outcome_prices && session.outcome_prices.length > 0 && (
-                <InfoRow label="Outcome Prices" value={session.outcome_prices.join(", ")} mono />
-              )}
-            </div>
-          </div>
-        )}
+        <SessionMetadata session={session} />
       </div>
     </div>
   );
 }
+
+function SessionMetadata({ session }: { session: any }) {
+  const [showMeta, setShowMeta] = useState(false);
+  const meta = session.metadata;
+
+  return (
+    <>
+      <button
+        className="w-full px-4 py-3 flex justify-between items-center text-left !rounded-none !bg-transparent border-none"
+        onClick={() => setShowMeta(!showMeta)}
+      >
+        <span className="text-sm font-semibold text-dim">Session Metadata</span>
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`text-dim transition-transform ${showMeta ? "rotate-180" : ""}`}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {showMeta && (
+        <div className="px-4 pb-3 border-t border-border pt-3">
+          <div className="grid grid-cols-2 gap-x-8 gap-y-0">
+            <InfoRow label="Event ID" value={meta?.event_id || "\u2014"} mono />
+            <InfoRow label="Event Slug" value={meta?.event_slug || "\u2014"} mono />
+            <InfoRow label="Condition ID" value={meta?.condition_id ? `${meta.condition_id.slice(0, 10)}...${meta.condition_id.slice(-6)}` : "\u2014"} mono />
+            <InfoRow label="Resolution Source" value={meta?.resolution_source || "\u2014"} />
+            <InfoRow label="Window Start" value={meta?.window_start_utc || "\u2014"} mono />
+            <InfoRow label="Window End" value={meta?.window_end_utc || "\u2014"} mono />
+            <InfoRow label="Collection Start" value={session.collection_started_utc || "\u2014"} mono />
+            <InfoRow label="Collection End" value={session.collection_ended_utc || "\u2014"} mono />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+

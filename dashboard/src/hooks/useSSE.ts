@@ -1,5 +1,8 @@
+"use client";
+
 import { useEffect, useRef } from "react";
-import type { BotStatus, LivePayload } from "../types";
+import { trpc } from "@/trpc/client";
+import type { BotStatus, LivePayload } from "@/types";
 
 export interface SSEHandlers {
   onLiveUpdate?: (prefix: string, data: LivePayload) => void;
@@ -13,6 +16,8 @@ export function useSSE(handlers: SSEHandlers) {
   const ref = useRef(handlers);
   ref.current = handlers;
 
+  const utils = trpc.useUtils();
+
   useEffect(() => {
     let es: EventSource | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -23,28 +28,31 @@ export function useSSE(handlers: SSEHandlers) {
         (e as MessageEvent).data
       ) as { prefix: string; session: LivePayload };
       ref.current.onLiveUpdate?.(prefix, session);
+      utils.live.session.invalidate({ prefix });
     }
     function onLiveStart(e: Event) {
-      const { prefix } = JSON.parse((e as MessageEvent).data) as {
-        prefix: string;
-      };
+      const { prefix } = JSON.parse((e as MessageEvent).data) as { prefix: string };
       ref.current.onLiveStart?.(prefix);
+      utils.live.prefixes.invalidate();
     }
     function onLiveEnd(e: Event) {
-      const { prefix } = JSON.parse((e as MessageEvent).data) as {
-        prefix: string;
-      };
+      const { prefix } = JSON.parse((e as MessageEvent).data) as { prefix: string };
       ref.current.onLiveEnd?.(prefix);
+      utils.live.prefixes.invalidate();
     }
     function onSessionSaved(e: Event) {
       const { prefix, file } = JSON.parse(
         (e as MessageEvent).data
       ) as { prefix: string; file: string };
       ref.current.onSessionSaved?.(prefix, file);
+      utils.sessions.prefixes.invalidate();
+      utils.sessions.list.invalidate();
+      utils.sessions.summaries.invalidate();
     }
     function onBotStatus(e: Event) {
       const data = JSON.parse((e as MessageEvent).data) as BotStatus;
       ref.current.onBotStatus?.(data);
+      utils.bot.status.invalidate();
     }
 
     function connect() {
@@ -78,5 +86,5 @@ export function useSSE(handlers: SSEHandlers) {
         es.close();
       }
     };
-  }, []);
+  }, [utils]);
 }

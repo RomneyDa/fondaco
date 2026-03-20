@@ -56,9 +56,8 @@ export function fmtTimeOnly(iso: string | undefined | null): string {
     if (isNaN(d.getTime())) return iso;
     const hr = d.getHours() % 12 || 12;
     const mins = String(d.getMinutes()).padStart(2, "0");
-    const secs = String(d.getSeconds()).padStart(2, "0");
     const ampm = d.getHours() < 12 ? "AM" : "PM";
-    return `${hr}:${mins}:${secs} ${ampm}`;
+    return `${hr}:${mins} ${ampm}`;
   } catch {
     return iso;
   }

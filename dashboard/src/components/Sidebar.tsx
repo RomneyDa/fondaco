@@ -1,44 +1,54 @@
+"use client";
+
 import { useState } from "react";
-import { NavLink, useLocation } from "react-router-dom";
-import type { PingEntry } from "../App";
-import type { BalanceInfo } from "../api";
-import type { BotStatus, MarketStatus, PrefixInfo } from "../types";
-import { fmtSessionName } from "../utils/formatTime";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import type { PingEntry } from "./AppShell";
+import { trpc } from "@/trpc/client";
+import type { BotStatus, MarketStatus } from "@/types";
+import { fmtSessionName } from "@/utils/formatTime";
+import { NavLink } from "./NavLink";
 
 interface Props {
-  prefixes: PrefixInfo[];
+  prefixNames: string[];
   livePrefixes: string[];
   botStatus: BotStatus | null;
   pings: PingEntry[];
-  balance: BalanceInfo;
+  balance: { portfolio: number | null };
 }
 
-export function Sidebar({ prefixes, livePrefixes, botStatus, pings, balance }: Props) {
+export function Sidebar({ prefixNames, livePrefixes, botStatus, pings, balance }: Props) {
   const isRunning = botStatus?.running ?? false;
-  const markets = botStatus?.markets ?? [];
+  const markets = Array.isArray(botStatus?.markets) ? botStatus.markets : [];
   const marketsBySlug = new Map(markets.map((m) => [m.slug_key, m]));
 
-  // Collect all known market names (from sessions + live markets + extra live)
   const allMarketNames = new Set([
-    ...prefixes.map((p) => p.name),
+    ...prefixNames,
     ...markets.map((m) => m.slug_key),
     ...livePrefixes,
   ]);
 
   return (
     <nav className="w-full h-full bg-sidebar border-r border-border flex flex-col overflow-y-auto scrollbar-none">
-      <div className="px-5 py-4 border-b border-border flex items-baseline justify-between">
-        <h1 className="text-lg font-semibold text-accent">eros-pm</h1>
+      <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h1 className="text-lg font-semibold text-accent">eros-pm</h1>
+          <Link href="/architecture" title="Architecture" className="text-dim hover:text-accent transition-colors opacity-50 hover:opacity-100">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M1 2.5A1.5 1.5 0 012.5 1h3A1.5 1.5 0 017 2.5v3A1.5 1.5 0 015.5 7h-3A1.5 1.5 0 011 5.5v-3zm8 0A1.5 1.5 0 0110.5 1h3A1.5 1.5 0 0115 2.5v3A1.5 1.5 0 0113.5 7h-3A1.5 1.5 0 019 5.5v-3zm-8 8A1.5 1.5 0 012.5 9h3A1.5 1.5 0 017 10.5v3A1.5 1.5 0 015.5 15h-3A1.5 1.5 0 011 13.5v-3zm8 0A1.5 1.5 0 0110.5 9h3a1.5 1.5 0 011.5 1.5v3a1.5 1.5 0 01-1.5 1.5h-3A1.5 1.5 0 019 13.5v-3z" />
+            </svg>
+          </Link>
+        </div>
         {balance.portfolio != null && (
-          <NavLink to="/positions" className="text-sm font-mono text-dim hover:text-accent transition-colors">
+          <Link href="/positions" className="text-sm font-mono text-dim hover:text-accent transition-colors">
             ${balance.portfolio.toFixed(2)}
-          </NavLink>
+          </Link>
         )}
       </div>
 
       <div className="py-3 border-b border-border">
         <NavLink
-          to="/home"
+          href="/home"
           className={({ isActive }) =>
             `flex items-center gap-2 px-5 py-1.5 text-sm cursor-pointer transition-colors ${isActive ? "bg-accent/15 text-accent" : "text-txt hover:bg-accent/10"}`
           }
@@ -74,7 +84,7 @@ export function Sidebar({ prefixes, livePrefixes, botStatus, pings, balance }: P
         </NavLink>
 
         <NavLink
-          to="/optimizer"
+          href="/optimizer"
           className={({ isActive }) =>
             `flex items-center gap-2 px-5 py-1.5 text-sm cursor-pointer transition-colors ${isActive ? "bg-accent/15 text-accent" : "text-txt hover:bg-accent/10"}`
           }
@@ -90,14 +100,12 @@ export function Sidebar({ prefixes, livePrefixes, botStatus, pings, balance }: P
 
       <div className="py-3 border-b border-border flex-1 overflow-y-auto scrollbar-none">
         {[...allMarketNames].map((name) => {
-          const prefix = prefixes.find((p) => p.name === name);
           const market = marketsBySlug.get(name);
           const hasLive = livePrefixes.includes(name);
           return (
             <MarketSection
               key={name}
               name={name}
-              prefix={prefix}
               market={market}
               hasLiveData={hasLive}
             />
@@ -135,7 +143,7 @@ function PingIndicator({ pings }: { pings: PingEntry[] }) {
             ? `${last.latencyMs}ms · ${last.detail ?? last.status}`
             : "no pings"}
         </span>
-        <span className="opacity-40 text-[10px]">{expanded ? "▼" : "▶"}</span>
+        <span className="opacity-40 text-[10px]">{expanded ? "\u25BC" : "\u25B6"}</span>
       </button>
       {expanded && (
         <div className="max-h-[200px] overflow-y-auto border-t border-border">
@@ -162,22 +170,32 @@ function PingIndicator({ pings }: { pings: PingEntry[] }) {
 
 function MarketSection({
   name,
-  prefix,
   market,
   hasLiveData,
 }: {
   name: string;
-  prefix: PrefixInfo | undefined;
   market: MarketStatus | undefined;
   hasLiveData: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const location = useLocation();
+  const [expanded, setExpanded] = useState(true);
+  const pathname = usePathname();
   const strategies = market?.strategies ?? [];
   const isTrading = strategies.length > 0;
   const anyDead = strategies.some((s) => s.alive === false);
   const allDryRun = strategies.length > 0 && strategies.every((s) => s.dry_run);
-  const sessionCount = prefix?.count ?? 0;
+
+  // Fetch summaries for this market when expanded
+  const summariesQuery = trpc.sessions.summaries.useQuery(
+    { prefix: name, limit: 10 },
+    { enabled: expanded }
+  );
+  const sessionsQuery = trpc.sessions.list.useQuery(
+    { prefix: name },
+    { enabled: expanded }
+  );
+
+  const sessionCount = sessionsQuery.data?.length ?? 0;
+  const recentSessions = summariesQuery.data ?? [];
 
   const dotColor = anyDead
     ? "bg-down"
@@ -196,14 +214,16 @@ function MarketSection({
           className={`inline-block w-[7px] h-[7px] rounded-full shrink-0 ${dotColor} ${shouldPulse ? "animate-pulse-dot" : ""}`}
           title={hasLiveData ? "Live" : "Inactive"}
         />
-        <NavLink
-          to={hasLiveData ? `/live/${name}` : `/sessions/${name}`}
-          className={({ isActive }) =>
-            `flex-1 truncate ml-1.5 cursor-pointer no-underline transition-colors ${isActive ? "text-accent" : "text-txt hover:text-accent"}`
-          }
+        <Link
+          href={hasLiveData ? `/live/${name}` : `/sessions/${name}`}
+          className={`flex-1 truncate ml-1.5 cursor-pointer no-underline transition-colors ${
+            pathname.startsWith(`/live/${name}`) || pathname.startsWith(`/sessions/${name}`)
+              ? "text-accent"
+              : "text-txt hover:text-accent"
+          }`}
         >
           {name}
-        </NavLink>
+        </Link>
         {market?.stop_after_session && (
           <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-down text-white mr-1">STOP</span>
         )}
@@ -217,11 +237,10 @@ function MarketSection({
 
       {expanded && (
         <div>
-          {/* Active strategies */}
           {strategies.map((s) => (
-            <NavLink
+            <Link
               key={s.name}
-              to={`/strategy/${name}/${s.name}`}
+              href={`/strategy/${name}/${s.name}`}
               className="flex justify-between items-center py-[3px] pl-8 pr-5 text-xs font-mono text-dim no-underline hover:text-txt"
             >
               <span className="inline-flex items-center gap-1">
@@ -231,42 +250,40 @@ function MarketSection({
               <span className="text-dim text-xs">
                 ${(s.bankroll ?? s.cash).toFixed(0)}
               </span>
-            </NavLink>
+            </Link>
           ))}
 
-          {/* "All sessions" link only when live (title already goes to /sessions when not live) */}
-          {prefix && hasLiveData && (() => {
-            const onSessionsPage = location.pathname === `/sessions/${name}`;
-            const onAnySession = location.pathname.startsWith(`/sessions/${name}`);
+          {hasLiveData && sessionCount > 0 && (() => {
+            const onSessionsPage = pathname === `/sessions/${name}`;
+            const onAnySession = pathname.startsWith(`/sessions/${name}`);
             const highlight = onAnySession && !onSessionsPage;
             return (
-              <NavLink
-                to={`/sessions/${name}`}
-                className={({ isActive }) =>
-                  `block pl-8 pr-5 py-[3px] text-xs cursor-pointer transition-colors ${isActive || highlight ? "text-accent" : "text-dim hover:text-txt hover:underline"}`
-                }
+              <Link
+                href={`/sessions/${name}`}
+                className={`block pl-8 pr-5 py-[3px] text-xs cursor-pointer transition-colors ${
+                  onSessionsPage || highlight ? "text-accent" : "text-dim hover:text-txt hover:underline"
+                }`}
               >
-                All {sessionCount} sessions <span className="text-base leading-none">→</span>
-              </NavLink>
+                All {sessionCount} sessions <span className="text-base leading-none">&rarr;</span>
+              </Link>
             );
           })()}
 
-          {/* Recent sessions */}
-          {prefix?.recentSessions.map((s) => (
-            <NavLink
+          {recentSessions.map((s) => (
+            <Link
               key={s.file}
-              to={`/sessions/${name}/${s.file}`}
-              className={({ isActive }) =>
-                `flex justify-between items-center py-[3px] pl-8 pr-5 text-xs font-mono cursor-pointer transition-colors ${isActive ? "text-accent" : "text-dim hover:text-txt"}`
-              }
+              href={`/sessions/${name}/${s.file}`}
+              className={`flex justify-between items-center py-[3px] pl-8 pr-5 text-xs font-mono cursor-pointer transition-colors ${
+                pathname === `/sessions/${name}/${s.file}` ? "text-accent" : "text-dim hover:text-txt"
+              }`}
             >
               <span>{fmtSessionName(s.file)}</span>
               {s.outcome && (
                 <span className={`text-[11px] shrink-0 ml-1.5 ${s.outcome.toLowerCase() === "up" ? "text-up" : "text-down"}`}>
-                  {s.outcome.toLowerCase() === "up" ? "▲" : "▼"}
+                  {s.outcome.toLowerCase() === "up" ? "\u25B2" : "\u25BC"}
                 </span>
               )}
-            </NavLink>
+            </Link>
           ))}
         </div>
       )}

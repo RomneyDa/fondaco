@@ -1,0 +1,42 @@
+[package]
+name = "eros-pm"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "backtest"
+path = "src/bin/backtest.rs"
+
+[[bin]]
+name = "collector"
+path = "src/bin/collector.rs"
+
+[[bin]]
+name = "bot-worker"
+path = "src/bin/bot_worker.rs"
+
+[[bin]]
+name = "orchestrator"
+path = "src/bin/orchestrator.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+glob = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+tungstenite = { version = "0.24", features = ["native-tls"] }
+native-tls = "0.2"
+url = "2"
+log = "0.4"
+env_logger = "0.11"
+ctrlc = "3"
+signal-hook = "0.3"
+tiny_http = "0.12"
+notify-rust = "4"
+
+[dev-dependencies]
+approx = "0.5"
+tempfile = "3"

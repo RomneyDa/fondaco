@@ -1,5 +1,7 @@
+"use client";
+
 import { useMemo } from "react";
-import type { BotTrade, SessionData } from "../types";
+import type { BotTrade, SessionData } from "@/types";
 import { Plot } from "./Plot";
 
 interface Props {
@@ -31,8 +33,8 @@ const PLOT_CFG = { responsive: true, displayModeBar: false };
 
 function fmtTradeHover(t: BotTrade, label: string): string {
   const prefix = t._strategy ? t._strategy + ": " : "";
-  const tkns = t.tokens < 0.01 && t.tokens > 0 ? "<0.01" : t.tokens.toFixed(1);
-  const amt = t.amount < 0.01 && t.amount > 0 ? "<$0.01" : "$" + t.amount.toFixed(2);
+  const tkns = (t.tokens ?? 0) < 0.01 && (t.tokens ?? 0) > 0 ? "<0.01" : (t.tokens ?? 0).toFixed(1);
+  const amt = (t.amount ?? 0) < 0.01 && (t.amount ?? 0) > 0 ? "<$0.01" : "$" + (t.amount ?? 0).toFixed(2);
   return `${prefix}${label} ${amt} (${tkns} tokens)`;
 }
 
@@ -120,16 +122,25 @@ export function SessionCharts({ session, trades, isDryRun, tickRate }: Props) {
   const btcDeduped = useMemo(() => {
     const x: number[] = [];
     const y: (number | null)[] = [];
+    const text: string[] = [];
     let prev: number | null = null;
+    const startPrice = samples.find((s) => s.btc_price_usd != null)?.btc_price_usd ?? null;
     for (let i = 0; i < samples.length; i++) {
       const v = samples[i].btc_price_usd;
       if (v !== prev || i === samples.length - 1) {
         x.push(samples[i].elapsed_seconds);
         y.push(v);
+        if (v != null && startPrice != null) {
+          const delta = v - startPrice;
+          const dir = delta >= 0 ? "up" : "down";
+          text.push(`$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${dir} $${Math.abs(delta).toFixed(2)})`);
+        } else {
+          text.push("");
+        }
         prev = v;
       }
     }
-    return { x, y };
+    return { x, y, text };
   }, [samples]);
 
   const spreadTraces = useMemo(() => {
@@ -173,6 +184,8 @@ export function SessionCharts({ session, trades, isDryRun, tickRate }: Props) {
             name: "BTC/USD",
             line: { color: "#f7931a", width: 1.5 },
             yaxis: "y2",
+            text: btcDeduped.text,
+            hoverinfo: "text+x",
           },
           ...spreadTraces,
           {

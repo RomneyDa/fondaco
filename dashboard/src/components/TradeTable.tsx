@@ -1,4 +1,6 @@
-import type { BotTrade } from "../types";
+"use client";
+
+import type { BotTrade } from "@/types";
 
 interface PendingOrder {
   order_id?: string;
@@ -30,9 +32,10 @@ function fmtTokens(v: number): string {
   return v.toFixed(2);
 }
 
-function fmtAmount(v: number): string {
-  if (v < 0.01 && v > 0) return "<$0.01";
-  return "$" + v.toFixed(2);
+function fmtAmount(v: number | undefined): string {
+  const n = v ?? 0;
+  if (n < 0.01 && n > 0) return "<$0.01";
+  return "$" + n.toFixed(2);
 }
 
 export function TradeTable({ trades, pendingOrders }: Props) {

@@ -135,6 +135,11 @@ export interface BotStatus {
     pid?: number | null;
     state?: string;
   };
+  clob_bridge?: {
+    healthy: boolean;
+    port: number;
+    managed: boolean;
+  };
 }
 
 export interface SessionSummary {

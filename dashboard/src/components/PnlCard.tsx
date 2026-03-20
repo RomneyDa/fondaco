@@ -1,3 +1,5 @@
+"use client";
+
 /** Unified PnL display: all-time, 24h, 1h in a single card. */
 export function PnlCard({ overall, last24h, last1h, dryRun }: {
   overall: number;

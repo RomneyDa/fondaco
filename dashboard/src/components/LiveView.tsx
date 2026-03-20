@@ -1,24 +1,16 @@
+"use client";
+
 import { useEffect, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import {
-  fetchLiveSession, archiveSession, fetchSessionList, fetchMarketPnl,
-  fetchStrategies, fetchSlugs, tradeBotOn, tradeBotOff, reloadBot, setAutoExit, startMarket,
-} from "../api";
-import type { MarketPnl, SlugInfo } from "../api";
-import type { BotStatus, LivePayload, MarketStatus } from "../types";
-import { isLiveStatus, isSessionData } from "../types";
+import { useRouter } from "next/navigation";
+import { trpc } from "@/trpc/client";
+import type { BotStatus, LivePayload, MarketStatus } from "@/types";
+import { isLiveStatus, isSessionData } from "@/types";
 import { PnlCard } from "./PnlCard";
 import { SessionCharts } from "./SessionCharts";
 import { TradeTable } from "./TradeTable";
 import { StrategyTable } from "./StrategyTable";
 import type { StrategyRow } from "./StrategyTable";
-import { fmtTimeOnly } from "../utils/formatTime";
-
-interface Props {
-  liveData: Record<string, LivePayload>;
-  botStatus: BotStatus | null;
-  onRefresh: () => void;
-}
+import { fmtTimeOnly } from "@/utils/formatTime";
 
 function formatCountdown(targetUtc: string): string {
   const diff = Math.max(
@@ -30,58 +22,52 @@ function formatCountdown(targetUtc: string): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export function LiveView({ liveData, botStatus, onRefresh }: Props) {
-  const { prefix } = useParams<{ prefix: string }>();
-  const navigate = useNavigate();
+export function LiveView({ prefix }: { prefix: string }) {
+  const router = useRouter();
   const [payload, setPayload] = useState<LivePayload | null>(null);
   const [ended, setEnded] = useState(false);
   const [hadSSE, setHadSSE] = useState(false);
   const [, setTick] = useState(0);
   const stickyTradesRef = useRef<any[]>([]);
-  const [archiving, setArchiving] = useState(false);
   const [archived, setArchived] = useState(false);
-  const [pnl, setPnl] = useState<MarketPnl | null>(null);
+
+  const liveQuery = trpc.live.session.useQuery(
+    { prefix },
+    { refetchInterval: ended ? false : 2000 }
+  );
+  const botStatusQuery = trpc.bot.status.useQuery(undefined, { refetchInterval: 5000 });
+  const botStatus = (botStatusQuery.data ?? null) as BotStatus | null;
+  const pnlQuery = trpc.market.pnl.useQuery({ prefix }, { refetchInterval: 30000 });
+  const pnl = pnlQuery.data;
+
+  const archiveMutation = trpc.sessions.archive.useMutation();
+  const sessionsListQuery = trpc.sessions.list.useQuery({ prefix }, { enabled: false });
+
+  const strategiesQuery = trpc.strategy.list.useQuery();
+  const slugsQuery = trpc.portfolio.slugs.useQuery();
+  const botTradeOnMutation = trpc.bot.tradeOn.useMutation();
+  const botTradeOffMutation = trpc.bot.tradeOff.useMutation();
+  const botReloadMutation = trpc.bot.reload.useMutation();
+  const botMarketOnMutation = trpc.bot.marketOn.useMutation();
+  const botSetAutoExitMutation = trpc.bot.setAutoExit.useMutation();
+
+  const utils = trpc.useUtils();
 
   useEffect(() => {
-    if (prefix) {
-      let cancelled = false;
-      setEnded(false);
-      setHadSSE(false);
-      setArchived(false);
-      stickyTradesRef.current = [];
-      fetchLiveSession(prefix).then((data) => {
-        if (!cancelled && data) setPayload(data);
-      });
-      return () => { cancelled = true; };
-    }
+    setEnded(false);
+    setHadSSE(false);
+    setArchived(false);
+    stickyTradesRef.current = [];
   }, [prefix]);
 
   useEffect(() => {
-    if (!prefix) return;
-    let cancelled = false;
-    const load = () => {
-      fetchMarketPnl(prefix).then((data) => {
-        if (!cancelled && data) setPnl(data);
-      });
-    };
-    load();
-    const id = setInterval(load, 30_000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [prefix]);
-
-  useEffect(() => {
-    if (prefix && liveData[prefix]) {
-      setPayload(liveData[prefix]);
-      setHadSSE(true);
-      setEnded(false);
-    }
-  }, [prefix, liveData]);
-
-  useEffect(() => {
-    if (prefix && hadSSE && payload && !liveData[prefix]) {
+    if (liveQuery.data) {
+      setPayload(liveQuery.data);
+      if (!hadSSE) setHadSSE(true);
+    } else if (hadSSE && liveQuery.data === null) {
       setEnded(true);
     }
-  }, [prefix, hadSSE, payload, liveData]);
+  }, [liveQuery.data, hadSSE]);
 
   const isWaiting = payload && isLiveStatus(payload) && payload.status === "waiting";
   useEffect(() => {
@@ -151,29 +137,96 @@ export function LiveView({ liveData, botStatus, onRefresh }: Props) {
   const allTrades = stickyTradesRef.current;
 
   const handleArchive = async () => {
-    if (!prefix || archiving) return;
     if (!window.confirm("Archive the most recent session?")) return;
-    setArchiving(true);
-    try {
-      const sessions = await fetchSessionList(prefix);
-      if (sessions.length === 0) {
-        alert("No saved sessions found to archive.");
-        setArchiving(false);
+    const refetchResult = await sessionsListQuery.refetch();
+    const sessions = refetchResult.data ?? [];
+    if (sessions.length === 0) {
+      alert("No saved sessions found to archive.");
+      return;
+    }
+    const latest = sessions[0];
+    const result = await archiveMutation.mutateAsync({ prefix, file: latest });
+    if (result.ok) {
+      setArchived(true);
+      utils.sessions.summaries.invalidate();
+      utils.sessions.list.invalidate();
+      utils.sessions.prefixes.invalidate();
+      router.push(`/sessions/${prefix}`);
+    } else {
+      alert("Failed to archive: " + (result.error || "unknown error"));
+    }
+  };
+
+  const market = Array.isArray(botStatus?.markets) ? botStatus.markets.find((m) => m.slug_key === prefix) ?? null : null;
+  const appRunning = botStatus?.running ?? false;
+
+  const activeStrategies = market?.strategies ?? [];
+  const strategies = strategiesQuery.data ?? [];
+  const slugs = slugsQuery.data ?? [];
+  const slugInfo = slugs.find((s) => s.slug_prefix.replace(/-$/, "") === prefix);
+  const slugPrefix = slugInfo?.slug_prefix ?? prefix + "-";
+  const windowSeconds = slugInfo?.window_duration_seconds ?? 300;
+  const activeNames = new Set(activeStrategies.map((s) => s.name));
+  const available = strategies.filter((s) => !activeNames.has(s));
+
+  const [selected, setSelected] = useState("");
+  const [cash, setCash] = useState("50");
+  const [sessionMode, setSessionMode] = useState<"pct" | "flat">("pct");
+  const [sessionPct, setSessionPct] = useState("8");
+  const [sessionMax, setSessionMax] = useState("20");
+  const [sessionFlat, setSessionFlat] = useState("5");
+  const [smLoading, setSmLoading] = useState(false);
+  const [smMessage, setSmMessage] = useState<string | null>(null);
+
+  function flashMessage(msg: string) {
+    setSmMessage(msg);
+    setTimeout(() => setSmMessage(null), 5000);
+  }
+
+  async function handleTradeOn(strategyName: string, opts: { cash: number; sessionCap?: number; sessionCashRatio?: { ratio: number; max: number }; dryRun: boolean }) {
+    setSmLoading(true);
+    if (!market) {
+      const mrRes = await botMarketOnMutation.mutateAsync({ slug_prefix: slugPrefix, window: windowSeconds });
+      if (!mrRes.ok) {
+        flashMessage(mrRes.error || "Failed to register market");
+        setSmLoading(false);
         return;
       }
-      const latest = sessions[0];
-      const result = await archiveSession(prefix, latest);
-      if (result.ok) {
-        setArchived(true);
-        navigate(`/sessions/${prefix}`);
-      } else {
-        alert("Failed to archive: " + (result.error || "unknown error"));
-      }
-    } catch (e) {
-      alert("Failed to archive: " + String(e));
     }
-    setArchiving(false);
-  };
+    const body: any = {
+      slug_prefix: slugPrefix,
+      strategy: strategyName,
+      cash: opts.cash,
+      dry_run: opts.dryRun,
+    };
+    if (opts.sessionCashRatio != null) body.session_cash_ratio = opts.sessionCashRatio;
+    else if (opts.sessionCap != null) body.session_cap = opts.sessionCap;
+    const res = await botTradeOnMutation.mutateAsync(body);
+    flashMessage(res.ok ? (res.already_running ? `Already running: ${strategyName} (PID ${res.pid})` : `Started: ${strategyName}`) : res.error || "Failed");
+    setSmLoading(false);
+    utils.bot.status.invalidate();
+  }
+
+  async function handleTradeOff(strategyName?: string) {
+    setSmLoading(true);
+    const res = await botTradeOffMutation.mutateAsync({ slug_prefix: slugPrefix, strategy: strategyName });
+    flashMessage(res.ok ? (strategyName ? `Stopped: ${strategyName}` : "All strategies stopped") : res.error || "Failed");
+    setSmLoading(false);
+    utils.bot.status.invalidate();
+  }
+
+  async function handleReload(strategyName: string) {
+    setSmLoading(true);
+    const res = await botReloadMutation.mutateAsync({ slug_prefix: slugPrefix, strategy: strategyName });
+    flashMessage(res.ok ? `Reloaded: ${strategyName}` : res.error || "Failed");
+    setSmLoading(false);
+    utils.bot.status.invalidate();
+  }
+
+  async function handleToggleAutoExit(strategyName: string, enabled: boolean) {
+    await botSetAutoExitMutation.mutateAsync({ slug_prefix: slugPrefix, enabled, strategy: strategyName });
+    utils.bot.status.invalidate();
+  }
 
   return (
     <div>
@@ -200,7 +253,7 @@ export function LiveView({ liveData, botStatus, onRefresh }: Props) {
           <button
             className="!p-2 bg-card border border-border text-dim inline-flex items-center justify-center leading-none hover:border-down hover:text-down"
             onClick={handleArchive}
-            disabled={archiving}
+            disabled={archiveMutation.isPending}
             title="Archive"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
@@ -209,13 +262,129 @@ export function LiveView({ liveData, botStatus, onRefresh }: Props) {
         {archived && <span className="text-dim text-sm">Archived</span>}
       </div>
 
-      {prefix && (
-        <StrategyManager
-          prefix={prefix}
-          market={botStatus?.markets?.find((m) => m.slug_key === prefix) ?? null}
-          onRefresh={onRefresh}
-          appRunning={botStatus?.running ?? false}
-        />
+      {/* Strategy Manager inline */}
+      {appRunning && (activeStrategies.length > 0 || available.length > 0) && (
+        <div className="mb-6">
+          {activeStrategies.length > 0 && (
+            <div className="flex flex-col gap-2 mb-3">
+              {activeStrategies.map((s) => {
+                const alive = s.alive !== false;
+                return (
+                  <div key={s.name} className="flex items-center gap-3 px-3.5 py-2.5 bg-card rounded-md border border-border">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${alive ? "bg-up" : "bg-down"}`} />
+                    <span className="font-semibold text-sm min-w-[120px]">{s.name}</span>
+                    {s.dry_run && <span className="inline-block px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/15 text-accent">DRY</span>}
+                    {!alive && <span className="px-1.5 py-px rounded text-[10px] font-semibold bg-down/15 text-down">DEAD</span>}
+                    <span className="text-dim text-[13px] ml-auto font-mono tabular-nums">
+                      ${(s.bankroll ?? s.cash ?? 0).toFixed(2)}
+                      {s.session_cash_ratio != null && (
+                        <span className="opacity-60"> ({Math.round(s.session_cash_ratio.ratio * 100)}% up to ${s.session_cash_ratio.max.toFixed(0)})</span>
+                      )}
+                      {s.session_cash_ratio == null && s.session_cap != null && (
+                        <span className="opacity-60"> (${s.session_cap.toFixed(0)}/s)</span>
+                      )}
+                    </span>
+                    <label className="flex items-center gap-1.5 text-[11px] cursor-pointer text-dim">
+                      <input
+                        type="checkbox"
+                        checked={!!s.auto_exit}
+                        onChange={(e) => handleToggleAutoExit(s.name, e.target.checked)}
+                        className="w-[13px] h-[13px] accent-accent"
+                      />
+                      Auto-exit
+                    </label>
+                    {s.pid != null && <span className="text-dim text-[11px]">PID {s.pid}</span>}
+                    <div className="flex gap-1.5">
+                      <button className="btn-accent btn-sm" onClick={() => handleReload(s.name)} disabled={smLoading}>Reload</button>
+                      <button className="btn-danger btn-sm" onClick={() => handleTradeOff(s.name)} disabled={smLoading}>Kill</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {available.length > 0 && (
+            <div className="p-3 bg-bg rounded-md border border-dashed border-border mb-3">
+              <div className="flex items-end gap-2.5">
+                <label className="flex flex-col gap-1 flex-1 min-w-0">
+                  <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Strategy</span>
+                  <select className="!text-[13px] !py-1.5 !px-2.5 w-full" value={selected} onChange={(e) => setSelected(e.target.value)}>
+                    <option value="">Select...</option>
+                    {available.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Cash</span>
+                  <input type="number" value={cash} onChange={(e) => setCash(e.target.value)} min="1" step="1" className="text-[13px] w-20" />
+                </label>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Per session</span>
+                    <button
+                      type="button"
+                      className="text-[10px] text-accent hover:text-accent/80 font-semibold"
+                      onClick={() => setSessionMode(sessionMode === "pct" ? "flat" : "pct")}
+                    >
+                      {sessionMode === "pct" ? "% + cap" : "fixed $"}
+                    </button>
+                  </div>
+                  {sessionMode === "pct" ? (
+                    <div className="flex items-center gap-1">
+                      <input type="number" value={sessionPct} onChange={(e) => setSessionPct(e.target.value)} min="1" max="100" step="1" className="text-[13px] w-14" />
+                      <span className="text-dim text-[12px]">%</span>
+                      <span className="text-dim text-[11px]">max</span>
+                      <span className="text-dim text-[12px]">$</span>
+                      <input type="number" value={sessionMax} onChange={(e) => setSessionMax(e.target.value)} min="1" step="1" className="text-[13px] w-14" />
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <span className="text-dim text-[12px]">$</span>
+                      <input type="number" value={sessionFlat} onChange={(e) => setSessionFlat(e.target.value)} min="1" step="1" className="text-[13px] w-16" />
+                    </div>
+                  )}
+                </div>
+                <button
+                  className="btn-primary btn-sm shrink-0 self-end"
+                  disabled={smLoading || !selected}
+                  onClick={() => {
+                    if (!selected) return;
+                    let sessionCapVal: number | undefined;
+                    let sessionCashRatioVal: { ratio: number; max: number } | undefined;
+                    if (sessionMode === "pct") {
+                      sessionCashRatioVal = { ratio: (parseFloat(sessionPct) || 8) / 100, max: parseFloat(sessionMax) || 20 };
+                    } else {
+                      sessionCapVal = parseFloat(sessionFlat) || 5;
+                    }
+                    handleTradeOn(selected, {
+                      cash: parseFloat(cash) || 10,
+                      sessionCap: sessionCapVal,
+                      sessionCashRatio: sessionCashRatioVal,
+                      dryRun: false,
+                    });
+                    setSelected("");
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+          )}
+
+          {smMessage && (
+            <div className="mb-3 px-4 py-2.5 bg-accent/10 border border-accent/20 rounded-md text-[13px] text-accent">
+              {smMessage}
+            </div>
+          )}
+        </div>
+      )}
+
+      {!appRunning && (
+        <div className="mb-6 p-3 bg-bg rounded-md border border-dashed border-border text-[13px] text-dim">
+          Start the orchestrator to manage strategies from the dashboard.
+        </div>
       )}
 
       {pnl && (pnl.overall !== 0 || pnl.last_24h !== 0 || pnl.last_1h !== 0) && (
@@ -242,11 +411,6 @@ export function LiveView({ liveData, botStatus, onRefresh }: Props) {
                 BTC {btcChange >= 0 ? "+" : ""}{btcChange.toFixed(2)}
               </span>
             )}
-            {(payload.error_count ?? 0) > 0 && (
-              <span className="ml-auto text-xs text-dim opacity-60">
-                <span className="text-down opacity-80 ml-1.5">{payload.error_count} err</span>
-              </span>
-            )}
           </div>
         );
       })()}
@@ -260,12 +424,12 @@ export function LiveView({ liveData, botStatus, onRefresh }: Props) {
       )}
 
       {trading && (() => {
-        const strategies: any[] = trading.strategies && trading.strategies.length > 0
+        const strats: any[] = trading.strategies && trading.strategies.length > 0
           ? trading.strategies
           : trading.strategy
             ? [{ name: trading.strategy, dry_run: trading.dry_run, cash: trading.cash, trades: trading.trades }]
             : [];
-        if (strategies.length === 0) return null;
+        if (strats.length === 0) return null;
 
         const lastSample = payload && isSessionData(payload)
           ? payload.samples?.[payload.samples.length - 1]
@@ -274,7 +438,7 @@ export function LiveView({ liveData, botStatus, onRefresh }: Props) {
         const downMid = lastSample?.down_token_midpoint ?? 0.5;
         const hasSession = lastSample != null;
 
-        const rows: StrategyRow[] = strategies.map((s: any) => {
+        const rows: StrategyRow[] = strats.map((s: any) => {
           const tradeList = Array.isArray(s.trades) ? s.trades : [];
           const trades = tradeList.length || (s.trades ?? 0);
           const fees = tradeList.reduce((sum: number, t: any) => sum + (t.fee ?? 0), 0);
@@ -325,212 +489,6 @@ export function LiveView({ liveData, botStatus, onRefresh }: Props) {
               <div className="text-lg font-semibold text-txt mb-1">Connecting...</div>
             )}
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StrategyManager({
-  prefix,
-  market,
-  onRefresh,
-  appRunning,
-}: {
-  prefix: string;
-  market: MarketStatus | null;
-  onRefresh: () => void;
-  appRunning: boolean;
-}) {
-  const [strategies, setStrategies] = useState<string[]>([]);
-  const [slugs, setSlugs] = useState<SlugInfo[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [selected, setSelected] = useState("");
-  const [cash, setCash] = useState("10");
-  const [sessionCap, setSessionCap] = useState("25%:3");
-
-  useEffect(() => {
-    let cancelled = false;
-    function load() {
-      fetchStrategies().then((s) => {
-        if (cancelled) return;
-        if (s.length > 0) setStrategies(s);
-        else setTimeout(load, 3000);
-      });
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchSlugs().then((s) => { if (!cancelled) setSlugs(s); });
-    return () => { cancelled = true; };
-  }, []);
-
-  function flashMessage(msg: string) {
-    setMessage(msg);
-    setTimeout(() => setMessage(null), 5000);
-  }
-
-  const activeStrategies = market?.strategies ?? [];
-  const activeNames = new Set(activeStrategies.map((s) => s.name));
-  const available = strategies.filter((s) => !activeNames.has(s));
-
-  const slugInfo = slugs.find((s) => s.slug_prefix.replace(/-$/, "") === prefix);
-  const slugPrefix = slugInfo?.slug_prefix ?? prefix + "-";
-  const windowSeconds = slugInfo?.window_duration_seconds ?? 300;
-
-  async function handleTradeOn(strategyName: string, opts: { cash: number; sessionCap?: number; sessionCashRatio?: { ratio: number; max: number }; dryRun: boolean }) {
-    setLoading(true);
-    if (!market) {
-      const mrRes = await startMarket({ slug_prefix: slugPrefix, window: windowSeconds });
-      if (!mrRes.ok) {
-        flashMessage(mrRes.error || "Failed to register market");
-        setLoading(false);
-        return;
-      }
-    }
-    const body: any = {
-      slug_prefix: slugPrefix,
-      strategy: strategyName,
-      cash: opts.cash,
-      dry_run: opts.dryRun,
-    };
-    if (opts.sessionCashRatio != null) body.session_cash_ratio = opts.sessionCashRatio;
-    else if (opts.sessionCap != null) body.session_cap = opts.sessionCap;
-    const res = await tradeBotOn(body);
-    flashMessage(res.ok ? `Started: ${strategyName}` : res.error || "Failed");
-    setLoading(false);
-    onRefresh();
-  }
-
-  async function handleTradeOff(strategyName?: string) {
-    setLoading(true);
-    const res = await tradeBotOff(slugPrefix, strategyName);
-    flashMessage(res.ok ? (strategyName ? `Stopped: ${strategyName}` : "All strategies stopped") : res.error || "Failed");
-    setLoading(false);
-    onRefresh();
-  }
-
-  async function handleReload(strategyName: string) {
-    setLoading(true);
-    const res = await reloadBot(slugPrefix, strategyName);
-    flashMessage(res.ok ? `Reloaded: ${strategyName}` : res.error || "Failed");
-    setLoading(false);
-    onRefresh();
-  }
-
-  async function handleToggleAutoExit(strategyName: string, enabled: boolean) {
-    const res = await setAutoExit(slugPrefix, enabled, strategyName);
-    if (!res.ok) flashMessage(res.error || "Failed");
-    onRefresh();
-  }
-
-  if (!appRunning) {
-    return (
-      <div className="mb-6 p-3 bg-bg rounded-md border border-dashed border-border text-[13px] text-dim">
-        Enable trading to add strategies to this market.
-      </div>
-    );
-  }
-
-  if (activeStrategies.length === 0 && available.length === 0) return null;
-
-  return (
-    <div className="mb-6">
-      {activeStrategies.length > 0 && (
-        <div className="flex flex-col gap-2 mb-3">
-          {activeStrategies.map((s) => {
-            const alive = s.alive !== false;
-            return (
-              <div key={s.name} className="flex items-center gap-3 px-3.5 py-2.5 bg-card rounded-md border border-border">
-                <span className={`w-2 h-2 rounded-full shrink-0 ${alive ? "bg-up" : "bg-down"}`} />
-                <span className="font-semibold text-sm min-w-[120px]">{s.name}</span>
-                {s.dry_run && <span className="inline-block px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/15 text-accent">DRY</span>}
-                {!alive && <span className="px-1.5 py-px rounded text-[10px] font-semibold bg-down/15 text-down">DEAD</span>}
-                <span className="text-dim text-[13px] ml-auto font-mono tabular-nums">
-                  ${(s.bankroll ?? s.cash).toFixed(2)}
-                  {s.session_cash_ratio != null && (
-                    <span className="opacity-60"> ({Math.round(s.session_cash_ratio.ratio * 100)}% up to ${s.session_cash_ratio.max.toFixed(0)})</span>
-                  )}
-                  {s.session_cash_ratio == null && s.session_cap != null && (
-                    <span className="opacity-60"> (${s.session_cap.toFixed(0)}/s)</span>
-                  )}
-                </span>
-                <label className="flex items-center gap-1.5 text-[11px] cursor-pointer text-dim">
-                  <input
-                    type="checkbox"
-                    checked={!!s.auto_exit}
-                    onChange={(e) => handleToggleAutoExit(s.name, e.target.checked)}
-                    className="w-[13px] h-[13px] accent-accent"
-                  />
-                  Auto-exit
-                </label>
-                {s.pid != null && <span className="text-dim text-[11px]">PID {s.pid}</span>}
-                <div className="flex gap-1.5">
-                  <button className="btn-accent btn-sm" onClick={() => handleReload(s.name)} disabled={loading}>Reload</button>
-                  <button className="btn-danger btn-sm" onClick={() => handleTradeOff(s.name)} disabled={loading}>Kill</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {available.length > 0 && (
-        <div className="p-3 bg-bg rounded-md border border-dashed border-border mb-3">
-          <div className="flex items-end gap-2.5">
-            <label className="flex flex-col gap-1 flex-1 min-w-0">
-              <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Strategy</span>
-              <select className="!text-[13px] !py-1.5 !px-2.5 w-full" value={selected} onChange={(e) => setSelected(e.target.value)}>
-                <option value="">Select...</option>
-                {available.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Cash</span>
-              <input type="number" value={cash} onChange={(e) => setCash(e.target.value)} min="1" step="1" className="text-[13px] w-20" />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-semibold uppercase tracking-tight text-dim">Session limit</span>
-              <input type="text" value={sessionCap} onChange={(e) => setSessionCap(e.target.value)} placeholder="5 or 25%:3" className="text-[13px] w-24" />
-            </label>
-            <button
-              className="btn-primary btn-sm shrink-0"
-              disabled={loading || !selected}
-              onClick={() => {
-                if (!selected) return;
-                const capStr = sessionCap.trim();
-                let sessionCapVal: number | undefined;
-                let sessionCashRatioVal: { ratio: number; max: number } | undefined;
-                if (capStr && capStr.includes("%")) {
-                  const parts = capStr.replace("%", "").split(":");
-                  sessionCashRatioVal = { ratio: parseFloat(parts[0]) / 100, max: parseFloat(parts[1]) };
-                } else if (capStr) {
-                  sessionCapVal = parseFloat(capStr);
-                }
-                handleTradeOn(selected, {
-                  cash: parseFloat(cash) || 10,
-                  sessionCap: sessionCapVal,
-                  sessionCashRatio: sessionCashRatioVal,
-                  dryRun: false,
-                });
-                setSelected("");
-              }}
-            >
-              Add
-            </button>
-          </div>
-        </div>
-      )}
-
-      {message && (
-        <div className="mb-3 px-4 py-2.5 bg-accent/10 border border-accent/20 rounded-md text-[13px] text-accent">
-          {message}
         </div>
       )}
     </div>
