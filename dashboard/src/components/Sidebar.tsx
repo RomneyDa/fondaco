@@ -32,6 +32,8 @@ export function Sidebar({ prefixNames, livePrefixes, botStatus, pings, balance }
     <nav className="w-full h-full bg-sidebar border-r border-border flex flex-col overflow-y-auto scrollbar-none">
       <div className="px-5 py-4 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/icon.svg" alt="Fondaco" width={24} height={24} className="rounded-md" />
           <h1 className="text-lg font-semibold text-accent">fondaco</h1>
           <Link href="/architecture" title="Architecture" className="text-dim hover:text-accent transition-colors opacity-50 hover:opacity-100">
             <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">

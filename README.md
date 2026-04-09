@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon.svg" alt="Fondaco" width="128" height="128" />
+</p>
+
 # Fondaco
 
 An open-source trading framework for binary outcome markets — strategies, backtesting, live execution, and a real-time dashboard. Built in Rust for speed.

@@ -5,6 +5,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "fondaco",
+  icons: { icon: "/icon.svg" },
 };
 
 export default function RootLayout({

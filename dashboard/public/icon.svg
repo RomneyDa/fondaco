@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none" style="background:#1a2332">
+  <!-- Background: deep Venetian blue -->
+  <rect width="512" height="512" rx="80" fill="#1a2332"/>
+
+  <!-- Arch outer: Venetian gold -->
+  <path d="M140 420 V240 A116 116 0 0 1 256 124 A116 116 0 0 1 372 240 V420"
+        stroke="#d4a944" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <!-- Ground line: Venetian gold -->
+  <line x1="100" y1="420" x2="412" y2="420" stroke="#d4a944" stroke-width="32" stroke-linecap="round"/>
+
+  <!-- Scale: vertical post — Venetian red -->
+  <line x1="256" y1="200" x2="256" y2="370" stroke="#c04030" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Scale: fulcrum triangle -->
+  <polygon points="256,200 244,218 268,218" fill="#c04030"/>
+
+  <!-- Scale: crossbar -->
+  <line x1="190" y1="225" x2="322" y2="225" stroke="#c04030" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Left chain -->
+  <line x1="190" y1="225" x2="190" y2="310" stroke="#c04030" stroke-width="5"/>
+
+  <!-- Right chain -->
+  <line x1="322" y1="225" x2="322" y2="310" stroke="#c04030" stroke-width="5"/>
+
+  <!-- Left pan -->
+  <path d="M165 310 A30 18 0 0 0 215 310" stroke="#c04030" stroke-width="8" stroke-linecap="round" fill="none"/>
+
+  <!-- Right pan -->
+  <path d="M297 310 A30 18 0 0 0 347 310" stroke="#c04030" stroke-width="8" stroke-linecap="round" fill="none"/>
+
+  <!-- Scale base -->
+  <line x1="234" y1="370" x2="278" y2="370" stroke="#c04030" stroke-width="10" stroke-linecap="round"/>
+</svg>
