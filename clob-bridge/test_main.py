@@ -3,8 +3,9 @@ import json
 from unittest.mock import MagicMock, patch
 import pytest
 
+import os
 import sys
-sys.path.insert(0, "/Users/eros/Documents/code/eros-pm/clob-bridge")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 # ---------------------------------------------------------------------------

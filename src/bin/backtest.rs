@@ -7,16 +7,16 @@ use clap::Parser;
 use rayon::prelude::*;
 use std::collections::HashMap;
 
-use eros_pm::defaults::{market_backtest_log, slug_key, DEFAULT_LATENCY_MS};
-use eros_pm::engine::{
+use fondaco::defaults::{market_backtest_log, slug_key, DEFAULT_LATENCY_MS};
+use fondaco::engine::{
     compute_kelly_sizing, format_params, load_session_summaries, load_sessions,
     resolve_data_dir, window_duration_from_data_dir, BacktestResult,
     KellySizing, Simulator, KELLY_FRACTION_DEFAULT,
 };
-use eros_pm::models::SessionData;
-use eros_pm::session_cache::SessionStatsCache;
-use eros_pm::strategies::all_strategies;
-use eros_pm::strategy::{ParamValue, Strategy};
+use fondaco::models::SessionData;
+use fondaco::session_cache::SessionStatsCache;
+use fondaco::strategies::all_strategies;
+use fondaco::strategy::{ParamValue, Strategy};
 
 // ---------------------------------------------------------------------------
 // CLI definition

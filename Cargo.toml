@@ -1,7 +1,10 @@
 [package]
-name = "eros-pm"
+name = "fondaco"
 version = "0.1.0"
 edition = "2021"
+description = "Open-source trading framework for binary outcome markets"
+license = "Apache-2.0"
+repository = "https://github.com/RomneyDa/fondaco"
 
 [[bin]]
 name = "backtest"

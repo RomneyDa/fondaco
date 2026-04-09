@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn test_remove_file_silent_nonexistent() {
         // Should not panic when removing a file that doesn't exist
-        remove_file_silent("/tmp/nonexistent_file_eros_pm_test_12345.txt");
+        remove_file_silent("/tmp/nonexistent_file_fondaco_test_12345.txt");
     }
 
     #[test]

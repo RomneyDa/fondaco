@@ -1,4 +1,8 @@
 //! GapFader — Buy dips in undecided markets, sell on take-profit, repeat.
+//!
+//! **EXAMPLE STRATEGY** — Provided for illustration only. There is no evidence
+//! that this strategy is profitable. Use it as a starting point for your own
+//! research, not as trading advice.
 
 use crate::strategy::*;
 use crate::trader::*;

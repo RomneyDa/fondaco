@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_broadcaster_subscriber() {
         let running = Arc::new(AtomicBool::new(true));
-        let sock_path = format!("/tmp/eros-pm-test-tick-{}.sock", std::process::id());
+        let sock_path = format!("/tmp/fondaco-test-tick-{}.sock", std::process::id());
 
         let broadcaster = TickBroadcaster::new(&sock_path, Arc::clone(&running)).unwrap();
         assert_eq!(broadcaster.client_count(), 0);

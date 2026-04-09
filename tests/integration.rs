@@ -2,14 +2,14 @@
 //! Covers: Position, SimExecutor, Trader, Strategy base, defaults, math_utils,
 //! volatility, session_cache, models, engine, strategy behavior.
 
-use eros_pm::defaults::*;
-use eros_pm::engine::*;
-use eros_pm::math_utils::*;
-use eros_pm::models::*;
-use eros_pm::session_cache::*;
-use eros_pm::strategy::*;
-use eros_pm::trader::*;
-use eros_pm::volatility::*;
+use fondaco::defaults::*;
+use fondaco::engine::*;
+use fondaco::math_utils::*;
+use fondaco::models::*;
+use fondaco::session_cache::*;
+use fondaco::strategy::*;
+use fondaco::trader::*;
+use fondaco::volatility::*;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -1103,7 +1103,7 @@ fn test_param_grid_int_range() {
 #[test]
 fn test_strategy_param_grid_total() {
     // param_grid() respects max_variants cap
-    let s = eros_pm::strategies::poisson_kelly::PoissonKelly::default();
+    let s = fondaco::strategies::poisson_kelly::PoissonKelly::default();
     let grid = s.param_grid(100);
     if !grid.is_empty() {
         let total: usize = grid.values().map(|v| v.len()).product();
@@ -1143,7 +1143,7 @@ fn test_check_expired_entry() {
 
 #[test]
 fn test_poisson_kelly_param_defs() {
-    let s = eros_pm::strategies::poisson_kelly::PoissonKelly::default();
+    let s = fondaco::strategies::poisson_kelly::PoissonKelly::default();
     let defs = s.param_defs();
     assert!(defs.contains_key("jump_bps"));
     assert!(defs.contains_key("min_elapsed"));
@@ -1153,7 +1153,7 @@ fn test_poisson_kelly_param_defs() {
 
 #[test]
 fn test_strategy_with_params() {
-    let s = eros_pm::strategies::poisson_kelly::PoissonKelly::default();
+    let s = fondaco::strategies::poisson_kelly::PoissonKelly::default();
     let mut params = s.params();
     params.insert("jump_bps".to_string(), ParamValue::Float(0.25));
     let s2 = s.with_params(&params);
@@ -1163,7 +1163,7 @@ fn test_strategy_with_params() {
 
 #[test]
 fn test_poisson_kelly_holds_early() {
-    let mut s = eros_pm::strategies::poisson_kelly::PoissonKelly::default();
+    let mut s = fondaco::strategies::poisson_kelly::PoissonKelly::default();
     s.on_session_start(&default_metadata());
 
     // Before min_elapsed (0.65), should always hold
@@ -1188,7 +1188,7 @@ fn test_poisson_kelly_holds_early() {
 fn test_poisson_kelly_counts_jumps() {
     // Set jump_bps low to trigger easily
     // We need to feed multiple ticks with BTC price changes to accumulate jumps
-    let mut s2 = eros_pm::strategies::poisson_kelly::PoissonKelly::default();
+    let mut s2 = fondaco::strategies::poisson_kelly::PoissonKelly::default();
     s2.jump_bps = 1.0; // 1 bps = 0.01% -- very small jumps
     s2.min_elapsed = 0.10;
     s2.on_session_start(&default_metadata());
@@ -1228,7 +1228,7 @@ fn test_poisson_kelly_counts_jumps() {
 
 #[test]
 fn test_drift_sniper_needs_displacement() {
-    let mut s = eros_pm::strategies::drift_sniper::DriftSniper::default();
+    let mut s = fondaco::strategies::drift_sniper::DriftSniper::default();
     s.on_session_start(&default_metadata());
 
     let pos = Position::new(100.0);
@@ -1261,7 +1261,7 @@ fn test_drift_sniper_needs_displacement() {
 
 #[test]
 fn test_drift_sniper_needs_velocity() {
-    let mut s = eros_pm::strategies::drift_sniper::DriftSniper::default();
+    let mut s = fondaco::strategies::drift_sniper::DriftSniper::default();
     s.on_session_start(&default_metadata());
 
     let pos = Position::new(100.0);
@@ -1307,7 +1307,7 @@ fn test_drift_sniper_needs_velocity() {
 
 #[test]
 fn test_gap_fader_observation_phase() {
-    let mut s = eros_pm::strategies::gap_fader::GapFader::default();
+    let mut s = fondaco::strategies::gap_fader::GapFader::default();
     s.on_session_start(&default_metadata());
 
     let pos = Position::new(100.0);
@@ -1335,7 +1335,7 @@ fn test_gap_fader_observation_phase() {
 
 #[test]
 fn test_gap_fader_wide_gap_deactivates() {
-    let mut s = eros_pm::strategies::gap_fader::GapFader::default();
+    let mut s = fondaco::strategies::gap_fader::GapFader::default();
     s.on_session_start(&default_metadata());
 
     let pos = Position::new(100.0);
@@ -1378,7 +1378,7 @@ fn test_gap_fader_wide_gap_deactivates() {
 
 #[test]
 fn test_regime_gated_skips_wrong_regime() {
-    let mut s = eros_pm::strategies::trend_drift::TrendDrift::default();
+    let mut s = fondaco::strategies::trend_drift::TrendDrift::default();
 
     // Create metadata with flat/low vol regime (should gate TrendDrift out)
     let summaries = make_vol_summaries(&[1.0, -1.0, 0.5, -0.5, 1.0, -1.0, 0.5, -0.5, 1.0, -1.0,
@@ -1416,7 +1416,7 @@ fn test_regime_gated_skips_wrong_regime() {
 
 #[test]
 fn test_all_strategies_registry() {
-    let strategies = eros_pm::strategies::all_strategies();
+    let strategies = fondaco::strategies::all_strategies();
     assert!(strategies.contains_key("PoissonKelly"));
     assert!(strategies.contains_key("PoissonKellyDynamic"));
     assert!(strategies.contains_key("DriftSniper"));
@@ -1430,7 +1430,7 @@ fn test_all_strategies_registry() {
 
 #[test]
 fn test_strategy_names() {
-    let strategies = eros_pm::strategies::all_strategies();
+    let strategies = fondaco::strategies::all_strategies();
     for (name, factory) in &strategies {
         let s = factory();
         assert_eq!(s.name(), name.as_str());
@@ -1847,7 +1847,7 @@ fn test_param_value_conversions() {
 #[test]
 fn test_strategy_param_grid_capped() {
     // All strategies should produce grids within max_variants
-    let strategies = eros_pm::strategies::all_strategies();
+    let strategies = fondaco::strategies::all_strategies();
     for (name, factory) in &strategies {
         let s = factory();
         let grid = s.param_grid(1000);
@@ -2133,7 +2133,7 @@ fn test_session_cache_len() {
 #[test]
 fn test_all_strategies_require_full_session() {
     // Most strategies in this codebase require full session
-    let strategies = eros_pm::strategies::all_strategies();
+    let strategies = fondaco::strategies::all_strategies();
     for (_name, factory) in &strategies {
         let s = factory();
         // Just verify the method is callable (strategies can be either)
@@ -2143,7 +2143,7 @@ fn test_all_strategies_require_full_session() {
 
 #[test]
 fn test_all_strategies_have_version() {
-    let strategies = eros_pm::strategies::all_strategies();
+    let strategies = fondaco::strategies::all_strategies();
     for (name, factory) in &strategies {
         let s = factory();
         let v = s.version();
@@ -2158,7 +2158,7 @@ fn test_all_strategies_have_version() {
 #[test]
 fn test_all_strategies_param_roundtrip() {
     // Every strategy's with_params(params()) should produce the same params
-    let strategies = eros_pm::strategies::all_strategies();
+    let strategies = fondaco::strategies::all_strategies();
     for (name, factory) in &strategies {
         let s = factory();
         let params = s.params();
@@ -2531,7 +2531,7 @@ fn test_density_single_session_returns_one() {
 
 #[test]
 fn test_drift_sniper_session_start_resets() {
-    let mut s = eros_pm::strategies::drift_sniper::DriftSniper::default();
+    let mut s = fondaco::strategies::drift_sniper::DriftSniper::default();
     let meta = default_metadata();
 
     // Feed some ticks to build up state
@@ -2576,7 +2576,7 @@ fn test_drift_sniper_session_start_resets() {
 
 #[test]
 fn test_gap_fader_session_start_resets() {
-    let mut s = eros_pm::strategies::gap_fader::GapFader::default();
+    let mut s = fondaco::strategies::gap_fader::GapFader::default();
     let meta = default_metadata();
 
     // Build state: feed observation samples
@@ -2620,7 +2620,7 @@ fn test_gap_fader_session_start_resets() {
 
 #[test]
 fn test_poisson_kelly_session_start_resets() {
-    let mut s = eros_pm::strategies::poisson_kelly::PoissonKelly::default();
+    let mut s = fondaco::strategies::poisson_kelly::PoissonKelly::default();
     let meta = default_metadata();
 
     // Build state: feed ticks with jumps
@@ -2675,7 +2675,7 @@ fn test_poisson_kelly_session_start_resets() {
 
 #[test]
 fn test_drift_sniper_param_grid_keys() {
-    let s = eros_pm::strategies::drift_sniper::DriftSniper::default();
+    let s = fondaco::strategies::drift_sniper::DriftSniper::default();
     let defs = s.param_defs();
     assert!(defs.contains_key("return_threshold_bps"));
     assert!(defs.contains_key("min_elapsed"));
@@ -2690,7 +2690,7 @@ fn test_drift_sniper_param_grid_keys() {
 
 #[test]
 fn test_gap_fader_param_grid_keys() {
-    let s = eros_pm::strategies::gap_fader::GapFader::default();
+    let s = fondaco::strategies::gap_fader::GapFader::default();
     let defs = s.param_defs();
     assert!(defs.contains_key("gap_threshold"));
     assert!(defs.contains_key("max_buy_price"));
@@ -2705,7 +2705,7 @@ fn test_gap_fader_param_grid_keys() {
 
 #[test]
 fn test_poisson_kelly_min_jumps_not_tunable() {
-    let s = eros_pm::strategies::poisson_kelly::PoissonKelly::default();
+    let s = fondaco::strategies::poisson_kelly::PoissonKelly::default();
     let defs = s.param_defs();
     assert!(!defs["min_jumps"].tunable);
     assert!(!defs["no_new_after"].tunable);
@@ -2713,7 +2713,7 @@ fn test_poisson_kelly_min_jumps_not_tunable() {
 
 #[test]
 fn test_regime_sniper_param_grid_keys() {
-    let s = eros_pm::strategies::regime_sniper::RegimeSniper::default();
+    let s = fondaco::strategies::regime_sniper::RegimeSniper::default();
     let defs = s.param_defs();
     assert!(defs.contains_key("min_elapsed"));
     assert!(defs.contains_key("min_displacement_bps"));
@@ -2727,7 +2727,7 @@ fn test_regime_sniper_param_grid_keys() {
 
 #[test]
 fn test_late_sniper_cb_param_grid_keys() {
-    let s = eros_pm::strategies::late_sniper_cb::LateSniperCB::default();
+    let s = fondaco::strategies::late_sniper_cb::LateSniperCB::default();
     let defs = s.param_defs();
     assert!(defs.contains_key("min_elapsed"));
     assert!(defs.contains_key("confidence_threshold"));
@@ -2739,7 +2739,7 @@ fn test_late_sniper_cb_param_grid_keys() {
 
 #[test]
 fn test_mean_rev_fader_param_grid_keys() {
-    let s = eros_pm::strategies::mean_rev_fader::MeanRevFader::default();
+    let s = fondaco::strategies::mean_rev_fader::MeanRevFader::default();
     let defs = s.param_defs();
     assert!(defs.contains_key("max_buy_price"));
     assert!(defs.contains_key("take_profit_pct"));
@@ -2752,7 +2752,7 @@ fn test_mean_rev_fader_param_grid_keys() {
 
 #[test]
 fn test_trend_drift_param_grid_keys() {
-    let s = eros_pm::strategies::trend_drift::TrendDrift::default();
+    let s = fondaco::strategies::trend_drift::TrendDrift::default();
     let defs = s.param_defs();
     assert!(defs.contains_key("return_threshold_bps"));
     assert!(defs.contains_key("min_elapsed"));
@@ -2764,7 +2764,7 @@ fn test_trend_drift_param_grid_keys() {
 
 #[test]
 fn test_poisson_kelly_dynamic_param_grid_keys() {
-    let s = eros_pm::strategies::poisson_kelly_dynamic::PoissonKellyDynamic::default();
+    let s = fondaco::strategies::poisson_kelly_dynamic::PoissonKellyDynamic::default();
     let defs = s.param_defs();
     assert!(defs.contains_key("jump_bps"));
     assert!(defs.contains_key("edge_min"));
@@ -2779,7 +2779,7 @@ fn test_poisson_kelly_dynamic_param_grid_keys() {
 
 #[test]
 fn test_drift_sniper_with_params() {
-    let s = eros_pm::strategies::drift_sniper::DriftSniper::default();
+    let s = fondaco::strategies::drift_sniper::DriftSniper::default();
     let mut params = s.params();
     params.insert("return_threshold_bps".to_string(), ParamValue::Float(8.0));
     params.insert("stop_loss_pct".to_string(), ParamValue::None);
@@ -2791,7 +2791,7 @@ fn test_drift_sniper_with_params() {
 
 #[test]
 fn test_gap_fader_with_params() {
-    let s = eros_pm::strategies::gap_fader::GapFader::default();
+    let s = fondaco::strategies::gap_fader::GapFader::default();
     let mut params = s.params();
     params.insert("max_entries".to_string(), ParamValue::Int(3));
     params.insert("gap_threshold".to_string(), ParamValue::Float(0.08));
@@ -2807,7 +2807,7 @@ fn test_gap_fader_with_params() {
 
 #[test]
 fn test_mean_rev_fader_skips_trending_regime() {
-    let mut s = eros_pm::strategies::mean_rev_fader::MeanRevFader::default();
+    let mut s = fondaco::strategies::mean_rev_fader::MeanRevFader::default();
 
     // Create trending regime: consistent positive returns -> Trending, not Flat
     let summaries = make_vol_summaries(&[
@@ -2841,7 +2841,7 @@ fn test_mean_rev_fader_skips_trending_regime() {
 
 #[test]
 fn test_late_sniper_cb_skips_low_vol() {
-    let mut s = eros_pm::strategies::late_sniper_cb::LateSniperCB::default();
+    let mut s = fondaco::strategies::late_sniper_cb::LateSniperCB::default();
 
     // Low vol data -> LateSniperCB requires medium/high vol
     let summaries = make_vol_summaries(&[
@@ -3040,7 +3040,7 @@ fn test_trader_auto_exit_down_outcome() {
 
 #[test]
 fn test_strategy_no_duplicate_names() {
-    let strategies = eros_pm::strategies::all_strategies();
+    let strategies = fondaco::strategies::all_strategies();
     let mut names: Vec<String> = strategies.keys().cloned().collect();
     names.sort();
     names.dedup();
@@ -3050,7 +3050,7 @@ fn test_strategy_no_duplicate_names() {
 #[test]
 fn test_all_strategies_are_sendable() {
     // All strategies implement Send (required by trait)
-    let strategies = eros_pm::strategies::all_strategies();
+    let strategies = fondaco::strategies::all_strategies();
     for (_name, factory) in &strategies {
         let s = factory();
         // If this compiles, the strategy implements Send
@@ -3065,7 +3065,7 @@ fn test_all_strategies_are_sendable() {
 
 #[test]
 fn test_drift_sniper_flat_btc_holds_entire_session() {
-    let mut s = eros_pm::strategies::drift_sniper::DriftSniper::default();
+    let mut s = fondaco::strategies::drift_sniper::DriftSniper::default();
     s.on_session_start(&default_metadata());
     let pos = Position::new(100.0);
     let meta = default_metadata();
@@ -3092,7 +3092,7 @@ fn test_drift_sniper_flat_btc_holds_entire_session() {
 
 #[test]
 fn test_poisson_kelly_flat_btc_holds_entire_session() {
-    let mut s = eros_pm::strategies::poisson_kelly::PoissonKelly::default();
+    let mut s = fondaco::strategies::poisson_kelly::PoissonKelly::default();
     s.on_session_start(&default_metadata());
     let pos = Position::new(100.0);
     let meta = default_metadata();
@@ -3311,7 +3311,7 @@ fn test_trade_action_hold_has_no_expiration() {
 
 #[test]
 fn test_late_sniper_cb_not_full_session() {
-    let s = eros_pm::strategies::late_sniper_cb::LateSniperCB::default();
+    let s = fondaco::strategies::late_sniper_cb::LateSniperCB::default();
     assert!(!s.requires_full_session());
     assert!(s.min_elapsed_hint() > 0.0);
 }
@@ -3319,22 +3319,22 @@ fn test_late_sniper_cb_not_full_session() {
 #[test]
 fn test_strategies_requiring_full_session() {
     // Verify specific strategies that need full session
-    let pk = eros_pm::strategies::poisson_kelly::PoissonKelly::default();
+    let pk = fondaco::strategies::poisson_kelly::PoissonKelly::default();
     assert!(pk.requires_full_session());
 
-    let ds = eros_pm::strategies::drift_sniper::DriftSniper::default();
+    let ds = fondaco::strategies::drift_sniper::DriftSniper::default();
     assert!(ds.requires_full_session());
 
-    let gf = eros_pm::strategies::gap_fader::GapFader::default();
+    let gf = fondaco::strategies::gap_fader::GapFader::default();
     assert!(gf.requires_full_session());
 
-    let rs = eros_pm::strategies::regime_sniper::RegimeSniper::default();
+    let rs = fondaco::strategies::regime_sniper::RegimeSniper::default();
     assert!(rs.requires_full_session());
 
-    let td = eros_pm::strategies::trend_drift::TrendDrift::default();
+    let td = fondaco::strategies::trend_drift::TrendDrift::default();
     assert!(td.requires_full_session());
 
-    let mr = eros_pm::strategies::mean_rev_fader::MeanRevFader::default();
+    let mr = fondaco::strategies::mean_rev_fader::MeanRevFader::default();
     assert!(mr.requires_full_session());
 }
 
@@ -3344,8 +3344,8 @@ fn test_strategies_requiring_full_session() {
 
 #[test]
 fn test_sharpe_decay_via_session_results() {
-    use eros_pm::engine::{detect_sharpe_decay, SessionResult, SHARPE_DECAY_RECENT_FRACTION};
-    use eros_pm::trader::Position;
+    use fondaco::engine::{detect_sharpe_decay, SessionResult, SHARPE_DECAY_RECENT_FRACTION};
+    use fondaco::trader::Position;
 
     // Build a series with clear decay: 20 wins then 10 losses
     let mut results: Vec<SessionResult> = Vec::new();
@@ -3388,7 +3388,7 @@ fn test_sharpe_decay_via_session_results() {
 
 #[test]
 fn test_walk_forward_with_always_hold() {
-    use eros_pm::engine::{walk_forward_validate, WALK_FORWARD_FOLDS, WALK_FORWARD_TRAIN_RATIO};
+    use fondaco::engine::{walk_forward_validate, WALK_FORWARD_FOLDS, WALK_FORWARD_TRAIN_RATIO};
 
     // Build 15 sessions (enough for walk-forward)
     let sessions: Vec<SessionData> = (0..15)

@@ -155,7 +155,7 @@ struct NtfyConfig {
     enabled: bool,
     #[serde(default)]
     events: Vec<String>,
-    /// ntfy topic name (e.g. "eros-pm-a8f2k9x")
+    /// ntfy topic name (e.g. "fondaco-a8f2k9x")
     #[serde(default)]
     topic: String,
     /// ntfy server URL (defaults to "https://ntfy.sh")
@@ -305,7 +305,7 @@ fn send_desktop_notification(title: &str, body: &str) {
         if let Err(e) = notify_rust::Notification::new()
             .summary(title)
             .body(body)
-            .appname("eros-pm")
+            .appname("fondaco")
             .show()
         {
             warn!("Desktop notification failed: {}", e);

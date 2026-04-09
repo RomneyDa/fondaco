@@ -8,7 +8,7 @@ export const liveRouter = router({
   prefixes: procedure.query(() => {
     const live: string[] = [];
     for (const prefix of listMarketPrefixes()) {
-      const pidFile = `/tmp/eros-pm-${prefix}-collector.pid`;
+      const pidFile = `/tmp/fondaco-${prefix}-collector.pid`;
       try {
         const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
         process.kill(pid, 0);

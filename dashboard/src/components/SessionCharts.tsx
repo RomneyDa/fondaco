@@ -175,7 +175,7 @@ export function SessionCharts({ session, trades, isDryRun, tickRate }: Props) {
     <div className="relative mb-4">
       <Plot
         className="chart-wrap"
-        data={[
+        data={([
           {
             x: btcDeduped.x,
             y: btcDeduped.y,
@@ -185,7 +185,7 @@ export function SessionCharts({ session, trades, isDryRun, tickRate }: Props) {
             line: { color: "#f7931a", width: 1.5 },
             yaxis: "y2",
             text: btcDeduped.text,
-            hoverinfo: "text+x",
+            hoverinfo: "x+text",
           },
           ...spreadTraces,
           {
@@ -205,7 +205,7 @@ export function SessionCharts({ session, trades, isDryRun, tickRate }: Props) {
             line: { color: "#f85149", width: 2 },
           },
           ...tradeTraces,
-        ]}
+        ] as React.ComponentProps<typeof Plot>["data"])}
         layout={{
           ...LAYOUT_BASE,
           yaxis: {

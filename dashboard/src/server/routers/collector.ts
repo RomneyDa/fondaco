@@ -15,7 +15,7 @@ export const collectorRouter = router({
     }))
     .mutation(async ({ input }) => {
       const slugKey = input.slug_prefix.replace(/-$/, "");
-      const pidFile = `/tmp/eros-pm-${slugKey}-collector.pid`;
+      const pidFile = `/tmp/fondaco-${slugKey}-collector.pid`;
 
       if (fs.existsSync(pidFile)) {
         try {
@@ -53,7 +53,7 @@ export const collectorRouter = router({
     }))
     .mutation(({ input }) => {
       const slugKey = input.slug_prefix.replace(/-$/, "");
-      const pidFile = `/tmp/eros-pm-${slugKey}-collector.pid`;
+      const pidFile = `/tmp/fondaco-${slugKey}-collector.pid`;
 
       if (!fs.existsSync(pidFile)) {
         return { ok: false, error: "No collector PID file found" };
@@ -79,7 +79,7 @@ export const collectorRouter = router({
     }))
     .mutation(({ input }) => {
       const slugKey = input.slug_prefix.replace(/-$/, "");
-      const pidFile = `/tmp/eros-pm-${slugKey}-collector.pid`;
+      const pidFile = `/tmp/fondaco-${slugKey}-collector.pid`;
       const bin = path.join(PROJECT_ROOT, "target", "release", "collector");
 
       if (restartState[slugKey]?.status === "waiting" || restartState[slugKey]?.status === "rebuilding") {
@@ -158,7 +158,7 @@ export const collectorRouter = router({
     .input(z.object({ slug_prefix: z.string() }))
     .mutation(({ input }) => {
       const slugKey = input.slug_prefix.replace(/-$/, "");
-      const pidFile = `/tmp/eros-pm-${slugKey}-collector.pid`;
+      const pidFile = `/tmp/fondaco-${slugKey}-collector.pid`;
 
       if (!fs.existsSync(pidFile)) {
         return { ok: false, error: "No collector PID file found" };

@@ -1,4 +1,4 @@
-# Polymarket Up/Down Trading System
+# Fondaco — Binary Outcome Trading Framework
 
 Trade crypto up/down prediction markets on Polymarket. Multiple market durations (e.g. `btc-updown-5m-`, `btc-updown-15m-`).
 

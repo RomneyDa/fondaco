@@ -1,4 +1,8 @@
 //! DriftSniper — BTC momentum with OLS velocity confirmation.
+//!
+//! **EXAMPLE STRATEGY** — Provided for illustration only. There is no evidence
+//! that this strategy is profitable. Use it as a starting point for your own
+//! research, not as trading advice.
 
 use crate::defaults::BPS_DIVISOR;
 use crate::math_utils::ols_slope_bps_timed;

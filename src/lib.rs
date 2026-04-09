@@ -1,4 +1,4 @@
-//! eros-pm: Polymarket up/down trading system.
+//! fondaco: Polymarket up/down trading system.
 //!
 //! Core library for backtesting and live trading of crypto prediction markets.
 

@@ -1,8 +1,15 @@
 {
-  "name": "eros-pm-dashboard",
+  "name": "fondaco-dashboard",
   "version": "1.0.0",
+  "description": "Real-time monitoring dashboard for the Fondaco trading framework",
   "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RomneyDa/fondaco.git",
+    "directory": "dashboard"
+  },
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "tsx watch server.ts",
     "build": "next build",

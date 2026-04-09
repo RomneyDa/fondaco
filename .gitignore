@@ -61,6 +61,19 @@ claim-server/claim-server.log
 **/__pycache__/
 
 
+# Custom strategies — keep your own strategies private by default.
+# The example strategies shipped with the repo are explicitly un-ignored below.
+src/strategies/*.rs
+!src/strategies/mod.rs
+!src/strategies/poisson_kelly.rs
+!src/strategies/poisson_kelly_dynamic.rs
+!src/strategies/drift_sniper.rs
+!src/strategies/gap_fader.rs
+!src/strategies/regime_sniper.rs
+!src/strategies/trend_drift.rs
+!src/strategies/mean_rev_fader.rs
+!src/strategies/late_sniper_cb.rs
+
 # Added by cargo
 
 /target

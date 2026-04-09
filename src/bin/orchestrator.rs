@@ -22,7 +22,7 @@ use log::{error, info, warn};
 use serde_json::{json, Value};
 use tiny_http::{Header, Method, Response, Server};
 
-use eros_pm::notifications::{NotificationEvent, NotificationManager};
+use fondaco::notifications::{NotificationEvent, NotificationManager};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -118,17 +118,17 @@ fn read_pid_file_alive(path: &str) -> Option<u32> {
 
 /// Get collector PID for a market from its PID file.
 fn collector_pid(slug_key: &str) -> Option<u32> {
-    read_pid_file_alive(&format!("/tmp/eros-pm-{}-collector.pid", slug_key))
+    read_pid_file_alive(&format!("/tmp/fondaco-{}-collector.pid", slug_key))
 }
 
 /// Get worker PID for a strategy from its PID file.
 fn worker_pid(slug_key: &str, strategy: &str) -> Option<u32> {
-    read_pid_file_alive(&format!("/tmp/eros-pm-{}-bot-{}.pid", slug_key, strategy))
+    read_pid_file_alive(&format!("/tmp/fondaco-{}-bot-{}.pid", slug_key, strategy))
 }
 
 /// Discover all live bot-worker PIDs for a market from PID files.
 fn discover_workers(slug_key: &str) -> Vec<(String, u32)> {
-    let prefix = format!("eros-pm-{}-bot-", slug_key);
+    let prefix = format!("fondaco-{}-bot-", slug_key);
     let mut results = Vec::new();
     if let Ok(dir) = fs::read_dir("/tmp") {
         for f in dir.flatten() {

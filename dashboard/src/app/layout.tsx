@@ -4,7 +4,7 @@ import { AppShell } from "@/components/AppShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "eros-pm",
+  title: "fondaco",
 };
 
 export default function RootLayout({

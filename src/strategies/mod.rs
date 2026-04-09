@@ -1,4 +1,9 @@
-//! Strategy implementations for up/down prediction markets.
+//! Example strategy implementations for up/down prediction markets.
+//!
+//! These strategies are provided for illustration and experimentation only.
+//! There is no evidence that any of them are profitable. Write your own
+//! strategies in this directory — files here (except the bundled examples)
+//! are gitignored by default so your work stays private.
 
 pub mod poisson_kelly;
 pub mod poisson_kelly_dynamic;

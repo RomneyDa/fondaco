@@ -358,7 +358,7 @@ export function ArchitecturePage() {
               <div><span className="text-[#39d2c0]">data/app.json</span> — orchestrator port + PID</div>
               <div><span className="text-[#39d2c0]">collector_state.json</span> — collector status</div>
               <div><span className="text-[#39d2c0]">bot_positions/&#123;strat&#125;.json</span> — worker state</div>
-              <div><span className="text-[#39d2c0]">/tmp/eros-pm-*-.pid</span> — PID files</div>
+              <div><span className="text-[#39d2c0]">/tmp/fondaco-*-.pid</span> — PID files</div>
             </div>
           </Card>
           <Card>

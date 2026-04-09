@@ -1,4 +1,8 @@
 //! LateSniperCB — Late entry with circuit breaker, regime-gated (medium/high vol).
+//!
+//! **EXAMPLE STRATEGY** — Provided for illustration only. There is no evidence
+//! that this strategy is profitable. Use it as a starting point for your own
+//! research, not as trading advice.
 
 use crate::strategy::*;
 use crate::trader::*;

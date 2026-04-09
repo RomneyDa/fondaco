@@ -21,21 +21,21 @@ use reqwest::blocking::Client;
 
 use signal_hook::consts::{SIGUSR1, SIGUSR2};
 
-use eros_pm::clob_ws::ClobBookClient;
-use eros_pm::defaults::{API_TIMEOUT_DEFAULT, POLL_INTERVAL_SECONDS};
-use eros_pm::engine::load_session_summaries;
-use eros_pm::market_discovery::fetch_metadata_with_retry;
-use eros_pm::markets::get_market_config;
-use eros_pm::models::{MarketMetadata, Sample, SessionData};
-use eros_pm::price_fetcher::take_sample;
-use eros_pm::rtds::RtdsClient;
-use eros_pm::session_cache::SessionStatsCache;
-use eros_pm::session_io::{
+use fondaco::clob_ws::ClobBookClient;
+use fondaco::defaults::{API_TIMEOUT_DEFAULT, POLL_INTERVAL_SECONDS};
+use fondaco::engine::load_session_summaries;
+use fondaco::market_discovery::fetch_metadata_with_retry;
+use fondaco::markets::get_market_config;
+use fondaco::models::{MarketMetadata, Sample, SessionData};
+use fondaco::price_fetcher::take_sample;
+use fondaco::rtds::RtdsClient;
+use fondaco::session_cache::SessionStatsCache;
+use fondaco::session_io::{
     clear_live_session, remove_collector_state, remove_file_silent, save_session, session_exists,
     write_collector_state_with_book_source, write_live_session, write_live_status, write_pid_file,
 };
-use eros_pm::tick_broadcast::{TickBroadcaster, TickMessage};
-use eros_pm::window_ops::{predict_next_window, wait_for_next_window};
+use fondaco::tick_broadcast::{TickBroadcaster, TickMessage};
+use fondaco::window_ops::{predict_next_window, wait_for_next_window};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -132,7 +132,7 @@ fn run_collector(cli: Cli) {
         .expect("Error setting SIGUSR2 handler");
 
     // PID file lock — prevent duplicate collectors for the same market
-    let pid_path = format!("/tmp/eros-pm-{}-collector.pid", slug_key);
+    let pid_path = format!("/tmp/fondaco-{}-collector.pid", slug_key);
     if let Ok(contents) = std::fs::read_to_string(&pid_path) {
         if let Ok(old_pid) = contents.trim().parse::<u32>() {
             // Check if that process is still alive (signal 0 = existence check)

@@ -69,7 +69,7 @@ pub const DEFAULT_CONTROL_PORT: u16 = 8420;
 /// Get the base directory of the project (parent of src/).
 pub fn base_dir() -> PathBuf {
     // At runtime, use the manifest dir or current dir
-    std::env::var("EROS_PM_BASE_DIR")
+    std::env::var("FONDACO_BASE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))

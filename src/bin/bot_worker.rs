@@ -20,16 +20,16 @@ use log::{error, info, warn};
 use reqwest::blocking::Client;
 use serde_json::Value;
 
-use eros_pm::defaults::{
+use fondaco::defaults::{
     API_TIMEOUT_DEFAULT, CLOB_MIN_ORDER_TOKENS, DEFAULT_EXPIRATION_SECONDS, TOKEN_DECIMALS,
 };
-use eros_pm::notifications::{NotificationEvent, NotificationManager};
-use eros_pm::models::MarketMetadata;
-use eros_pm::session_io::write_pid_file;
-use eros_pm::strategies::all_strategies;
-use eros_pm::strategy::Strategy;
-use eros_pm::tick_broadcast::{TickMessage, TickSubscriber};
-use eros_pm::trader::{FlatlineDetector, Position, SessionMetadata, TickContext, TradeAction};
+use fondaco::notifications::{NotificationEvent, NotificationManager};
+use fondaco::models::MarketMetadata;
+use fondaco::session_io::write_pid_file;
+use fondaco::strategies::all_strategies;
+use fondaco::strategy::Strategy;
+use fondaco::tick_broadcast::{TickMessage, TickSubscriber};
+use fondaco::trader::{FlatlineDetector, Position, SessionMetadata, TickContext, TradeAction};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -231,7 +231,7 @@ impl ClobExecutor {
         }
 
         position.apply_trade(&action.side, price, tokens);
-        let fee = eros_pm::defaults::compute_taker_fee(price, tokens, true);
+        let fee = fondaco::defaults::compute_taker_fee(price, tokens, true);
         position.cash -= fee;
 
         if is_sell {
@@ -506,7 +506,7 @@ fn run_bot_worker(cli: Cli) {
     }
 
     // PID file
-    let pid_path = format!("/tmp/eros-pm-{}-bot-{}.pid", slug_key, cli.strategy);
+    let pid_path = format!("/tmp/fondaco-{}-bot-{}.pid", slug_key, cli.strategy);
     write_pid_file(&pid_path);
 
     // Market data directory
@@ -841,7 +841,7 @@ fn run_bot_worker(cli: Cli) {
         }
     }
 
-    eros_pm::session_io::remove_file_silent(&pid_path);
+    fondaco::session_io::remove_file_silent(&pid_path);
     info!(
         "[{}:{}] Bot worker stopped. {} sessions completed.",
         slug_key, cli.strategy, session_count

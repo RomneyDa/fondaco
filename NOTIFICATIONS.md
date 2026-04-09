@@ -32,7 +32,7 @@ If notifications aren't appearing, check **System Settings > Notifications** and
 
 ### Setup
 
-1. Pick a topic name (use something random for privacy, e.g. `eros-pm-a8f2k9x`)
+1. Pick a topic name (use something random for privacy, e.g. `fondaco-a8f2k9x`)
 2. Install the [ntfy app](https://ntfy.sh) on your phone and subscribe to your topic
 3. Enable in `settings.json`:
 
@@ -41,7 +41,7 @@ If notifications aren't appearing, check **System Settings > Notifications** and
   "notifications": {
     "ntfy": {
       "enabled": true,
-      "topic": "eros-pm-a8f2k9x",
+      "topic": "fondaco-a8f2k9x",
       "server": "https://ntfy.sh",
       "events": ["session:end", "error", "process:stop"]
     }
@@ -59,7 +59,7 @@ Errors are sent as `urgent` (breaks Do Not Disturb), losses as `high`, everythin
 {
   "ntfy": {
     "enabled": true,
-    "topic": "eros-pm-a8f2k9x",
+    "topic": "fondaco-a8f2k9x",
     "events": ["trades", "session:end", "error"],
     "priority": {
       "trades": "low",
@@ -99,7 +99,7 @@ Run your own ntfy server and point `server` to it:
     },
     "ntfy": {
       "enabled": true,
-      "topic": "eros-pm-a8f2k9x",
+      "topic": "fondaco-a8f2k9x",
       "server": "https://ntfy.sh",
       "events": ["session:end:loss", "error", "process:stop"],
       "priority": {}
