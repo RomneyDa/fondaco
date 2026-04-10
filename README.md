@@ -4,7 +4,7 @@
 
 # Fondaco
 
-An open-source trading framework for binary outcome markets — strategies, backtesting, live execution, and a real-time dashboard. Built in Rust for speed.
+An open-source trading framework for binary outcome markets — strategies, backtesting, live execution, and a real-time dashboard. Built in Rust for speed and performance.
 
 Currently targets **Polymarket** crypto up/down prediction markets, with support for other binary market platforms planned. Supports multiple market durations simultaneously (e.g. `btc-updown-5m-` and `btc-updown-15m-`).
 
