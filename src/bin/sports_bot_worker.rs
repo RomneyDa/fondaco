@@ -682,23 +682,31 @@ fn run(cli: Cli) {
 
             // Every considered decision is logged — affordable because sports
             // makes few of them per game, and invaluable for debugging.
-            log_jsonl(
-                &market_dir,
-                "sports_decisions.jsonl",
-                &serde_json::json!({
-                    "timestamp": now_utc(),
-                    "strategy": cli.strategy,
-                    "game": session.key(),
-                    "gate": decision.gate.as_str(),
-                    "leg": decision.leg,
-                    "model_prob": decision.model_prob,
-                    "market_mid": decision.market_mid,
-                    "edge": decision.edge,
-                    "confirmation": conf_status.as_str(),
-                    "allocation": format!("{:?}", allocation.verdict),
-                    "available_cash": round2(allocation.cash),
-                    "note": decision.note,
-                }),
+            let decision_record = serde_json::json!({
+                "timestamp": now_utc(),
+                "timestamp_utc": now_utc(),
+                "strategy": cli.strategy,
+                "game": session.key(),
+                "elapsed_seconds": sample.elapsed_seconds,
+                "gate": decision.gate.as_str(),
+                "leg": decision.leg,
+                "model_prob": decision.model_prob,
+                "market_mid": decision.market_mid,
+                "edge": decision.edge,
+                "confirmation": conf_status.as_str(),
+                "allocation": format!("{:?}", allocation.verdict),
+                "available_cash": round2(allocation.cash),
+                "note": decision.note,
+            });
+            // League-level aggregate, for the league view...
+            log_jsonl(&market_dir, "sports_decisions.jsonl", &decision_record);
+            // ...and per-game, which is where the detail page reads from.
+            log_game_jsonl(
+                &cli.data_dir,
+                &league.key,
+                &session.key(),
+                "decisions.jsonl",
+                &decision_record,
             );
 
             // Execute.
@@ -949,25 +957,52 @@ fn log_trade(
     tokens: f64,
     price: f64,
 ) {
-    log_jsonl(
-        market_dir,
-        "sports_bot_trades.jsonl",
-        &serde_json::json!({
-            "timestamp": Utc::now().to_rfc3339(),
-            "strategy": cli.strategy,
-            "league": cli.league,
-            "game": session.key(),
-            "side": decision.action.side,
-            "leg": leg,
-            "tokens": round2(tokens),
-            "price": price,
-            "amount": round2(tokens * price),
-            "model_prob": decision.model_prob,
-            "market_mid": decision.market_mid,
-            "edge": decision.edge,
-            "dry_run": !cli.live,
-        }),
+    let record = serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "strategy": cli.strategy,
+        "league": cli.league,
+        "game": session.key(),
+        "side": decision.action.side,
+        "leg": leg,
+        "tokens": round2(tokens),
+        "price": price,
+        "amount": round2(tokens * price),
+        "model_prob": decision.model_prob,
+        "market_mid": decision.market_mid,
+        "edge": decision.edge,
+        "dry_run": !cli.live,
+    });
+    // League-level aggregate, for the league view...
+    log_jsonl(market_dir, "sports_bot_trades.jsonl", &record);
+    // ...and per-game, which is where the detail page reads from.
+    log_game_jsonl(
+        &cli.data_dir,
+        &cli.league,
+        &session.key(),
+        "trades.jsonl",
+        &record,
     );
+}
+
+/// Per-game log path: `<data_dir>/markets/<league>/games/<game>/<name>`.
+///
+/// The dashboard's game detail page reads `trades.jsonl` and `decisions.jsonl`
+/// from the game directory, so records must land there and not only in the
+/// league-level aggregate.
+fn log_game_jsonl(data_dir: &str, league: &str, game_key: &str, name: &str, value: &Value) {
+    let dir = std::path::Path::new(data_dir)
+        .join("markets")
+        .join(league)
+        .join("games")
+        .join(game_key);
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(name))
+    {
+        let _ = writeln!(f, "{}", serde_json::to_string(value).unwrap_or_default());
+    }
 }
 
 fn log_jsonl(dir: &str, name: &str, value: &Value) {

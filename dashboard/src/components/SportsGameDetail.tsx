@@ -16,7 +16,9 @@ import { trpc } from "@/trpc/client";
 
 const W = 1000;
 const H = 320;
-const PAD = { l: 44, r: 16, t: 16, b: 28 };
+// `t` reserves a band above the plot for score-event labels, so they never
+// overlap the probability lines.
+const PAD = { l: 44, r: 16, t: 26, b: 28 };
 
 interface Point {
   t: number;
@@ -80,6 +82,11 @@ export function SportsGameDetail({ league, dir }: { league: string; dir: string 
   const modelHome = samples.map((s) => (s.model?.length ? s.model[0] : null));
   const referenceHome = samples.map((s) => s.reference ?? null);
 
+  // ESPN publishes no soccer win probability, so the series is legitimately
+  // absent there. Advertising it in the legend would read as missing data
+  // rather than not-applicable.
+  const hasReference = referenceHome.some((v) => v != null);
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -101,7 +108,7 @@ export function SportsGameDetail({ league, dir }: { league: string; dir: string 
         <div className="flex items-center gap-5 text-[11px] mb-2">
           <Legend color="#58a6ff" label="market midpoint (home)" />
           <Legend color="#d29922" label="model (home)" />
-          <Legend color="#bc8cff" label="ESPN reference" dashed />
+          {hasReference && <Legend color="#bc8cff" label="ESPN reference" dashed />}
           <Legend color="#f85149" label="score event" />
         </div>
 
@@ -124,30 +131,37 @@ export function SportsGameDetail({ league, dir }: { league: string; dir: string 
             </g>
           ))}
 
-          {/* Score events */}
-          {scoreEvents.map((e, i) => (
-            <g key={i}>
-              <line
-                x1={xOf(e.t)}
-                x2={xOf(e.t)}
-                y1={PAD.t}
-                y2={H - PAD.b}
-                stroke="#f85149"
-                strokeWidth={1}
-                strokeDasharray="3 3"
-                opacity={0.7}
-              />
-              <text
-                x={xOf(e.t) + 3}
-                y={PAD.t + 10}
-                fill="#f85149"
-                fontSize={9}
-                fontFamily="monospace"
-              >
-                {e.label}
-              </text>
-            </g>
-          ))}
+          {/* Score events. Labels sit in a reserved band above the plot so
+              they never collide with the probability lines, and flip to the
+              left of their marker near the right edge so they are not clipped. */}
+          {scoreEvents.map((e, i) => {
+            const x = xOf(e.t);
+            const nearRight = x > W - PAD.r - 40;
+            return (
+              <g key={i}>
+                <line
+                  x1={x}
+                  x2={x}
+                  y1={PAD.t}
+                  y2={H - PAD.b}
+                  stroke="#f85149"
+                  strokeWidth={1}
+                  strokeDasharray="3 3"
+                  opacity={0.7}
+                />
+                <text
+                  x={nearRight ? x - 3 : x + 3}
+                  y={PAD.t - 4}
+                  textAnchor={nearRight ? "end" : "start"}
+                  fill="#f85149"
+                  fontSize={9}
+                  fontFamily="monospace"
+                >
+                  {e.label}
+                </text>
+              </g>
+            );
+          })}
 
           <path d={line(marketHome)} fill="none" stroke="#58a6ff" strokeWidth={1.6} />
           <path d={line(modelHome)} fill="none" stroke="#d29922" strokeWidth={1.6} />

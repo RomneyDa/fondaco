@@ -101,6 +101,8 @@ struct GameSim {
     strategy: Box<dyn SportsStrategy>,
     staleness: StalenessDetector,
     params: GameParams,
+    /// False when `params` are league averages rather than a real fit.
+    params_fitted: bool,
     /// Entry bookkeeping per leg, for CLV.
     entries: HashMap<usize, (f64, f64, f64, f64)>,
     open: bool,
@@ -140,6 +142,12 @@ pub fn run(
             continue;
         }
         let key = meta.group.dir_name();
+        // Whether these params are team-specific matters: a strategy with
+        // requires_model() must refuse league-average fallbacks, because an
+        // "edge" measured against params that know nothing about who is better
+        // is an artefact. Hardcoding this to true let ModelEdge trade in
+        // backtest on games it would refuse live.
+        let fitted = params_by_game.contains_key(&key);
         let params = params_by_game
             .get(&key)
             .cloned()
@@ -157,6 +165,7 @@ pub fn run(
             strategy,
             staleness: StalenessDetector::new(StalenessConfig::default()),
             params,
+            params_fitted: fitted,
             entries: HashMap::new(),
             open: false,
             last_state: None,
@@ -235,7 +244,7 @@ pub fn run(
 
         // Fair value from this game's params.
         let fv: Option<FairValue> =
-            fair_value::evaluate(sport, &sim.params, &sample.state, true);
+            fair_value::evaluate(sport, &sim.params, &sample.state, sim.params_fitted);
 
         // Layer-0 signals.
         let midpoints = midpoints_now;
@@ -366,6 +375,34 @@ pub fn run(
                                 bankroll += proceeds;
                                 sim.committed = (sim.committed - proceeds).max(0.0);
                                 sim.position.add_leg(leg, -fill.tokens);
+
+                                // Record the round trip. Without this an early
+                                // exit disappeared from PnL and CLV, so a
+                                // strategy that always sold before resolution
+                                // reported zero trades while the bankroll moved.
+                                if let Some((entry_price, entry_mid, model_prob, elapsed)) =
+                                    sim.entries.remove(&leg)
+                                {
+                                    trades.push(TradeRecord {
+                                        game_key: sim.key.clone(),
+                                        leg,
+                                        leg_key: sim
+                                            .meta
+                                            .group
+                                            .legs
+                                            .get(leg)
+                                            .map(|l| l.key.clone())
+                                            .unwrap_or_default(),
+                                        entry_price,
+                                        entry_midpoint: entry_mid,
+                                        closing_midpoint: fill.avg_price,
+                                        model_prob,
+                                        won: fill.avg_price > entry_price,
+                                        tokens: fill.tokens,
+                                        pnl: fill.tokens * (fill.avg_price - entry_price),
+                                        elapsed_seconds: elapsed,
+                                    });
+                                }
                             }
                         }
                     }
@@ -806,6 +843,154 @@ mod tests {
 
         // But the helper must fire for a realistic sweep.
         assert!(sample_size_warning(272, 5).is_some());
+    }
+
+    /// Regression: the simulator hardcoded `fitted = true`, so a game with no
+    /// entry in `params_by_game` silently fell back to league averages and was
+    /// still presented to strategies as a trustworthy model. ModelEdge traded
+    /// in backtest on games it would refuse live.
+    #[test]
+    fn fallback_params_are_not_presented_as_a_fitted_model() {
+        struct NeedsModel;
+        impl SportsStrategy for NeedsModel {
+            fn name(&self) -> &str {
+                "NeedsModel"
+            }
+            fn version(&self) -> &str {
+                "1"
+            }
+            fn requires_model(&self) -> bool {
+                true
+            }
+            fn on_game_start(&mut self, _g: &MarketGroup, _s: Sport) {}
+            fn on_tick(&mut self, ctx: &SportsTickContext) -> SportsDecision {
+                // Would trade on every tick if the gates let it through.
+                let ask = match ctx.leg_best_ask(0) {
+                    Some(a) => a,
+                    None => return SportsDecision::hold(DecisionGate::NoPrice),
+                };
+                SportsDecision::trade(
+                    TradeAction::buy("buy_home", ctx.available_cash, ask, None),
+                    0,
+                    0.99,
+                    ask,
+                )
+            }
+            fn with_params(
+                &self,
+                _p: &HashMap<String, crate::strategy::ParamValue>,
+            ) -> Box<dyn SportsStrategy> {
+                Box::new(NeedsModel)
+            }
+        }
+
+        let games = vec![make_game(1, "2026-01-04", "2026-01-04T20:00:00Z", true, 5)];
+        let factory = || -> Box<dyn SportsStrategy> { Box::new(NeedsModel) };
+
+        // No fitted params supplied -> league-average fallback -> must not trade.
+        let r = run(&factory, &games, &HashMap::new(), &SimConfig::default());
+        assert!(
+            r.trades.is_empty(),
+            "a model-dependent strategy must not trade on league-average params"
+        );
+        assert_eq!(r.evaluation.max_concurrent_exposure, 0.0);
+
+        // Supply fitted params for that game and it may trade.
+        let mut fitted = HashMap::new();
+        fitted.insert(
+            games[0].0.group.dir_name(),
+            GameParams::league_average(Sport::AmericanFootball),
+        );
+        let r2 = run(&factory, &games, &fitted, &SimConfig::default());
+        assert!(
+            !r2.trades.is_empty(),
+            "with fitted params the same strategy should trade"
+        );
+    }
+
+    /// Regression: only positions still open at the final sample produced a
+    /// `TradeRecord`, so anything sold early vanished from PnL and CLV — the
+    /// run reported zero trades while the bankroll had visibly moved.
+    #[test]
+    fn a_position_exited_before_resolution_is_still_recorded() {
+        struct BuyThenSell {
+            bought: bool,
+            sold: bool,
+        }
+        impl SportsStrategy for BuyThenSell {
+            fn name(&self) -> &str {
+                "BuyThenSell"
+            }
+            fn version(&self) -> &str {
+                "1"
+            }
+            fn requires_model(&self) -> bool {
+                false
+            }
+            fn on_game_start(&mut self, _g: &MarketGroup, _s: Sport) {
+                self.bought = false;
+                self.sold = false;
+            }
+            fn on_tick(&mut self, ctx: &SportsTickContext) -> SportsDecision {
+                if !self.bought {
+                    if let Some(ask) = ctx.leg_best_ask(0) {
+                        self.bought = true;
+                        return SportsDecision::trade(
+                            TradeAction::buy("buy_home", ctx.available_cash, ask, None),
+                            0,
+                            0.7,
+                            ask,
+                        );
+                    }
+                } else if !self.sold && ctx.position.leg(0) > 0.0 {
+                    if let Some(mid) = ctx.leg_midpoint(0) {
+                        self.sold = true;
+                        return SportsDecision::trade(
+                            TradeAction::sell("sell_home", ctx.position.leg(0), mid),
+                            0,
+                            0.7,
+                            mid,
+                        );
+                    }
+                }
+                SportsDecision::hold(DecisionGate::AlreadyPositioned)
+            }
+            fn with_params(
+                &self,
+                _p: &HashMap<String, crate::strategy::ParamValue>,
+            ) -> Box<dyn SportsStrategy> {
+                Box::new(BuyThenSell {
+                    bought: false,
+                    sold: false,
+                })
+            }
+        }
+
+        let games = vec![make_game(1, "2026-01-04", "2026-01-04T20:00:00Z", true, 6)];
+        let factory = || -> Box<dyn SportsStrategy> {
+            Box::new(BuyThenSell {
+                bought: false,
+                sold: false,
+            })
+        };
+        let cfg = SimConfig::default();
+        let r = run(&factory, &games, &HashMap::new(), &cfg);
+
+        assert_eq!(
+            r.trades.len(),
+            1,
+            "the round trip must be recorded even though nothing was held at resolution"
+        );
+        assert_eq!(r.evaluation.games_traded, 1);
+
+        // And PnL must reconcile with the bankroll rather than reading as zero.
+        let delta = r.final_bankroll - cfg.starting_cash;
+        assert!(
+            (delta - r.evaluation.total_pnl).abs() < 1e-6,
+            "reported PnL {} does not reconcile with bankroll change {}",
+            r.evaluation.total_pnl,
+            delta
+        );
     }
 
     #[test]
