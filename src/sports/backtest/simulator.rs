@@ -71,6 +71,8 @@ pub struct SimConfig {
     pub endgame_minutes: f64,
     /// Record every decision, not only trades.
     pub record_decisions: bool,
+    /// Market kinds strategies may trade. Empty means moneyline only.
+    pub market_kinds: Vec<crate::sports::models::SportsMarketKind>,
 }
 
 impl Default for SimConfig {
@@ -82,6 +84,7 @@ impl Default for SimConfig {
             fees: true,
             endgame_minutes: 5.0,
             record_decisions: false,
+            market_kinds: Vec::new(),
         }
     }
 }
@@ -270,6 +273,7 @@ pub fn run(
             // In backtest we have only the recorded primary feed, so feeds are
             // treated as agreeing. Live trading applies the real check.
             feeds_agree: true,
+            market_kinds: &cfg.market_kinds,
         };
 
         // Common gates first, then the strategy.

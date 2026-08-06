@@ -3422,3 +3422,191 @@ fn test_walk_forward_with_always_hold() {
         }
     }
 }
+
+// ===========================================================================
+// Sports game selection
+// ===========================================================================
+
+mod sports_selection {
+    use fondaco::sports::models::{MarketGroup, SportsLeg, SportsMarketKind};
+    use fondaco::sports::selection::{
+        filter_from_flags, rank, Candidate, GameFilter, SelectionPolicy, SkipReason,
+    };
+    use std::collections::HashMap;
+
+    fn slate() -> Vec<MarketGroup> {
+        let mk = |id: i64, home: &str, away: &str, hour: u32| MarketGroup {
+            game_id: Some(id),
+            league_key: "nfl".into(),
+            event_id: format!("e{id}"),
+            event_slug: format!("nfl-game-{id}"),
+            event_title: format!("{away} vs {home}"),
+            home_team: home.into(),
+            away_team: away.into(),
+            start_time_utc: format!("2026-02-09T{hour:02}:00:00Z"),
+            legs: vec![
+                SportsLeg {
+                    key: "home".into(),
+                    label: home.into(),
+                    token_id: format!("th{id}"),
+                    condition_id: "c".into(),
+                    kind: SportsMarketKind::Moneyline,
+                    line: None,
+                },
+                SportsLeg {
+                    key: "away".into(),
+                    label: away.into(),
+                    token_id: format!("ta{id}"),
+                    condition_id: "c".into(),
+                    kind: SportsMarketKind::Moneyline,
+                    line: None,
+                },
+            ],
+        };
+        vec![
+            mk(1, "Chiefs", "Eagles", 18),
+            mk(2, "Bills", "Dolphins", 18),
+            mk(3, "Packers", "Bears", 21),
+            mk(4, "49ers", "Rams", 1),
+        ]
+    }
+
+    #[test]
+    fn no_flags_selects_the_whole_slate() {
+        let games = slate();
+        let (kept, skipped) = GameFilter::default().apply(&games);
+        assert_eq!(kept.len(), 4);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn a_single_team_flag_narrows_to_that_teams_games() {
+        let f = filter_from_flags(
+            &["Chiefs".into()],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let games = slate();
+        let (kept, skipped) = f.apply(&games);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].game_id, Some(1));
+        assert_eq!(skipped.len(), 3);
+        assert!(skipped.iter().all(|(_, r)| *r == SkipReason::TeamNotIncluded));
+    }
+
+    #[test]
+    fn a_specific_game_can_be_selected_by_id() {
+        let f = filter_from_flags(&[], &[], &["3".into()], None, None, &[], chrono::Utc::now())
+            .unwrap();
+        let games = slate();
+        let (kept, _) = f.apply(&games);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].home_team, "Packers");
+    }
+
+    #[test]
+    fn a_time_window_selects_the_evening_slate() {
+        let f = filter_from_flags(
+            &[],
+            &[],
+            &[],
+            Some("2026-02-09T20:00:00Z"),
+            None,
+            &[],
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let games = slate();
+        let (kept, _) = f.apply(&games);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].game_id, Some(3));
+    }
+
+    /// The bug this replaces: the worker iterated a `HashMap`, whose order Rust
+    /// randomises per process, so `--max-concurrent` was filled with a
+    /// different arbitrary subset on every restart.
+    #[test]
+    fn concurrency_slots_no_longer_depend_on_hashmap_iteration_order() {
+        let ids: Vec<i64> = (1..=13).collect();
+        let cap = 6;
+
+        let take_top = || {
+            // Build via a HashMap, exactly as the worker does.
+            let mut map: HashMap<i64, ()> = HashMap::new();
+            for id in &ids {
+                map.insert(*id, ());
+            }
+            let mut cands: Vec<Candidate> = map
+                .keys()
+                .map(|id| Candidate {
+                    game_id: *id,
+                    edge: None,
+                    liquidity: None,
+                    start_epoch: None,
+                    already_open: false,
+                })
+                .collect();
+            rank(&mut cands, SelectionPolicy::Random, 0);
+            cands.into_iter().take(cap).map(|c| c.game_id).collect::<Vec<_>>()
+        };
+
+        let first = take_top();
+        for _ in 0..20 {
+            assert_eq!(
+                take_top(),
+                first,
+                "the chosen subset must not vary with hash-map iteration order"
+            );
+        }
+        assert_eq!(first.len(), cap);
+    }
+
+    #[test]
+    fn edge_policy_prefers_the_best_opportunities_over_arbitrary_ones() {
+        let mut cands: Vec<Candidate> = (1..=10)
+            .map(|id| Candidate {
+                game_id: id,
+                // Game 7 is by far the best opportunity.
+                edge: Some(if id == 7 { 0.25 } else { 0.01 }),
+                liquidity: None,
+                start_epoch: None,
+                already_open: false,
+            })
+            .collect();
+        rank(&mut cands, SelectionPolicy::Edge, 0);
+        assert_eq!(
+            cands[0].game_id, 7,
+            "the largest edge must claim the first slot"
+        );
+    }
+
+    #[test]
+    fn an_open_position_never_loses_its_slot_to_a_better_looking_game() {
+        let mut cands = vec![
+            Candidate {
+                game_id: 1,
+                edge: Some(0.5),
+                liquidity: None,
+                start_epoch: None,
+                already_open: false,
+            },
+            Candidate {
+                game_id: 2,
+                edge: Some(0.001),
+                liquidity: None,
+                start_epoch: None,
+                already_open: true,
+            },
+        ];
+        rank(&mut cands, SelectionPolicy::Edge, 0);
+        assert_eq!(
+            cands[0].game_id, 2,
+            "stranding an open position would make it impossible to exit"
+        );
+    }
+}
