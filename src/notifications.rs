@@ -40,6 +40,16 @@ pub enum NotificationEvent {
     ProcessStop,
     ClobDown,
     ReportHourly,
+    // Sports-specific
+    GameStart,
+    GameEnd,
+    SportsScore,
+    /// The book has not repriced after a scoring event — the layer-0 signal.
+    SportsStaleBook,
+    /// A play or goal is under official review; trading is suspended.
+    SportsReviewPending,
+    /// The portfolio allocator refused or throttled a position.
+    RiskExposureLimit,
 }
 
 impl NotificationEvent {
@@ -55,6 +65,12 @@ impl NotificationEvent {
             Self::ProcessStop => &["process:stop"],
             Self::ClobDown => &["clob_down"],
             Self::ReportHourly => &["report:hourly"],
+            Self::GameStart => &["sports:game:start", "sports:game", "sports"],
+            Self::GameEnd => &["sports:game:end", "sports:game", "sports"],
+            Self::SportsScore => &["sports:score", "sports"],
+            Self::SportsStaleBook => &["sports:stale_book", "sports"],
+            Self::SportsReviewPending => &["sports:review_pending", "sports"],
+            Self::RiskExposureLimit => &["risk:exposure_limit", "risk"],
         }
     }
 
@@ -65,6 +81,10 @@ impl NotificationEvent {
             Self::SessionEndLoss => "high",
             Self::ProcessStop => "high",
             Self::ClobDown => "urgent",
+            // A stale book is a fleeting opportunity — it is worth interrupting
+            // for, unlike a routine score update.
+            Self::SportsStaleBook => "high",
+            Self::RiskExposureLimit => "high",
             _ => "default",
         }
     }
@@ -81,6 +101,12 @@ impl NotificationEvent {
             Self::ProcessStop => "stop_sign",
             Self::ClobDown => "rotating_light",
             Self::ReportHourly => "bar_chart",
+            Self::GameStart => "stadium",
+            Self::GameEnd => "checkered_flag",
+            Self::SportsScore => "soccer",
+            Self::SportsStaleBook => "hourglass_flowing_sand",
+            Self::SportsReviewPending => "mag",
+            Self::RiskExposureLimit => "shield",
         }
     }
 }
@@ -97,6 +123,12 @@ impl fmt::Display for NotificationEvent {
             Self::ProcessStop => "Process Stopped",
             Self::ClobDown => "CLOB Down",
             Self::ReportHourly => "Hourly Report",
+            Self::GameStart => "Game Started",
+            Self::GameEnd => "Game Ended",
+            Self::SportsScore => "Score Update",
+            Self::SportsStaleBook => "Stale Book",
+            Self::SportsReviewPending => "Under Review",
+            Self::RiskExposureLimit => "Exposure Limit",
         };
         write!(f, "{}", s)
     }

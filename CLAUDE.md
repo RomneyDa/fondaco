@@ -5,8 +5,10 @@ Trade crypto up/down prediction markets on Polymarket. Multiple market durations
 ## Architecture
 
 **Rust** (`src/`) — strategies, backtester, position math, volatility, session cache, live collector + bot workers.
+**Sports** (`src/sports/`) — discovery, live feeds, fair value, adaptive cadence, per-game storage.
 **Dashboard** (`dashboard/`) — Next.js 15 (App Router) + tRPC + Express, port 3456.
 **clob-bridge** (`clob-bridge/`) — Python Flask wrapper around py_clob_client, port 8421.
+**model-server** (`model-server/`) — Python Dixon-Coles fitting, serves rate params, port 8422.
 **claim-server** (`claim-server/`) — Python claim/redeem service, port 8080.
 
 See the `/architecture` page in the dashboard for the full visual reference. **If you change the architecture (new binaries, IPC, modules, ports), update `dashboard/src/components/Architecture.tsx`.**
@@ -16,6 +18,9 @@ See the `/architecture` page in the dashboard for the full visual reference. **I
 - `bot-worker` — 1 per strategy, reads ticks from collector's socket, trades via clob-bridge
 - `orchestrator` — optional process manager (:8420), spawns collector/workers/clob-bridge
 - `backtest` — offline param sweeps with rayon parallelism
+- `sports-collector` — 1 per league, N concurrent games, adaptive cadence, read-only
+- `sports-bot-worker` — 1 per strategy per league, owns the allocator + confirmation gate
+- `sports-backtest` — overlapping-game simulator, depth-aware fills, CLV/calibration
 
 Collectors and bot-workers run independently — the orchestrator is optional convenience.
 
@@ -34,6 +39,19 @@ New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 
 5. **Log everything** — trades, sessions, API calls, backtests all to `data/`
 6. **When in doubt, do not trade**
 
+## Sports
+
+**A game is a session.** Legs are indexed: 0=home, 1=away, 2=draw (`trader::leg_index_for_key`).
+
+- **Never trade an unjoined game.** A `MarketGroup` without a `game_id` has no live state behind it. `is_tradeable()` enforces this; an ambiguous team-name join is refused, not guessed.
+- **Never trade on fallback model params.** `FairValueSource::ModelFallback` means league averages with no opinion about who is better — an "edge" against them is an artefact. Strategies with `requires_model()` refuse it.
+- **Record book depth, always.** The backtest fill model walks recorded levels; depth cannot be backfilled.
+- **≤3 tunable params per sports strategy.** 272 NFL games a year cannot support more; a registry test enforces it.
+- **Judge on calibration and CLV, not PnL.** PnL has almost no statistical power at sports sample sizes. Walk-forward splits by season, never randomly.
+- **Confirmation before action.** A goal can be disallowed and a touchdown reversed. `ConfirmationGate` applies a delay, two-feed agreement, and review suspension.
+- **Staleness is not flatline.** Crypto's `FlatlineDetector` treats a frozen book as broken data and suppresses trading. Sports `staleness` treats it as the opportunity — gate it on the book being alive.
+- **Storage is append-only JSONL.** `write_live_session` rewrites the whole session and is quadratic over a 3-hour game.
+
 ## Rules
 
 - **Trading logic in `src/`** — strategies, position math, trade sizing, simulation all live in Rust.
@@ -45,6 +63,8 @@ New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 
 - **`requires_full_session = true`** when strategy accumulates state from tick 0 (jump counts, warmup windows, running sums)
 - **No magic numbers** — global constants in `src/defaults.rs`; market-specific in `src/markets.rs`.
 - **Tests must pass after changes.** Run `cargo test` and fix any failures before considering work done.
+- **The golden backtest guards the execution path.** `tests/golden_backtest.rs` snapshots per-session PnL and trade tapes for every strategy against synthetic sessions. If it fails, trading behaviour changed. Regenerate only deliberately: `UPDATE_GOLDEN=1 cargo test --test golden_backtest`.
+- **Per-market economics.** Fees, tick size and min order size live in `MarketEconomics`, not global constants. Do not reintroduce hardcoded `PRICE_DECIMALS` / `CLOB_MIN_ORDER_TOKENS` in execution paths.
 - **Dashboard:** Next.js 15 App Router, tRPC, Tailwind v4. Pages in `dashboard/src/app/`, components in `dashboard/src/components/`, tRPC routers in `dashboard/src/server/routers/`.
 
 ## Quick Reference
@@ -65,6 +85,22 @@ New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 
 # Compound mode
 ./target/release/backtest data/markets/btc-updown-5m/sessions --strategy PoissonKelly --recent 700 \
   --cash 100 --session-cash-ratio 0.20:99999
+```
+
+**Sports CLI:**
+
+```bash
+# Collect a league (read-only; no trading)
+./target/release/sports-collector --league nfl --log-file
+
+# Backtest with season-split walk-forward
+./target/release/sports-backtest --league nfl --walk-forward
+
+# Dry-run a strategy live (add --live to trade for real)
+./target/release/sports-bot-worker --league epl --strategy ModelEdge --cash 500
+
+# Fit soccer team strengths from football-data.co.uk CSVs
+cd model-server && uv run python main.py --fit-dir ./data/epl --league epl
 ```
 
 ## Collector Management

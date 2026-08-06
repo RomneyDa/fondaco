@@ -25,6 +25,7 @@ pub mod fair_value;
 pub mod latency;
 pub mod model_client;
 pub mod models;
+pub mod schedule;
 pub mod storage;
 pub mod strategies;
 pub mod strategy;

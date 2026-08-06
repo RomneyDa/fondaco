@@ -268,9 +268,21 @@ export function ArchitecturePage() {
             { name: "backtest", lang: "Rust", color: "#d29922", port: "—",
               desc: "Offline strategy backtester. Rayon-parallel param sweeps, Kelly sizing, Sharpe ranking. Generates missing .summary.json sidecars.",
               cmd: "./target/release/backtest data/markets/btc-updown-5m/sessions --strategy all --recent 30" },
+            { name: "sports-collector", lang: "Rust", color: "#d29922", port: "—",
+              desc: "One per league, many concurrent games. Polymarket sports WebSocket for live state + one multi-token CLOB socket for books. Adaptive per-game cadence (dormant \u2192 pregame \u2192 idle \u2192 hot). Appends per-game JSONL and measures feed latency. Read-only.",
+              cmd: "./target/release/sports-collector --league nfl" },
+            { name: "sports-bot-worker", lang: "Rust", color: "#d29922", port: "—",
+              desc: "One per strategy per league, holding a map of concurrent games. Owns the portfolio allocator and the event-confirmation gate. Dry-run unless --live.",
+              cmd: "./target/release/sports-bot-worker --league nfl --strategy StaleBook" },
+            { name: "sports-backtest", lang: "Rust", color: "#d29922", port: "—",
+              desc: "Overlapping-game event-time simulator with depth-aware fills. Headline metrics are calibration and closing line value, not PnL \u2014 272 NFL games a year gives PnL almost no statistical power.",
+              cmd: "./target/release/sports-backtest --league nfl --walk-forward" },
             { name: "clob-bridge", lang: "Python", color: "#3fb950", port: ":8421",
               desc: "Flask wrapper around py_clob_client SDK. Signs and posts limit orders to Polymarket CLOB. Manages Gnosis Safe auth.",
               cmd: "cd clob-bridge && uv run python main.py --port 8421" },
+            { name: "model-server", lang: "Python", color: "#3fb950", port: ":8422",
+              desc: "Fits Dixon-Coles team strengths offline and serves scoring *rates*, never per-tick probabilities. Python fits, Rust evaluates \u2014 the fit only changes when results arrive, weekly, not when the clock moves.",
+              cmd: "cd model-server && uv run python main.py --port 8422" },
             { name: "claim-server", lang: "Python", color: "#3fb950", port: ":8080",
               desc: "Periodic position redemption via Builder Relayer API. Web UI for manual claims.",
               cmd: "cd claim-server && uv run python main.py" },
@@ -289,6 +301,66 @@ export function ArchitecturePage() {
             </Card>
           ))}
         </div>
+      </Section>
+
+      {/* ── Sports ── */}
+      <Section title="Sports">
+        <Card>
+          <p className="text-xs text-dim mb-3">
+            Sports fits the framework by treating <strong>a game as a session</strong>.
+            Three things are genuinely different and everything in{" "}
+            <code className="text-[#39d2c0]">src/sports/</code> exists to handle them.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {[
+              {
+                title: "Concurrency",
+                body: "Up to ~15 games run at once on no clock grid, versus one crypto session at a time. One collector per league holds a single sports feed socket and a single multi-token book socket for the whole slate. A portfolio allocator caps per-game, per-league and total exposure, because thirteen Sunday NFL games resolving together is a fat tail, not thirteen independent bets.",
+              },
+              {
+                title: "Schedule-driven discovery",
+                body: "There is no deterministic prefix + floor(now/300)*300 slug. Games come from the Gamma schedule and must be joined to the live results feed by team name. That join is the flakiest part of the system: an ambiguous match is refused rather than guessed, since trading one game on another's scoreline is far worse than not trading.",
+              },
+              {
+                title: "Adaptive cadence",
+                body: "A 3.5 hour game at the crypto rate of 18 Hz would be a quarter of a million samples of almost nothing. Sampling follows the game: dormant before kickoff, 0.5 Hz batched while idle, 5\u201310 Hz for ~45s after a score, card or period change, and always in the closing minutes. ~100x fewer requests with full resolution exactly where edge appears.",
+              },
+            ].map((c) => (
+              <div key={c.title} className="rounded-lg px-3 py-2"
+                style={{ background: C.ipc.bg, border: `1px solid ${C.ipc.border}` }}>
+                <div className="text-[13px] font-semibold text-white mb-1">{c.title}</div>
+                <p className="text-[11px] text-dim leading-relaxed">{c.body}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="rounded-lg px-3 py-2"
+              style={{ background: C.ext.bg, border: `1px solid ${C.ext.border}` }}>
+              <div className="text-[13px] font-semibold text-white mb-1">Fair value, in three layers</div>
+              <ul className="text-[11px] text-dim leading-relaxed space-y-1 list-disc pl-4">
+                <li><strong>Layer 0</strong> — book staleness after a score, and cross-leg incoherence. No model at all, and possibly the whole business.</li>
+                <li><strong>Layer 1</strong> — ESPN&apos;s free live NFL win probability.</li>
+                <li><strong>Layer 2</strong> — our own model. Closed-form bivariate Poisson for soccer with Dixon-Coles rho and red-card adjustment; normal-margin model for football.</li>
+              </ul>
+            </div>
+            <div className="rounded-lg px-3 py-2"
+              style={{ background: C.ext.bg, border: `1px solid ${C.ext.border}` }}>
+              <div className="text-[13px] font-semibold text-white mb-1">Two things that would silently cost money</div>
+              <ul className="text-[11px] text-dim leading-relaxed space-y-1 list-disc pl-4">
+                <li><strong>Fills.</strong> Sports books have real depth, so the crypto &quot;filled when the midpoint crosses my price&quot; model does not transfer. Backtest fills walk recorded book levels — which is why depth is captured, since it cannot be backfilled.</li>
+                <li><strong>Retracted events.</strong> A goal disallowed by VAR, a touchdown reversed on review. Guarded by a confirmation delay, two-feed agreement with ESPN, and outright suspension while a review flag is set.</li>
+              </ul>
+            </div>
+          </div>
+
+          <p className="text-[11px] text-dim mt-4">
+            <strong>The measurement that decides everything:</strong> the collector logs, for every
+            score change, the delay from feed report to first book move. If the book consistently
+            moves first there is no event-reaction edge and strategies must come from model
+            disagreement instead. That report is on each league&apos;s sports page.
+          </p>
+        </Card>
       </Section>
 
       {/* ── Live trading flow ── */}
@@ -348,6 +420,7 @@ export function ArchitecturePage() {
             <div className="text-xs space-y-1">
               <div><span className="text-btc font-mono">:8420</span> <span className="text-dim">— Orchestrator control (optional)</span></div>
               <div><span className="text-btc font-mono">:8421</span> <span className="text-dim">— CLOB bridge (order execution)</span></div>
+              <div><span className="text-btc font-mono">:8422</span> <span className="text-dim">— Model server (sports rate params)</span></div>
               <div><span className="text-btc font-mono">:3456</span> <span className="text-dim">— Dashboard (REST + SSE + tRPC)</span></div>
               <div><span className="text-btc font-mono">:8080</span> <span className="text-dim">— Claim server (web UI)</span></div>
             </div>
@@ -359,6 +432,8 @@ export function ArchitecturePage() {
               <div><span className="text-[#39d2c0]">collector_state.json</span> — collector status</div>
               <div><span className="text-[#39d2c0]">bot_positions/&#123;strat&#125;.json</span> — worker state</div>
               <div><span className="text-[#39d2c0]">/tmp/fondaco-*-.pid</span> — PID files</div>
+              <div><span className="text-[#39d2c0]">markets/&#123;league&#125;/games/&#123;game&#125;/</span> — sports, append-only</div>
+              <div><span className="text-[#39d2c0]">markets/&#123;league&#125;/latency.jsonl</span> — feed latency</div>
             </div>
           </Card>
           <Card>
