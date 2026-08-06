@@ -4,8 +4,139 @@
 //! Executor trait, SimExecutor, and Trader.
 
 use crate::defaults::*;
+use crate::economics::MarketEconomics;
 use crate::models::{Sample, SessionSummary};
 use std::collections::HashMap;
+
+// ---------------------------------------------------------------------------
+// Legs
+// ---------------------------------------------------------------------------
+
+/// Maximum tradeable legs in one session.
+///
+/// Crypto up/down uses 2. A soccer game needs 3 for the moneyline alone
+/// (home/draw/away) and more once spread and total markets are grouped under
+/// the same game. Fixed-size so `Position` stays `Copy`-cheap in the rayon
+/// backtest hot path — a `Vec` here costs an allocation per simulated session.
+pub const MAX_LEGS: usize = 8;
+
+/// Canonical leg index for a leg key.
+///
+/// The keys are globally unique across market kinds (`up`/`down` for crypto,
+/// `home`/`away`/`draw` for sports moneylines) so a single table serves both
+/// without the parser needing to know which market it is looking at. Legs
+/// beyond these well-known names use the explicit `buy:3` numeric form.
+pub fn leg_index_for_key(key: &str) -> Option<usize> {
+    match key {
+        "up" | "home" => Some(0),
+        "down" | "away" => Some(1),
+        "draw" => Some(2),
+        _ => key.parse::<usize>().ok().filter(|i| *i < MAX_LEGS),
+    }
+}
+
+/// Static description of one tradeable leg of a session.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LegSpec {
+    /// Short key used in side strings: `up`, `down`, `home`, `away`, `draw`.
+    pub key: String,
+    /// Human-readable label for logs and the dashboard.
+    pub label: String,
+    pub token_id: String,
+    pub condition_id: String,
+}
+
+impl LegSpec {
+    pub fn new(key: &str, label: &str, token_id: &str, condition_id: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            label: label.to_string(),
+            token_id: token_id.to_string(),
+            condition_id: condition_id.to_string(),
+        }
+    }
+
+    /// The crypto up/down pair, in canonical leg order.
+    pub fn crypto_pair(up_token_id: &str, down_token_id: &str) -> Vec<LegSpec> {
+        vec![
+            LegSpec::new("up", "Up", up_token_id, ""),
+            LegSpec::new("down", "Down", down_token_id, ""),
+        ]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Side
+// ---------------------------------------------------------------------------
+
+/// A parsed trade action side.
+///
+/// `TradeAction.side` stays a `String` on purpose: it is the strategy-facing
+/// API, it is what lands in `bot_trades.jsonl`, and it is what the dashboard
+/// renders. Keeping it means strategies and log formats are untouched by the
+/// leg generalization. `Side` is the parsed form used by the execution path so
+/// that routing is by leg index rather than by substring matching — the old
+/// `side.contains("up")` test would match a sports leg keyed `up_the_middle`
+/// and silently trade the wrong token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Hold,
+    Buy(u8),
+    Sell(u8),
+    Cancel(u8),
+}
+
+impl Side {
+    /// Parse a side string. Returns `None` for anything unrecognised, which
+    /// callers must treat as "do not trade" rather than guessing a leg.
+    pub fn parse(s: &str) -> Option<Side> {
+        if s == HOLD_SIDE {
+            return Some(Side::Hold);
+        }
+        let (verb, key) = s.split_once('_').or_else(|| s.split_once(':'))?;
+        let leg = leg_index_for_key(key)? as u8;
+        match verb {
+            "buy" => Some(Side::Buy(leg)),
+            "sell" => Some(Side::Sell(leg)),
+            "cancel" => Some(Side::Cancel(leg)),
+            _ => None,
+        }
+    }
+
+    pub fn leg(&self) -> Option<usize> {
+        match self {
+            Side::Hold => None,
+            Side::Buy(i) | Side::Sell(i) | Side::Cancel(i) => Some(*i as usize),
+        }
+    }
+
+    pub fn is_buy(&self) -> bool {
+        matches!(self, Side::Buy(_))
+    }
+
+    pub fn is_sell(&self) -> bool {
+        matches!(self, Side::Sell(_))
+    }
+
+    pub fn is_cancel(&self) -> bool {
+        matches!(self, Side::Cancel(_))
+    }
+
+    /// Render back to a side string using the session's leg keys.
+    pub fn to_side_string(&self, legs: &[LegSpec]) -> String {
+        let key = |i: usize| -> String {
+            legs.get(i)
+                .map(|l| l.key.clone())
+                .unwrap_or_else(|| i.to_string())
+        };
+        match self {
+            Side::Hold => HOLD_SIDE.to_string(),
+            Side::Buy(i) => format!("buy_{}", key(*i as usize)),
+            Side::Sell(i) => format!("sell_{}", key(*i as usize)),
+            Side::Cancel(i) => format!("cancel_{}", key(*i as usize)),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -46,7 +177,46 @@ impl TradeAction {
     }
 
     pub fn is_hold(&self) -> bool {
-        self.side == "hold"
+        self.side == HOLD_SIDE
+    }
+
+    /// Parsed side. `Side::Hold` for anything unrecognised so an unparseable
+    /// side can never be routed to a leg by accident.
+    pub fn parsed_side(&self) -> Side {
+        Side::parse(&self.side).unwrap_or(Side::Hold)
+    }
+
+    /// Leg this action targets, if any.
+    pub fn leg(&self) -> Option<usize> {
+        self.parsed_side().leg()
+    }
+
+    /// Build an action targeting a leg by index, rendered with the session's
+    /// leg keys so logs stay human-readable.
+    pub fn buy_leg(
+        legs: &[LegSpec],
+        leg: usize,
+        amount: f64,
+        price: f64,
+        cancel_after_s: Option<f64>,
+    ) -> Self {
+        Self {
+            side: Side::Buy(leg as u8).to_side_string(legs),
+            amount,
+            price: Some(price),
+            expiration_seconds: Some(DEFAULT_EXPIRATION_SECONDS),
+            cancel_after_s,
+        }
+    }
+
+    pub fn sell_leg(legs: &[LegSpec], leg: usize, amount: f64, price: f64) -> Self {
+        Self {
+            side: Side::Sell(leg as u8).to_side_string(legs),
+            amount,
+            price: Some(price),
+            expiration_seconds: Some(DEFAULT_EXPIRATION_SECONDS),
+            cancel_after_s: None,
+        }
     }
 }
 
@@ -66,7 +236,8 @@ pub static HOLD_SIDE: &str = "hold";
 pub struct OpenOrder {
     pub order_id: String,
     pub side: String,
-    pub token: String,
+    /// Leg index this order sits on.
+    pub leg: usize,
     pub price: f64,
     pub tokens: f64,
     pub dollars_reserved: f64,
@@ -78,47 +249,92 @@ pub struct OpenOrder {
     pub time_placed: Option<f64>,
 }
 
-#[derive(Debug, Clone)]
+/// Cash plus per-leg token holdings.
+///
+/// Legs are indexed, not named: index 0/1 are `up`/`down` for crypto and
+/// `home`/`away` for a sports moneyline, index 2 is `draw`. `up_tokens()` /
+/// `down_tokens()` are retained as accessors so crypto code and the dashboard
+/// payloads read the same as before.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Position {
     pub cash: f64,
-    pub up_tokens: f64,
-    pub down_tokens: f64,
+    pub tokens: [f64; MAX_LEGS],
 }
 
 impl Position {
     pub fn new(cash: f64) -> Self {
         Self {
             cash,
-            up_tokens: 0.0,
-            down_tokens: 0.0,
+            tokens: [0.0; MAX_LEGS],
         }
     }
 
-    pub fn compute_trade_size(&self, side: &str, price: Option<f64>, amount: f64) -> (f64, f64) {
+    #[inline]
+    pub fn leg(&self, i: usize) -> f64 {
+        self.tokens.get(i).copied().unwrap_or(0.0)
+    }
+
+    #[inline]
+    pub fn set_leg(&mut self, i: usize, v: f64) {
+        if i < MAX_LEGS {
+            self.tokens[i] = v;
+        }
+    }
+
+    #[inline]
+    pub fn add_leg(&mut self, i: usize, v: f64) {
+        if i < MAX_LEGS {
+            self.tokens[i] += v;
+        }
+    }
+
+    #[inline]
+    pub fn up_tokens(&self) -> f64 {
+        self.tokens[0]
+    }
+
+    #[inline]
+    pub fn down_tokens(&self) -> f64 {
+        self.tokens[1]
+    }
+
+    /// Total tokens held across all legs.
+    pub fn total_tokens(&self) -> f64 {
+        self.tokens.iter().sum()
+    }
+
+    /// Compute the executable size for an action.
+    ///
+    /// Returns `(tokens, dollars)`. `(0.0, 0.0)` means "do not trade" — an
+    /// unparseable side, a price outside `(0, 1)`, no cash, or a size below the
+    /// venue minimum.
+    pub fn compute_trade_size(
+        &self,
+        side: &str,
+        price: Option<f64>,
+        amount: f64,
+        econ: &MarketEconomics,
+    ) -> (f64, f64) {
         let price = match price {
             Some(p) if p > 0.0 && p < 1.0 => p,
             _ => return (0.0, 0.0),
         };
 
-        match side {
-            "buy_up" | "buy_down" => {
+        match Side::parse(side) {
+            Some(Side::Buy(_)) => {
                 let dollars = amount.min(self.cash);
                 if dollars <= 0.0 {
                     return (0.0, 0.0);
                 }
-                let tokens = round_to(dollars / price, TOKEN_DECIMALS);
-                if tokens < CLOB_MIN_ORDER_TOKENS {
+                let tokens = round_to(dollars / price, econ.token_decimals);
+                if tokens < econ.min_order_tokens {
                     return (0.0, 0.0);
                 }
                 let cost = tokens * price;
                 (tokens, cost)
             }
-            "sell_up" | "sell_down" => {
-                let available = if side == "sell_up" {
-                    self.up_tokens
-                } else {
-                    self.down_tokens
-                };
+            Some(Side::Sell(leg)) => {
+                let available = self.leg(leg as usize);
                 let tokens =
                     (amount.min(available) * TOKEN_FLOOR_DIVISOR).floor() / TOKEN_FLOOR_DIVISOR;
                 if tokens <= 0.0 {
@@ -135,56 +351,49 @@ impl Position {
         if tokens <= 0.0 {
             return;
         }
-        match side {
-            "buy_up" => {
+        match Side::parse(side) {
+            Some(Side::Buy(leg)) => {
                 self.cash -= tokens * price;
-                self.up_tokens += tokens;
+                self.add_leg(leg as usize, tokens);
             }
-            "buy_down" => {
-                self.cash -= tokens * price;
-                self.down_tokens += tokens;
-            }
-            "sell_up" => {
-                self.up_tokens -= tokens;
-                self.cash += tokens * price;
-            }
-            "sell_down" => {
-                self.down_tokens -= tokens;
+            Some(Side::Sell(leg)) => {
+                self.add_leg(leg as usize, -tokens);
                 self.cash += tokens * price;
             }
             _ => {}
         }
     }
 
+    /// Settle the session: the winning leg pays $1/token, everything else
+    /// expires worthless.
+    pub fn resolve_leg(&mut self, winning_leg: Option<usize>) {
+        let leg = match winning_leg {
+            Some(l) => l,
+            None => return,
+        };
+        self.cash += self.leg(leg);
+        self.tokens = [0.0; MAX_LEGS];
+    }
+
+    /// Crypto resolution by outcome name. Unknown outcomes leave the position
+    /// untouched, matching the previous behaviour.
     pub fn resolve(&mut self, outcome: Option<&str>) {
         match outcome {
-            Some("Up") => {
-                self.cash += self.up_tokens;
-                self.up_tokens = 0.0;
-                self.down_tokens = 0.0;
-            }
-            Some("Down") => {
-                self.cash += self.down_tokens;
-                self.up_tokens = 0.0;
-                self.down_tokens = 0.0;
-            }
+            Some("Up") => self.resolve_leg(Some(0)),
+            Some("Down") => self.resolve_leg(Some(1)),
             _ => {}
         }
     }
 
     pub fn reserve_for_order(&mut self, side: &str, price: f64, tokens: f64) -> (f64, f64) {
-        match side {
-            "buy_up" | "buy_down" => {
+        match Side::parse(side) {
+            Some(Side::Buy(_)) => {
                 let cost = tokens * price;
                 self.cash -= cost;
                 (cost, 0.0)
             }
-            "sell_up" => {
-                self.up_tokens -= tokens;
-                (0.0, tokens)
-            }
-            "sell_down" => {
-                self.down_tokens -= tokens;
+            Some(Side::Sell(leg)) => {
+                self.add_leg(leg as usize, -tokens);
                 (0.0, tokens)
             }
             _ => (0.0, 0.0),
@@ -192,15 +401,12 @@ impl Position {
     }
 
     pub fn unreserve_for_order(&mut self, side: &str, dollars_reserved: f64, tokens_reserved: f64) {
-        match side {
-            "buy_up" | "buy_down" => {
+        match Side::parse(side) {
+            Some(Side::Buy(_)) => {
                 self.cash += dollars_reserved;
             }
-            "sell_up" => {
-                self.up_tokens += tokens_reserved;
-            }
-            "sell_down" => {
-                self.down_tokens += tokens_reserved;
+            Some(Side::Sell(leg)) => {
+                self.add_leg(leg as usize, tokens_reserved);
             }
             _ => {}
         }
@@ -234,8 +440,36 @@ pub struct SessionMetadata {
     pub prior_session_summaries: Vec<SessionSummary>,
     pub gap_before_seconds: Option<f64>,
     pub data_density: f64,
+    /// Tradeable legs, in canonical index order. Empty means the crypto
+    /// up/down pair, which `legs()` materialises from the token ids.
+    pub legs: Vec<LegSpec>,
+    /// Per-market fees, tick size and order-size limits.
+    pub economics: MarketEconomics,
     /// Extra string fields from the raw metadata
     pub extra: HashMap<String, String>,
+}
+
+impl SessionMetadata {
+    /// Legs for this session, defaulting to the crypto up/down pair.
+    pub fn legs(&self) -> Vec<LegSpec> {
+        if self.legs.is_empty() {
+            LegSpec::crypto_pair(&self.up_token_id, &self.down_token_id)
+        } else {
+            self.legs.clone()
+        }
+    }
+
+    /// Token id for a leg index.
+    pub fn leg_token_id(&self, leg: usize) -> Option<String> {
+        if self.legs.is_empty() {
+            return match leg {
+                0 => Some(self.up_token_id.clone()),
+                1 => Some(self.down_token_id.clone()),
+                _ => None,
+            };
+        }
+        self.legs.get(leg).map(|l| l.token_id.clone())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -364,6 +598,7 @@ pub struct SimExecutor {
     pub fees: bool,
     pub limit_fill_margin: f64,
     pub latency_ms: u64,
+    pub economics: MarketEconomics,
     latency_seconds: f64,
     sim_order_counter: usize,
 }
@@ -376,52 +611,56 @@ impl SimExecutor {
         limit_fill_margin: Option<f64>,
         latency_ms: u64,
     ) -> Self {
+        Self::with_economics(
+            execution_mode,
+            slippage,
+            fees,
+            limit_fill_margin,
+            latency_ms,
+            MarketEconomics::crypto(),
+        )
+    }
+
+    pub fn with_economics(
+        execution_mode: &str,
+        slippage: f64,
+        fees: bool,
+        limit_fill_margin: Option<f64>,
+        latency_ms: u64,
+        economics: MarketEconomics,
+    ) -> Self {
         Self {
             execution_mode: execution_mode.to_string(),
             slippage,
             fees,
             limit_fill_margin: limit_fill_margin.unwrap_or(slippage),
             latency_ms,
+            economics,
             latency_seconds: latency_ms as f64 / 1000.0,
             sim_order_counter: 0,
         }
     }
 
     fn get_execution_price(&self, side: &str, sample: &Sample) -> Option<f64> {
-        let is_up = side.contains("up");
-        let is_buy = side.starts_with("buy");
+        let parsed = Side::parse(side)?;
+        let leg = parsed.leg()?;
+        let is_buy = parsed.is_buy();
 
         match self.execution_mode.as_str() {
             "midpoint_slippage" => {
-                let base = if is_up {
-                    sample.up_token_midpoint
-                } else {
-                    sample.down_token_midpoint
-                }?;
+                let base = sample.leg_midpoint(leg)?;
                 Some(if is_buy {
                     base + self.slippage
                 } else {
                     base - self.slippage
                 })
             }
-            "midpoint" => {
-                if is_up {
-                    sample.up_token_midpoint
-                } else {
-                    sample.down_token_midpoint
-                }
-            }
+            "midpoint" => sample.leg_midpoint(leg),
             "book" => {
                 if is_buy {
-                    if is_up {
-                        sample.up_token_best_ask
-                    } else {
-                        sample.down_token_best_ask
-                    }
-                } else if is_up {
-                    sample.up_token_midpoint
+                    sample.leg_best_ask(leg)
                 } else {
-                    sample.down_token_midpoint
+                    sample.leg_midpoint(leg)
                 }
             }
             _ => None,
@@ -440,15 +679,19 @@ impl SimExecutor {
         }
 
         let price = self.get_execution_price(&action.side, sample)?;
-        let price = round_to(price, PRICE_DECIMALS).min(MAX_TOKEN_PRICE);
+        let price = self
+            .economics
+            .round_price(price)
+            .min(self.economics.max_token_price);
 
-        let (tokens, dollars) = position.compute_trade_size(&action.side, Some(price), action.amount);
-        if tokens <= 0.0 || tokens < CLOB_MIN_ORDER_TOKENS {
+        let (tokens, dollars) =
+            position.compute_trade_size(&action.side, Some(price), action.amount, &self.economics);
+        if tokens <= 0.0 || tokens < self.economics.min_order_tokens {
             return None;
         }
 
         position.apply_trade(&action.side, price, tokens);
-        let fee = compute_taker_fee(price, tokens, self.fees);
+        let fee = self.economics.taker_fee(price, tokens, self.fees);
         position.cash -= fee;
 
         Some(Trade {
@@ -474,29 +717,30 @@ impl SimExecutor {
             return None;
         }
 
-        let price = round_to(action.price.unwrap(), PRICE_DECIMALS);
+        let parsed = action.parsed_side();
+        let leg = match parsed.leg() {
+            Some(l) => l,
+            None => return None,
+        };
+
+        let price = self.economics.round_price(action.price.unwrap());
         if price <= 0.0 || price >= 1.0 {
             return None;
         }
 
-        let (mut tokens, _dollars) = position.compute_trade_size(&action.side, Some(price), action.amount);
-        if tokens <= 0.0 || tokens < CLOB_MIN_ORDER_TOKENS {
+        let (mut tokens, _dollars) =
+            position.compute_trade_size(&action.side, Some(price), action.amount, &self.economics);
+        if tokens <= 0.0 || tokens < self.economics.min_order_tokens {
             return None;
         }
 
         // Floor buys to integer (same as ClobExecutor)
-        if action.side.starts_with("buy") {
+        if parsed.is_buy() {
             tokens = tokens.floor();
-            if tokens < CLOB_MIN_ORDER_TOKENS {
+            if tokens < self.economics.min_order_tokens {
                 return None;
             }
         }
-
-        let token = if action.side.contains("up") {
-            "up"
-        } else {
-            "down"
-        };
 
         let (dollars_reserved, tokens_reserved) =
             position.reserve_for_order(&action.side, price, tokens);
@@ -510,7 +754,7 @@ impl SimExecutor {
         Some(OpenOrder {
             order_id: format!("sim-{}", self.sim_order_counter),
             side: action.side.clone(),
-            token: token.to_string(),
+            leg,
             price,
             tokens,
             dollars_reserved,
@@ -547,13 +791,7 @@ impl SimExecutor {
                 }
             }
 
-            let midpoint = if order.token == "up" {
-                sample.up_token_midpoint
-            } else {
-                sample.down_token_midpoint
-            };
-
-            let midpoint = match midpoint {
+            let midpoint = match sample.leg_midpoint(order.leg) {
                 Some(m) => m,
                 None => {
                     remaining.push(order);
@@ -561,26 +799,25 @@ impl SimExecutor {
                 }
             };
 
-            let filled = if order.side.starts_with("buy") {
+            let is_buy = Side::parse(&order.side).map(|s| s.is_buy()).unwrap_or(false);
+
+            let filled = if is_buy {
                 midpoint <= order.price - margin
             } else {
-                let threshold = (order.price + margin).min(MAX_TOKEN_PRICE);
+                let threshold = (order.price + margin).min(self.economics.max_token_price);
                 midpoint >= threshold
             };
 
             if filled {
-                // Apply trade to position
-                if order.side.starts_with("buy") {
-                    if order.side.contains("up") {
-                        position.up_tokens += order.tokens;
-                    } else {
-                        position.down_tokens += order.tokens;
-                    }
+                // Apply trade to position. Funds were already reserved when the
+                // order was placed, so only the acquired side moves here.
+                if is_buy {
+                    position.add_leg(order.leg, order.tokens);
                 } else {
                     position.cash += order.tokens * order.price;
                 }
 
-                let fee = compute_taker_fee(order.price, order.tokens, self.fees);
+                let fee = self.economics.taker_fee(order.price, order.tokens, self.fees);
                 position.cash -= fee;
 
                 let mut trade =
@@ -736,17 +973,15 @@ impl Trader {
             return None;
         }
 
+        let parsed = action.parsed_side();
+
         // Cancel actions
-        if action.side.starts_with("cancel") {
-            let token = if action.side == "cancel_up" {
-                "up"
-            } else {
-                "down"
-            };
+        if let Side::Cancel(leg) = parsed {
+            let leg = leg as usize;
             let position = self.position.as_mut().unwrap();
             let executor = &self.executor;
             self.open_orders.retain(|o| {
-                if o.token == token {
+                if o.leg == leg {
                     executor.cancel_order(o, position);
                     false
                 } else {
@@ -758,7 +993,7 @@ impl Trader {
         }
 
         // Cap buy amount
-        let action = if action.side.starts_with("buy") {
+        let action = if parsed.is_buy() {
             let cash = self.position.as_ref().unwrap().cash;
             if cash <= 0.0 {
                 self.tick_index += 1;
@@ -783,21 +1018,19 @@ impl Trader {
         if self.executor.latency_seconds > 0.0 {
             let position = self.position.as_mut().unwrap();
             let target_elapsed = sample.elapsed_seconds + self.executor.latency_seconds;
-            let (reserved_dollars, reserved_tokens) = if action.side.starts_with("buy") {
-                let rd = action.amount;
-                position.cash -= rd;
-                (rd, 0.0)
-            } else if action.side.starts_with("sell") {
-                let token_attr = if action.side.contains("up") {
-                    &mut position.up_tokens
-                } else {
-                    &mut position.down_tokens
-                };
-                let rt = action.amount.min(*token_attr);
-                *token_attr -= rt;
-                (0.0, rt)
-            } else {
-                (0.0, 0.0)
+            let (reserved_dollars, reserved_tokens) = match parsed {
+                Side::Buy(_) => {
+                    let rd = action.amount;
+                    position.cash -= rd;
+                    (rd, 0.0)
+                }
+                Side::Sell(leg) => {
+                    let leg = leg as usize;
+                    let rt = action.amount.min(position.leg(leg));
+                    position.add_leg(leg, -rt);
+                    (0.0, rt)
+                }
+                _ => (0.0, 0.0),
             };
             self.deferred_actions
                 .push((target_elapsed, action, reserved_dollars, reserved_tokens));
@@ -807,8 +1040,8 @@ impl Trader {
 
         // Route: limit order vs FAK
         let trade = if action.price.is_some() {
-            // Replace existing order on same token
-            self.replace_order_on_token(&action);
+            // Replace any existing order on the same leg
+            self.replace_order_on_leg(&action);
             let position = self.position.as_mut().unwrap();
             if let Some(order) =
                 self.executor
@@ -839,12 +1072,18 @@ impl Trader {
             for order in self.open_orders.drain(..) {
                 self.executor.cancel_order(&order, position);
             }
-            // Cancel deferred actions
-            for (_, _, rd, rt) in self.deferred_actions.drain(..) {
+            // Cancel deferred actions, returning each reservation to the leg it
+            // came from. The previous implementation credited every deferred
+            // sell back to `up_tokens` regardless of side, which silently
+            // created up tokens (and destroyed down tokens) whenever a session
+            // ended with a deferred `sell_down` in flight under --latency.
+            for (_, action, rd, rt) in self.deferred_actions.drain(..) {
                 position.cash += rd;
-                // We'd need to know the side to unreserve tokens correctly.
-                // For simplicity, just add to up_tokens (the caller handles resolution).
-                position.up_tokens += rt;
+                if rt > 0.0 {
+                    if let Some(leg) = action.leg() {
+                        position.add_leg(leg, rt);
+                    }
+                }
             }
             position.resolve(outcome);
         }
@@ -870,15 +1109,14 @@ impl Trader {
         });
     }
 
-    fn replace_order_on_token(&mut self, action: &TradeAction) {
-        let token = if action.side.contains("up") {
-            "up"
-        } else {
-            "down"
+    fn replace_order_on_leg(&mut self, action: &TradeAction) {
+        let leg = match action.leg() {
+            Some(l) => l,
+            None => return,
         };
         let position = self.position.as_mut().unwrap();
         self.open_orders.retain(|order| {
-            if order.token == token {
+            if order.leg == leg {
                 self.executor.cancel_order(order, position);
                 false
             } else {
@@ -895,14 +1133,10 @@ impl Trader {
         for (target, action, rd, rt) in self.deferred_actions.drain(..) {
             if current_elapsed >= target {
                 // Unreserve funds first
-                if action.side.starts_with("buy") {
-                    position.cash += rd;
-                } else if action.side.starts_with("sell") {
-                    if action.side.contains("up") {
-                        position.up_tokens += rt;
-                    } else {
-                        position.down_tokens += rt;
-                    }
+                match action.parsed_side() {
+                    Side::Buy(_) => position.cash += rd,
+                    Side::Sell(leg) => position.add_leg(leg as usize, rt),
+                    _ => {}
                 }
 
                 // Now execute at current prices
@@ -945,18 +1179,23 @@ impl Trader {
 mod tests {
     use super::*;
 
+    /// Crypto economics, matching the former global constants.
+    fn econ_test() -> MarketEconomics {
+        MarketEconomics::crypto()
+    }
+
     #[test]
     fn test_position_new() {
         let p = Position::new(100.0);
         assert_eq!(p.cash, 100.0);
-        assert_eq!(p.up_tokens, 0.0);
-        assert_eq!(p.down_tokens, 0.0);
+        assert_eq!(p.up_tokens(), 0.0);
+        assert_eq!(p.down_tokens(), 0.0);
     }
 
     #[test]
     fn test_compute_trade_size_buy() {
         let p = Position::new(100.0);
-        let (tokens, cost) = p.compute_trade_size("buy_up", Some(0.50), 100.0);
+        let (tokens, cost) = p.compute_trade_size("buy_up", Some(0.50), 100.0, &econ_test());
         assert!(tokens > 0.0);
         assert!((tokens - 200.0).abs() < 0.01);
         assert!((cost - 100.0).abs() < 0.01);
@@ -966,15 +1205,15 @@ mod tests {
     fn test_compute_trade_size_insufficient() {
         let p = Position::new(1.0);
         // 1.0 / 0.50 = 2.0 tokens, below min 5
-        let (tokens, _) = p.compute_trade_size("buy_up", Some(0.50), 1.0);
+        let (tokens, _) = p.compute_trade_size("buy_up", Some(0.50), 1.0, &econ_test());
         assert_eq!(tokens, 0.0);
     }
 
     #[test]
     fn test_compute_trade_size_sell() {
         let mut p = Position::new(0.0);
-        p.up_tokens = 100.0;
-        let (tokens, proceeds) = p.compute_trade_size("sell_up", Some(0.80), 100.0);
+        p.set_leg(0, 100.0);
+        let (tokens, proceeds) = p.compute_trade_size("sell_up", Some(0.80), 100.0, &econ_test());
         assert_eq!(tokens, 100.0);
         assert!((proceeds - 80.0).abs() < 0.01);
     }
@@ -984,33 +1223,225 @@ mod tests {
         let mut p = Position::new(100.0);
         p.apply_trade("buy_up", 0.50, 50.0);
         assert!((p.cash - 75.0).abs() < 0.01);
-        assert!((p.up_tokens - 50.0).abs() < 0.01);
+        assert!((p.up_tokens() - 50.0).abs() < 0.01);
 
         p.apply_trade("sell_up", 0.80, 50.0);
-        assert!((p.up_tokens - 0.0).abs() < 0.01);
+        assert!((p.up_tokens() - 0.0).abs() < 0.01);
         assert!((p.cash - 115.0).abs() < 0.01);
     }
 
     #[test]
     fn test_resolve_up() {
         let mut p = Position::new(0.0);
-        p.up_tokens = 100.0;
-        p.down_tokens = 50.0;
+        p.set_leg(0, 100.0);
+        p.set_leg(1, 50.0);
         p.resolve(Some("Up"));
         assert_eq!(p.cash, 100.0);
-        assert_eq!(p.up_tokens, 0.0);
-        assert_eq!(p.down_tokens, 0.0);
+        assert_eq!(p.up_tokens(), 0.0);
+        assert_eq!(p.down_tokens(), 0.0);
     }
 
     #[test]
     fn test_resolve_down() {
         let mut p = Position::new(0.0);
-        p.up_tokens = 100.0;
-        p.down_tokens = 50.0;
+        p.set_leg(0, 100.0);
+        p.set_leg(1, 50.0);
         p.resolve(Some("Down"));
         assert_eq!(p.cash, 50.0);
-        assert_eq!(p.up_tokens, 0.0);
-        assert_eq!(p.down_tokens, 0.0);
+        assert_eq!(p.up_tokens(), 0.0);
+        assert_eq!(p.down_tokens(), 0.0);
+    }
+
+    // -----------------------------------------------------------------
+    // Side parsing / leg routing
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn side_parses_crypto_and_sports_keys() {
+        assert_eq!(Side::parse("hold"), Some(Side::Hold));
+        assert_eq!(Side::parse("buy_up"), Some(Side::Buy(0)));
+        assert_eq!(Side::parse("buy_down"), Some(Side::Buy(1)));
+        assert_eq!(Side::parse("sell_up"), Some(Side::Sell(0)));
+        assert_eq!(Side::parse("sell_down"), Some(Side::Sell(1)));
+        assert_eq!(Side::parse("cancel_up"), Some(Side::Cancel(0)));
+
+        // Sports moneyline shares the same leg indices.
+        assert_eq!(Side::parse("buy_home"), Some(Side::Buy(0)));
+        assert_eq!(Side::parse("buy_away"), Some(Side::Buy(1)));
+        assert_eq!(Side::parse("buy_draw"), Some(Side::Buy(2)));
+
+        // Numeric form for legs without a well-known name (spread, total).
+        assert_eq!(Side::parse("buy:3"), Some(Side::Buy(3)));
+        assert_eq!(Side::parse("sell:7"), Some(Side::Sell(7)));
+    }
+
+    #[test]
+    fn side_rejects_unknown_input_rather_than_guessing() {
+        // The old code used `side.contains("up")`, so any of these would have
+        // been routed to the up token. They must now refuse to route.
+        for bad in [
+            "buy_upside",
+            "buy_uptown",
+            "nonsense",
+            "buy_",
+            "",
+            "buy:99",
+            "trade_up",
+        ] {
+            assert_eq!(Side::parse(bad), None, "{bad} should not parse");
+        }
+    }
+
+    #[test]
+    fn unparseable_side_is_treated_as_hold_not_as_leg_zero() {
+        let action = TradeAction::buy("buy_upside", 50.0, 0.5, None);
+        assert_eq!(action.parsed_side(), Side::Hold);
+        assert_eq!(action.leg(), None);
+
+        // And it must move nothing.
+        let mut p = Position::new(100.0);
+        p.apply_trade("buy_upside", 0.5, 50.0);
+        assert_eq!(p.cash, 100.0);
+        assert_eq!(p.total_tokens(), 0.0);
+    }
+
+    #[test]
+    fn side_round_trips_through_leg_labels() {
+        let crypto = LegSpec::crypto_pair("t-up", "t-down");
+        assert_eq!(Side::Buy(0).to_side_string(&crypto), "buy_up");
+        assert_eq!(Side::Sell(1).to_side_string(&crypto), "sell_down");
+
+        let sports = vec![
+            LegSpec::new("home", "Chiefs", "t-h", "c1"),
+            LegSpec::new("away", "Eagles", "t-a", "c1"),
+            LegSpec::new("draw", "Draw", "t-d", "c1"),
+        ];
+        assert_eq!(Side::Buy(0).to_side_string(&sports), "buy_home");
+        assert_eq!(Side::Buy(2).to_side_string(&sports), "buy_draw");
+        assert_eq!(
+            Side::parse(&Side::Buy(2).to_side_string(&sports)),
+            Some(Side::Buy(2))
+        );
+    }
+
+    #[test]
+    fn position_handles_a_third_leg() {
+        let mut p = Position::new(100.0);
+        p.apply_trade("buy_draw", 0.25, 100.0);
+        assert!((p.cash - 75.0).abs() < 1e-9);
+        assert_eq!(p.leg(2), 100.0);
+        assert_eq!(p.up_tokens(), 0.0);
+        assert_eq!(p.down_tokens(), 0.0);
+
+        p.resolve_leg(Some(2));
+        assert!((p.cash - 175.0).abs() < 1e-9);
+        assert_eq!(p.total_tokens(), 0.0);
+    }
+
+    #[test]
+    fn resolve_leg_pays_only_the_winning_leg() {
+        let mut p = Position::new(0.0);
+        p.set_leg(0, 10.0);
+        p.set_leg(1, 20.0);
+        p.set_leg(2, 30.0);
+
+        p.resolve_leg(Some(1));
+        assert_eq!(p.cash, 20.0);
+        assert_eq!(p.total_tokens(), 0.0);
+    }
+
+    #[test]
+    fn resolve_leg_none_leaves_position_untouched() {
+        let mut p = Position::new(5.0);
+        p.set_leg(0, 10.0);
+        p.resolve_leg(None);
+        assert_eq!(p.cash, 5.0);
+        assert_eq!(p.leg(0), 10.0);
+    }
+
+    #[test]
+    fn sell_reserves_and_unreserves_the_correct_leg() {
+        let mut p = Position::new(0.0);
+        p.set_leg(1, 40.0);
+
+        let (dollars, tokens) = p.reserve_for_order("sell_down", 0.6, 25.0);
+        assert_eq!(dollars, 0.0);
+        assert_eq!(tokens, 25.0);
+        assert_eq!(p.leg(1), 15.0);
+        assert_eq!(p.leg(0), 0.0, "reservation must not touch the up leg");
+
+        p.unreserve_for_order("sell_down", 0.0, 25.0);
+        assert_eq!(p.leg(1), 40.0);
+        assert_eq!(p.leg(0), 0.0);
+    }
+
+    /// Regression: `end_session` used to credit every deferred sell back to
+    /// `up_tokens` regardless of side, inventing up tokens and destroying down
+    /// tokens whenever a session ended with a deferred `sell_down` in flight.
+    #[test]
+    fn deferred_sell_down_is_returned_to_the_down_leg_at_session_end() {
+        struct SellDownOnce {
+            sold: bool,
+        }
+        impl crate::strategy::Strategy for SellDownOnce {
+            fn name(&self) -> &str {
+                "SellDownOnce"
+            }
+            fn version(&self) -> &str {
+                "1"
+            }
+            fn on_session_start(&mut self, _m: &SessionMetadata) {
+                self.sold = false;
+            }
+            fn on_tick(&mut self, ctx: &TickContext) -> TradeAction {
+                if !self.sold && ctx.position.down_tokens() > 0.0 {
+                    self.sold = true;
+                    return TradeAction::sell("sell_down", 50.0, 0.60);
+                }
+                hold()
+            }
+            fn with_params(
+                &self,
+                _p: &HashMap<String, crate::strategy::ParamValue>,
+            ) -> Box<dyn crate::strategy::Strategy> {
+                Box::new(SellDownOnce { sold: false })
+            }
+        }
+
+        // Latency long enough that the deferred sell is still in flight when
+        // the session ends.
+        let executor = SimExecutor::new("midpoint", 0.0, false, None, 60_000);
+        let mut trader = Trader::new(Box::new(SellDownOnce { sold: false }), executor);
+
+        let mut position = Position::new(0.0);
+        position.set_leg(1, 50.0);
+        trader.start_session(SessionMetadata::default(), position, 0.0, 300.0);
+
+        trader.process_tick(&make_sample(1.0, Some(0.40), Some(0.60)));
+
+        // Mid-flight: the tokens are reserved out of the down leg.
+        assert_eq!(trader.position().unwrap().leg(1), 0.0);
+        assert_eq!(trader.position().unwrap().leg(0), 0.0);
+
+        trader.end_session(None);
+
+        let p = trader.position().unwrap();
+        assert_eq!(p.leg(1), 50.0, "down tokens must be returned to the down leg");
+        assert_eq!(p.leg(0), 0.0, "no up tokens may be invented");
+    }
+
+    #[test]
+    fn compute_trade_size_respects_per_market_min_order_size() {
+        let p = Position::new(100.0);
+        let mut econ = MarketEconomics::crypto();
+
+        // 100 / 0.5 = 200 tokens, comfortably above the crypto minimum of 5.
+        let (tokens, _) = p.compute_trade_size("buy_up", Some(0.50), 100.0, &econ);
+        assert!((tokens - 200.0).abs() < 0.01);
+
+        econ.min_order_tokens = 500.0;
+        let (tokens, _) = p.compute_trade_size("buy_up", Some(0.50), 100.0, &econ);
+        assert_eq!(tokens, 0.0, "must refuse a size below the venue minimum");
     }
 
     #[test]
@@ -1034,9 +1465,9 @@ mod tests {
     #[test]
     fn test_invalid_price() {
         let p = Position::new(100.0);
-        assert_eq!(p.compute_trade_size("buy_up", Some(0.0), 100.0), (0.0, 0.0));
-        assert_eq!(p.compute_trade_size("buy_up", Some(1.0), 100.0), (0.0, 0.0));
-        assert_eq!(p.compute_trade_size("buy_up", None, 100.0), (0.0, 0.0));
+        assert_eq!(p.compute_trade_size("buy_up", Some(0.0), 100.0, &econ_test()), (0.0, 0.0));
+        assert_eq!(p.compute_trade_size("buy_up", Some(1.0), 100.0, &econ_test()), (0.0, 0.0));
+        assert_eq!(p.compute_trade_size("buy_up", None, 100.0, &econ_test()), (0.0, 0.0));
     }
 
     fn make_sample(elapsed: f64, up_mid: Option<f64>, down_mid: Option<f64>) -> Sample {

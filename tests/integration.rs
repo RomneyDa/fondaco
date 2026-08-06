@@ -10,7 +10,13 @@ use fondaco::session_cache::*;
 use fondaco::strategy::*;
 use fondaco::trader::*;
 use fondaco::volatility::*;
+use fondaco::economics::MarketEconomics;
 use std::collections::HashMap;
+
+/// Crypto economics, matching the former global constants.
+fn econ_test() -> MarketEconomics {
+    MarketEconomics::crypto()
+}
 
 // ---------------------------------------------------------------------------
 // Helper: make_sample
@@ -252,6 +258,8 @@ fn default_metadata() -> SessionMetadata {
         prior_session_summaries: Vec::new(),
         gap_before_seconds: None,
         data_density: 1.0,
+        legs: fondaco::trader::LegSpec::crypto_pair("t1", "t2"),
+        economics: econ_test(),
         extra: HashMap::new(),
     }
 }
@@ -296,7 +304,7 @@ fn test_taker_fee_at_boundary() {
 #[test]
 fn test_position_compute_trade_size_buy_up() {
     let p = Position::new(100.0);
-    let (tokens, cost) = p.compute_trade_size("buy_up", Some(0.50), 100.0);
+    let (tokens, cost) = p.compute_trade_size("buy_up", Some(0.50), 100.0, &econ_test());
     assert_eq!(tokens, 200.0);
     assert!((cost - 100.0).abs() < 0.01);
 }
@@ -304,29 +312,29 @@ fn test_position_compute_trade_size_buy_up() {
 #[test]
 fn test_position_compute_trade_size_buy_down() {
     let p = Position::new(50.0);
-    let (tokens, _cost) = p.compute_trade_size("buy_down", Some(0.25), 50.0);
+    let (tokens, _cost) = p.compute_trade_size("buy_down", Some(0.25), 50.0, &econ_test());
     assert_eq!(tokens, 200.0);
 }
 
 #[test]
 fn test_position_compute_trade_size_below_min() {
     let p = Position::new(1.0);
-    let (tokens, _) = p.compute_trade_size("buy_up", Some(0.50), 1.0);
+    let (tokens, _) = p.compute_trade_size("buy_up", Some(0.50), 1.0, &econ_test());
     assert_eq!(tokens, 0.0);
 }
 
 #[test]
 fn test_position_compute_trade_size_no_cash() {
     let p = Position::new(0.0);
-    let (tokens, _) = p.compute_trade_size("buy_up", Some(0.50), 100.0);
+    let (tokens, _) = p.compute_trade_size("buy_up", Some(0.50), 100.0, &econ_test());
     assert_eq!(tokens, 0.0);
 }
 
 #[test]
 fn test_position_compute_trade_size_sell() {
     let mut p = Position::new(0.0);
-    p.up_tokens = 100.0;
-    let (tokens, proceeds) = p.compute_trade_size("sell_up", Some(0.80), 100.0);
+    p.set_leg(0, 100.0);
+    let (tokens, proceeds) = p.compute_trade_size("sell_up", Some(0.80), 100.0, &econ_test());
     assert_eq!(tokens, 100.0);
     assert!((proceeds - 80.0).abs() < 0.01);
 }
@@ -336,47 +344,47 @@ fn test_position_apply_trade_buy() {
     let mut p = Position::new(100.0);
     p.apply_trade("buy_up", 0.50, 50.0);
     assert!((p.cash - 75.0).abs() < 0.01);
-    assert!((p.up_tokens - 50.0).abs() < 0.01);
+    assert!((p.up_tokens() - 50.0).abs() < 0.01);
 }
 
 #[test]
 fn test_position_apply_trade_sell() {
     let mut p = Position::new(0.0);
-    p.up_tokens = 100.0;
+    p.set_leg(0, 100.0);
     p.apply_trade("sell_up", 0.80, 100.0);
     assert!((p.cash - 80.0).abs() < 0.01);
-    assert!((p.up_tokens - 0.0).abs() < 0.01);
+    assert!((p.up_tokens() - 0.0).abs() < 0.01);
 }
 
 #[test]
 fn test_position_resolve_up_wins() {
     let mut p = Position::new(10.0);
-    p.up_tokens = 100.0;
-    p.down_tokens = 50.0;
+    p.set_leg(0, 100.0);
+    p.set_leg(1, 50.0);
     p.resolve(Some("Up"));
     assert_eq!(p.cash, 110.0);
-    assert_eq!(p.up_tokens, 0.0);
-    assert_eq!(p.down_tokens, 0.0);
+    assert_eq!(p.up_tokens(), 0.0);
+    assert_eq!(p.down_tokens(), 0.0);
 }
 
 #[test]
 fn test_position_resolve_down_wins() {
     let mut p = Position::new(10.0);
-    p.up_tokens = 100.0;
-    p.down_tokens = 50.0;
+    p.set_leg(0, 100.0);
+    p.set_leg(1, 50.0);
     p.resolve(Some("Down"));
     assert_eq!(p.cash, 60.0);
-    assert_eq!(p.up_tokens, 0.0);
-    assert_eq!(p.down_tokens, 0.0);
+    assert_eq!(p.up_tokens(), 0.0);
+    assert_eq!(p.down_tokens(), 0.0);
 }
 
 #[test]
 fn test_position_resolve_none() {
     let mut p = Position::new(10.0);
-    p.up_tokens = 100.0;
+    p.set_leg(0, 100.0);
     p.resolve(None);
     assert_eq!(p.cash, 10.0);
-    assert_eq!(p.up_tokens, 100.0);
+    assert_eq!(p.up_tokens(), 100.0);
 }
 
 #[test]
@@ -394,14 +402,14 @@ fn test_position_reserve_unreserve_buy() {
 #[test]
 fn test_position_reserve_unreserve_sell() {
     let mut p = Position::new(0.0);
-    p.up_tokens = 100.0;
+    p.set_leg(0, 100.0);
     let (dr, tr) = p.reserve_for_order("sell_up", 0.80, 50.0);
     assert_eq!(dr, 0.0);
     assert_eq!(tr, 50.0);
-    assert_eq!(p.up_tokens, 50.0);
+    assert_eq!(p.up_tokens(), 50.0);
 
     p.unreserve_for_order("sell_up", dr, tr);
-    assert_eq!(p.up_tokens, 100.0);
+    assert_eq!(p.up_tokens(), 100.0);
 }
 
 // ===========================================================================
@@ -451,7 +459,7 @@ fn test_sim_midpoint_slippage_sell() {
     let exec = SimExecutor::new("midpoint_slippage", 0.02, false, None, 0);
     let sample = make_sample(10.0, 60000.0, 0.60, 0.40);
     let mut pos = Position::new(0.0);
-    pos.up_tokens = 100.0;
+    pos.set_leg(0, 100.0);
     let action = TradeAction {
         side: "sell_up".to_string(),
         amount: 100.0,
@@ -490,7 +498,7 @@ fn test_sim_book_mode_uses_midpoint_for_sell() {
     let exec = SimExecutor::new("book", 0.02, false, None, 0);
     let sample = make_sample_with_book(10.0, 60000.0, 0.70, 0.30, 0.75, 0.35);
     let mut pos = Position::new(0.0);
-    pos.up_tokens = 100.0;
+    pos.set_leg(0, 100.0);
     let action = TradeAction {
         side: "sell_up".to_string(),
         amount: 100.0,
@@ -585,7 +593,7 @@ fn test_sim_limit_order_place_and_cancel() {
     let order = exec.place_limit_order(&action, 0, &sample, &mut pos);
     assert!(order.is_some());
     let order = order.unwrap();
-    assert_eq!(order.token, "up");
+    assert_eq!(order.leg, 0);
     // Cash should be reserved (reduced)
     let cash_after_reserve = pos.cash;
     assert!(cash_after_reserve < 100.0);
@@ -653,7 +661,7 @@ fn test_sim_limit_order_fill_threshold() {
     let fill_sample = make_sample(25.0, 59800.0, 0.48, 0.52);
     let fills = exec.check_fills(&mut orders, &fill_sample, &mut pos);
     assert_eq!(fills.len(), 1);
-    assert!(pos.up_tokens > 0.0);
+    assert!(pos.up_tokens() > 0.0);
 }
 
 #[test]
@@ -661,7 +669,7 @@ fn test_sim_sell_limit_fill() {
     let mut exec = SimExecutor::new("book", 0.02, false, None, 0);
     let sample = make_sample(10.0, 60000.0, 0.55, 0.45);
     let mut pos = Position::new(0.0);
-    pos.up_tokens = 100.0;
+    pos.set_leg(0, 100.0);
 
     let action = TradeAction {
         side: "sell_up".to_string(),
@@ -674,8 +682,8 @@ fn test_sim_sell_limit_fill() {
     let order = exec.place_limit_order(&action, 0, &sample, &mut pos);
     assert!(order.is_some());
     let order = order.unwrap();
-    assert_eq!(order.token, "up");
-    assert_eq!(pos.up_tokens, 0.0); // Tokens reserved
+    assert_eq!(order.leg, 0);
+    assert_eq!(pos.up_tokens(), 0.0); // Tokens reserved
 
     // Midpoint rises above price + margin -- should fill
     let mut orders = vec![order];
@@ -703,14 +711,14 @@ fn test_sim_executor_limit_order_and_fill() {
     let order = exec.place_limit_order(&action, 0, &sample, &mut pos);
     assert!(order.is_some());
     let order = order.unwrap();
-    assert_eq!(order.token, "up");
+    assert_eq!(order.leg, 0);
 
     // Price drops below limit - margin -> fill
     let mut orders = vec![order];
     let fill_sample = make_sample(20.0, 59900.0, 0.50, 0.50);
     let fills = exec.check_fills(&mut orders, &fill_sample, &mut pos);
     assert_eq!(fills.len(), 1);
-    assert!(pos.up_tokens > 0.0);
+    assert!(pos.up_tokens() > 0.0);
 }
 
 #[test]
@@ -872,7 +880,7 @@ fn test_trader_deferred_latency() {
 
     // The deferred trade should have executed
     let pos = trader.position().unwrap();
-    assert!(pos.up_tokens > 0.0);
+    assert!(pos.up_tokens() > 0.0);
 }
 
 // ===========================================================================
@@ -1050,14 +1058,14 @@ fn test_held_side_empty() {
 #[test]
 fn test_held_side_up() {
     let mut p = Position::new(0.0);
-    p.up_tokens = 50.0;
+    p.set_leg(0, 50.0);
     assert_eq!(held_side(&p), Some("up"));
 }
 
 #[test]
 fn test_held_side_down() {
     let mut p = Position::new(0.0);
-    p.down_tokens = 50.0;
+    p.set_leg(1, 50.0);
     assert_eq!(held_side(&p), Some("down"));
 }
 
@@ -1117,7 +1125,7 @@ fn test_has_position() {
     assert!(!has_position(&p));
 
     let mut p2 = Position::new(0.0);
-    p2.up_tokens = 10.0;
+    p2.set_leg(0, 10.0);
     assert!(has_position(&p2));
 }
 
@@ -1132,7 +1140,7 @@ fn test_check_expired_entry() {
     // With position, should not reset
     let mut entry_midpoint2 = 0.55;
     let mut p2 = Position::new(0.0);
-    p2.up_tokens = 50.0;
+    p2.set_leg(0, 50.0);
     check_expired_entry(&mut entry_midpoint2, &p2);
     assert_eq!(entry_midpoint2, 0.55);
 }
@@ -1902,17 +1910,17 @@ fn test_position_apply_trade_buy_down() {
     let mut p = Position::new(100.0);
     p.apply_trade("buy_down", 0.40, 50.0);
     assert!((p.cash - 80.0).abs() < 0.01);
-    assert!((p.down_tokens - 50.0).abs() < 0.01);
-    assert_eq!(p.up_tokens, 0.0);
+    assert!((p.down_tokens() - 50.0).abs() < 0.01);
+    assert_eq!(p.up_tokens(), 0.0);
 }
 
 #[test]
 fn test_position_apply_trade_sell_down() {
     let mut p = Position::new(0.0);
-    p.down_tokens = 100.0;
+    p.set_leg(1, 100.0);
     p.apply_trade("sell_down", 0.70, 100.0);
     assert!((p.cash - 70.0).abs() < 0.01);
-    assert_eq!(p.down_tokens, 0.0);
+    assert_eq!(p.down_tokens(), 0.0);
 }
 
 #[test]
@@ -1920,7 +1928,7 @@ fn test_position_apply_trade_zero_tokens() {
     let mut p = Position::new(100.0);
     p.apply_trade("buy_up", 0.50, 0.0);
     assert_eq!(p.cash, 100.0);
-    assert_eq!(p.up_tokens, 0.0);
+    assert_eq!(p.up_tokens(), 0.0);
 }
 
 #[test]
@@ -1928,7 +1936,7 @@ fn test_open_order_fields() {
     let order = OpenOrder {
         order_id: "sim-1".to_string(),
         side: "buy_up".to_string(),
-        token: "up".to_string(),
+        leg: 0,
         price: 0.50,
         tokens: 100.0,
         dollars_reserved: 50.0,
@@ -1939,7 +1947,7 @@ fn test_open_order_fields() {
         cancel_after_s: Some(10.0),
         time_placed: Some(10.0),
     };
-    assert_eq!(order.token, "up");
+    assert_eq!(order.leg, 0);
     assert_eq!(order.expiration, Some(130.0));
     assert_eq!(order.cancel_after_s, Some(10.0));
 }
@@ -1960,7 +1968,7 @@ fn test_sim_executor_down_token_buy() {
     assert!(trade.is_some());
     let t = trade.unwrap();
     assert!((t.price - 0.60).abs() < 0.01);
-    assert!(pos.down_tokens > 0.0);
+    assert!(pos.down_tokens() > 0.0);
 }
 
 #[test]
@@ -1986,7 +1994,7 @@ fn test_trader_end_session_cancels_pending() {
 #[test]
 fn test_check_exit_stop_loss() {
     let mut pos = Position::new(0.0);
-    pos.up_tokens = 100.0;
+    pos.set_leg(0, 100.0);
     let sample = make_sample(100.0, 60000.0, 0.40, 0.60);
     let meta = default_metadata();
     let ctx = TickContext {
@@ -2020,7 +2028,7 @@ fn test_check_exit_stop_loss() {
 #[test]
 fn test_check_exit_take_profit() {
     let mut pos = Position::new(0.0);
-    pos.up_tokens = 100.0;
+    pos.set_leg(0, 100.0);
     let sample = make_sample(100.0, 60100.0, 0.80, 0.20);
     let meta = default_metadata();
     let ctx = TickContext {
@@ -2075,7 +2083,7 @@ fn test_check_exit_no_position() {
 #[test]
 fn test_check_exit_cooldown_blocks() {
     let mut pos = Position::new(0.0);
-    pos.up_tokens = 100.0;
+    pos.set_leg(0, 100.0);
     let sample = make_sample(100.0, 60000.0, 0.40, 0.60);
     let meta = default_metadata();
     let ctx = TickContext {
@@ -2265,7 +2273,7 @@ fn test_gtd_order_fills_before_deadline() {
     // Tick 1: midpoint dips below limit price minus margin -> fill
     let s1 = make_sample(30.0, 60000.0, 0.15, 0.85);
     trader.process_tick(&s1);
-    assert!(trader.position().unwrap().up_tokens > 0.0);
+    assert!(trader.position().unwrap().up_tokens() > 0.0);
 }
 
 #[test]
@@ -2413,7 +2421,7 @@ fn test_sell_limit_order_gtd_expiry() {
     let mut exec = SimExecutor::new("book", 0.02, false, None, 0);
     let sample = make_sample(10.0, 60000.0, 0.55, 0.45);
     let mut pos = Position::new(0.0);
-    pos.up_tokens = 100.0;
+    pos.set_leg(0, 100.0);
 
     let action = TradeAction {
         side: "sell_up".to_string(),
@@ -2426,7 +2434,7 @@ fn test_sell_limit_order_gtd_expiry() {
     let order = exec.place_limit_order(&action, 0, &sample, &mut pos);
     assert!(order.is_some());
     let order = order.unwrap();
-    assert_eq!(pos.up_tokens, 0.0); // Tokens reserved
+    assert_eq!(pos.up_tokens(), 0.0); // Tokens reserved
 
     // Past expiry -> order removed, tokens restored
     let mut orders = vec![order];
@@ -2434,7 +2442,7 @@ fn test_sell_limit_order_gtd_expiry() {
     let fills = exec.check_fills(&mut orders, &expired_sample, &mut pos);
     assert_eq!(fills.len(), 0);
     assert!(orders.is_empty());
-    assert_eq!(pos.up_tokens, 100.0); // Tokens unreserved
+    assert_eq!(pos.up_tokens(), 100.0); // Tokens unreserved
 }
 
 // ===========================================================================
@@ -2909,8 +2917,8 @@ fn test_slug_key_various() {
 #[test]
 fn test_position_compute_trade_size_sell_down() {
     let mut p = Position::new(0.0);
-    p.down_tokens = 100.0;
-    let (tokens, proceeds) = p.compute_trade_size("sell_down", Some(0.70), 100.0);
+    p.set_leg(1, 100.0);
+    let (tokens, proceeds) = p.compute_trade_size("sell_down", Some(0.70), 100.0, &econ_test());
     assert_eq!(tokens, 100.0);
     assert!((proceeds - 70.0).abs() < 0.01);
 }
@@ -2918,41 +2926,41 @@ fn test_position_compute_trade_size_sell_down() {
 #[test]
 fn test_position_compute_trade_size_sell_more_than_held() {
     let mut p = Position::new(0.0);
-    p.up_tokens = 50.0;
+    p.set_leg(0, 50.0);
     // Request sell 100, but only 50 held -> should sell 50
-    let (tokens, _proceeds) = p.compute_trade_size("sell_up", Some(0.80), 100.0);
+    let (tokens, _proceeds) = p.compute_trade_size("sell_up", Some(0.80), 100.0, &econ_test());
     assert!((tokens - 50.0).abs() < 0.01);
 }
 
 #[test]
 fn test_position_compute_trade_size_invalid_price() {
     let p = Position::new(100.0);
-    let (tokens, _) = p.compute_trade_size("buy_up", Some(0.0), 100.0);
+    let (tokens, _) = p.compute_trade_size("buy_up", Some(0.0), 100.0, &econ_test());
     assert_eq!(tokens, 0.0);
-    let (tokens2, _) = p.compute_trade_size("buy_up", Some(1.0), 100.0);
+    let (tokens2, _) = p.compute_trade_size("buy_up", Some(1.0), 100.0, &econ_test());
     assert_eq!(tokens2, 0.0);
-    let (tokens3, _) = p.compute_trade_size("buy_up", None, 100.0);
+    let (tokens3, _) = p.compute_trade_size("buy_up", None, 100.0, &econ_test());
     assert_eq!(tokens3, 0.0);
 }
 
 #[test]
 fn test_position_compute_trade_size_unknown_side() {
     let p = Position::new(100.0);
-    let (tokens, _) = p.compute_trade_size("fly_up", Some(0.50), 100.0);
+    let (tokens, _) = p.compute_trade_size("fly_up", Some(0.50), 100.0, &econ_test());
     assert_eq!(tokens, 0.0);
 }
 
 #[test]
 fn test_position_reserve_sell_down() {
     let mut p = Position::new(0.0);
-    p.down_tokens = 100.0;
+    p.set_leg(1, 100.0);
     let (dr, tr) = p.reserve_for_order("sell_down", 0.70, 50.0);
     assert_eq!(dr, 0.0);
     assert_eq!(tr, 50.0);
-    assert_eq!(p.down_tokens, 50.0);
+    assert_eq!(p.down_tokens(), 50.0);
 
     p.unreserve_for_order("sell_down", dr, tr);
-    assert_eq!(p.down_tokens, 100.0);
+    assert_eq!(p.down_tokens(), 100.0);
 }
 
 // ===========================================================================
@@ -3004,13 +3012,13 @@ fn test_trader_auto_exit_at_session_end() {
     let sample = make_sample(155.0, 60000.0, 0.55, 0.45);
     let result = trader.process_tick(&sample);
     assert!(result.is_some());
-    assert!(trader.position().unwrap().up_tokens > 0.0);
+    assert!(trader.position().unwrap().up_tokens() > 0.0);
 
     // End session with Up outcome -> tokens resolve to cash
     let trades = trader.end_session(Some("Up"));
     assert_eq!(trades.len(), 1);
     let pos = trader.position().unwrap();
-    assert_eq!(pos.up_tokens, 0.0);
+    assert_eq!(pos.up_tokens(), 0.0);
     // Won: started with $100, bought up tokens at 0.55, Up outcome = $1/token
     assert!(pos.cash > 100.0);
 }
@@ -3025,12 +3033,12 @@ fn test_trader_auto_exit_down_outcome() {
     // Buy up tokens via market order
     let sample = make_sample(155.0, 60000.0, 0.55, 0.45);
     trader.process_tick(&sample);
-    assert!(trader.position().unwrap().up_tokens > 0.0);
+    assert!(trader.position().unwrap().up_tokens() > 0.0);
 
     // Down outcome -> up tokens worthless
     trader.end_session(Some("Down"));
     let pos = trader.position().unwrap();
-    assert_eq!(pos.up_tokens, 0.0);
+    assert_eq!(pos.up_tokens(), 0.0);
     assert!(pos.cash < 100.0); // Lost money
 }
 
@@ -3126,7 +3134,7 @@ fn test_sim_executor_sell_down_token() {
     let exec = SimExecutor::new("midpoint", 0.0, false, None, 0);
     let sample = make_sample(10.0, 60000.0, 0.40, 0.60);
     let mut pos = Position::new(0.0);
-    pos.down_tokens = 100.0;
+    pos.set_leg(1, 100.0);
     let action = TradeAction {
         side: "sell_down".to_string(),
         amount: 100.0,
@@ -3138,7 +3146,7 @@ fn test_sim_executor_sell_down_token() {
     assert!(trade.is_some());
     let t = trade.unwrap();
     assert!((t.price - 0.60).abs() < 0.01);
-    assert_eq!(pos.down_tokens, 0.0);
+    assert_eq!(pos.down_tokens(), 0.0);
     assert!(pos.cash > 0.0);
 }
 
@@ -3147,7 +3155,7 @@ fn test_sim_executor_sell_up_at_high_midpoint() {
     let exec = SimExecutor::new("midpoint", 0.0, false, None, 0);
     let sample = make_sample(200.0, 60100.0, 0.90, 0.10);
     let mut pos = Position::new(0.0);
-    pos.up_tokens = 100.0;
+    pos.set_leg(0, 100.0);
     let action = TradeAction {
         side: "sell_up".to_string(),
         amount: 100.0,
@@ -3196,7 +3204,7 @@ fn test_taker_fee_negative_tokens() {
 #[test]
 fn test_check_exit_stop_loss_down_position() {
     let mut pos = Position::new(0.0);
-    pos.down_tokens = 100.0;
+    pos.set_leg(1, 100.0);
     let sample = make_sample(100.0, 59900.0, 0.60, 0.30);
     let meta = default_metadata();
     let ctx = TickContext {
@@ -3226,7 +3234,7 @@ fn test_check_exit_stop_loss_down_position() {
 #[test]
 fn test_check_exit_take_profit_down_position() {
     let mut pos = Position::new(0.0);
-    pos.down_tokens = 100.0;
+    pos.set_leg(1, 100.0);
     let sample = make_sample(100.0, 59900.0, 0.20, 0.80);
     let meta = default_metadata();
     let ctx = TickContext {

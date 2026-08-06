@@ -719,6 +719,8 @@ impl Simulator {
             prior_session_summaries: prior_summaries,
             gap_before_seconds: None,
             data_density: 1.0,
+            legs: Vec::new(),
+            economics: crate::economics::MarketEconomics::crypto(),
             extra: HashMap::new(),
         };
 

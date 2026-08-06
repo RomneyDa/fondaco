@@ -240,19 +240,30 @@ pub trait Strategy: Send {
     }
 }
 
+/// Index of the first leg with a non-zero holding.
+///
+/// This is the generic primitive — sports strategies should use it rather than
+/// `held_side`, whose `"up"`/`"down"` naming only makes sense for the crypto
+/// market.
+pub fn held_leg(position: &Position) -> Option<usize> {
+    (0..crate::trader::MAX_LEGS).find(|&i| position.leg(i) > 0.0)
+}
+
 /// Helper methods for strategies (equivalent to Python Strategy base class methods).
+///
+/// Crypto-specific: maps leg 0 -> `"up"` and leg 1 -> `"down"`. Returns `None`
+/// for holdings on any other leg, so a sports position can never be mistaken
+/// for an up/down one.
 pub fn held_side(position: &Position) -> Option<&'static str> {
-    if position.up_tokens > 0.0 {
-        Some("up")
-    } else if position.down_tokens > 0.0 {
-        Some("down")
-    } else {
-        None
+    match held_leg(position) {
+        Some(0) => Some("up"),
+        Some(1) => Some("down"),
+        _ => None,
     }
 }
 
 pub fn has_position(position: &Position) -> bool {
-    position.up_tokens > 0.0 || position.down_tokens > 0.0
+    held_leg(position).is_some()
 }
 
 /// Check stop-loss and take-profit for an existing position.
@@ -275,9 +286,9 @@ pub fn check_exit(
     let current_mid = if held == "up" { up_mid } else { down_mid };
     let sell_side = if held == "up" { "sell_up" } else { "sell_down" };
     let tokens = if held == "up" {
-        ctx.position.up_tokens
+        ctx.position.up_tokens()
     } else {
-        ctx.position.down_tokens
+        ctx.position.down_tokens()
     };
 
     let cooldown_s = cooldown_ms / 1000.0;
@@ -375,11 +386,11 @@ mod tests {
         assert_eq!(held_side(&p), None);
 
         let mut p2 = Position::new(0.0);
-        p2.up_tokens = 50.0;
+        p2.set_leg(0, 50.0);
         assert_eq!(held_side(&p2), Some("up"));
 
         let mut p3 = Position::new(0.0);
-        p3.down_tokens = 50.0;
+        p3.set_leg(1, 50.0);
         assert_eq!(held_side(&p3), Some("down"));
     }
 

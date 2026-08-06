@@ -20,16 +20,16 @@ use log::{error, info, warn};
 use reqwest::blocking::Client;
 use serde_json::Value;
 
-use fondaco::defaults::{
-    API_TIMEOUT_DEFAULT, CLOB_MIN_ORDER_TOKENS, DEFAULT_EXPIRATION_SECONDS, TOKEN_DECIMALS,
-};
+use fondaco::defaults::{API_TIMEOUT_DEFAULT, DEFAULT_EXPIRATION_SECONDS, TOKEN_DECIMALS};
 use fondaco::notifications::{NotificationEvent, NotificationManager};
-use fondaco::models::MarketMetadata;
 use fondaco::session_io::write_pid_file;
 use fondaco::strategies::all_strategies;
 use fondaco::strategy::Strategy;
 use fondaco::tick_broadcast::{TickMessage, TickSubscriber};
-use fondaco::trader::{FlatlineDetector, Position, SessionMetadata, TickContext, TradeAction};
+use fondaco::economics::MarketEconomics;
+use fondaco::trader::{
+    FlatlineDetector, LegSpec, Position, SessionMetadata, TickContext, TradeAction,
+};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -92,14 +92,15 @@ impl ClobExecutor {
     fn execute_trade(
         &mut self,
         action: &TradeAction,
-        metadata: &MarketMetadata,
+        session_meta: &SessionMetadata,
         position: &mut Position,
     ) -> TradeResult {
         if action.is_hold() || action.amount <= 0.0 {
             return TradeResult::skip();
         }
 
-        let is_sell = action.side.starts_with("sell");
+        let parsed = action.parsed_side();
+        let is_sell = parsed.is_sell();
 
         // Sell cooldown after failures
         if is_sell {
@@ -110,16 +111,16 @@ impl ClobExecutor {
             }
         }
 
-        let is_up = action.side.contains("up");
-        let token_id = if is_up {
-            metadata.up_token_id.as_deref().unwrap_or("")
-        } else {
-            metadata.down_token_id.as_deref().unwrap_or("")
+        // Route by leg index. Substring matching on the side string would map
+        // any leg whose key merely contains "up" onto the up token.
+        let leg = match parsed.leg() {
+            Some(l) => l,
+            None => return TradeResult::error("unroutable side"),
         };
-
-        if token_id.is_empty() {
-            return TradeResult::error("missing token_id");
-        }
+        let token_id = match session_meta.leg_token_id(leg) {
+            Some(t) if !t.is_empty() => t,
+            _ => return TradeResult::error("missing token_id"),
+        };
 
         // Determine order type and price
         let (order_type, price) = if let Some(p) = action.price {
@@ -128,21 +129,24 @@ impl ClobExecutor {
             return TradeResult::error("FAK not supported without book data");
         };
 
+        let econ = &session_meta.economics;
+
         // Compute trade size
-        let (tokens, _cost) = position.compute_trade_size(&action.side, Some(price), action.amount);
-        if tokens <= 0.0 || tokens < CLOB_MIN_ORDER_TOKENS {
+        let (tokens, _cost) =
+            position.compute_trade_size(&action.side, Some(price), action.amount, econ);
+        if tokens <= 0.0 || tokens < econ.min_order_tokens {
             return TradeResult::error("insufficient size");
         }
 
         // Balance reconciliation for sells
         if is_sell {
-            match self.get_balance(token_id) {
+            match self.get_balance(&token_id) {
                 Some(balance) => {
                     let needed = tokens;
                     if balance < needed - 0.01 {
                         warn!(
                             "Balance reconciliation: have {:.4} need {:.4} for {} sell",
-                            balance, needed, if is_up { "up" } else { "down" }
+                            balance, needed, action.side
                         );
                         return TradeResult::error("insufficient balance on-chain");
                     }
@@ -153,21 +157,19 @@ impl ClobExecutor {
             }
         }
 
-        let clob_side = if action.side.starts_with("buy") {
-            "BUY"
-        } else {
-            "SELL"
-        };
+        let clob_side = if parsed.is_buy() { "BUY" } else { "SELL" };
 
         let expiration = action
             .expiration_seconds
             .unwrap_or(DEFAULT_EXPIRATION_SECONDS);
 
+        // Price precision follows the market's tick size, not a hardcoded 2dp —
+        // sending 2dp into a market that ticks at 0.001 rounds away real edge.
         let body = serde_json::json!({
             "token_id": token_id,
             "side": clob_side,
-            "price": format!("{:.2}", price),
-            "size": format!("{:.4}", tokens),
+            "price": format!("{:.*}", econ.price_decimals() as usize, price),
+            "size": format!("{:.*}", econ.token_decimals as usize, tokens),
             "order_type": order_type,
             "expiration_seconds": expiration as u64,
         });
@@ -231,7 +233,7 @@ impl ClobExecutor {
         }
 
         position.apply_trade(&action.side, price, tokens);
-        let fee = fondaco::defaults::compute_taker_fee(price, tokens, true);
+        let fee = econ.taker_fee(price, tokens, true);
         position.cash -= fee;
 
         if is_sell {
@@ -395,8 +397,8 @@ fn write_position_snapshot(
     let mut data = serde_json::json!({
         "strategy": strategy_name,
         "cash": round_token(position.cash),
-        "up_tokens": round_token(position.up_tokens),
-        "down_tokens": round_token(position.down_tokens),
+        "up_tokens": round_token(position.up_tokens()),
+        "down_tokens": round_token(position.down_tokens()),
         "bankroll": round_token(bankroll),
         "session_count": session_count,
         "timestamp": Utc::now().to_rfc3339(),
@@ -516,6 +518,20 @@ fn run_bot_worker(cli: Cli) {
     // CLOB executor
     let mut executor = ClobExecutor::new(&cli.clob_bridge);
 
+    // Fees, tick size and minimum order size for this market. Falls back to the
+    // crypto schedule for markets not listed in markets.rs.
+    let market_economics = fondaco::markets::get_market_config(&cli.slug_prefix)
+        .map(|c| c.economics)
+        .unwrap_or_else(MarketEconomics::crypto);
+    info!(
+        "[{}:{}] Economics: tick={} min_order={} fee_rate={}",
+        slug_key,
+        cli.strategy,
+        market_economics.tick_size,
+        market_economics.min_order_tokens,
+        market_economics.fee_rate,
+    );
+
     let mut bankroll = cli.cash;
     let mut session_count: u64 = 0;
 
@@ -533,7 +549,6 @@ fn run_bot_worker(cli: Cli) {
         let mut strategy: Option<Box<dyn Strategy>> = None;
         let mut position: Option<Position> = None;
         let mut session_meta: Option<SessionMetadata> = None;
-        let mut metadata: Option<MarketMetadata> = None;
         let mut initial_btc_price = 0.0_f64;
         let mut trade_count: usize = 0;
         let mut session_reserve = 0.0_f64;
@@ -597,30 +612,22 @@ fn run_bot_worker(cli: Cli) {
 
                     let pos = Position::new(deploy_cash);
 
+                    let up_tid = up_token_id.clone().unwrap_or_default();
+                    let down_tid = down_token_id.clone().unwrap_or_default();
                     let meta = SessionMetadata {
-                        up_token_id: up_token_id.clone().unwrap_or_default(),
-                        down_token_id: down_token_id.clone().unwrap_or_default(),
+                        up_token_id: up_tid.clone(),
+                        down_token_id: down_tid.clone(),
                         window_start_utc: window_start_utc.clone().unwrap_or_default(),
                         window_duration: wd as f64,
                         prior_session_summaries,
                         gap_before_seconds,
                         data_density,
+                        legs: LegSpec::crypto_pair(&up_tid, &down_tid),
+                        economics: market_economics.clone(),
                         extra: HashMap::new(),
                     };
 
                     strat.on_session_start(&meta);
-
-                    let md = MarketMetadata {
-                        event_id: None,
-                        event_slug: None,
-                        event_title: event_title.clone(),
-                        condition_id: None,
-                        up_token_id,
-                        down_token_id,
-                        window_start_utc,
-                        window_end_utc: None,
-                        resolution_source: None,
-                    };
 
                     info!(
                         "[{}:{}] Session starting: {} | Deploying ${:.2} (reserve ${:.2})",
@@ -638,7 +645,6 @@ fn run_bot_worker(cli: Cli) {
                     strategy = Some(strat);
                     position = Some(pos);
                     session_meta = Some(meta);
-                    metadata = Some(md);
                 }
 
                 TickMessage::Tick { sample, tick_index } => {
@@ -651,7 +657,6 @@ fn run_bot_worker(cli: Cli) {
                     };
                     let pos = position.as_mut().unwrap();
                     let meta = session_meta.as_ref().unwrap();
-                    let md = metadata.as_ref().unwrap();
 
                     if tick_index == 0 {
                         initial_btc_price = sample.btc_price_usd.unwrap_or(0.0);
@@ -698,7 +703,7 @@ fn run_bot_worker(cli: Cli) {
                     if !action.is_hold() && action.amount > 0.0 && trading_allowed {
                         // Guardrail: block trades near session end
                         if sample.elapsed_seconds < (window_duration as f64 - 5.0) {
-                            let result = executor.execute_trade(&action, md, pos);
+                            let result = executor.execute_trade(&action, meta, pos);
                             if result.executed {
                                 log_trade(
                                     &market_dir,
@@ -776,8 +781,8 @@ fn run_bot_worker(cli: Cli) {
                     // Compute credit before resolving
                     let outcome_ref = outcome.as_deref();
                     let credit = match outcome_ref {
-                        Some("Up") => pos.up_tokens,
-                        Some("Down") => pos.down_tokens,
+                        Some("Up") => pos.up_tokens(),
+                        Some("Down") => pos.down_tokens(),
                         _ => 0.0,
                     };
 
@@ -831,7 +836,6 @@ fn run_bot_worker(cli: Cli) {
                     strategy = None;
                     position = None;
                     session_meta = None;
-                    metadata = None;
                 }
 
                 TickMessage::Waiting { .. } => {
