@@ -74,6 +74,9 @@ src/strategies/*.rs
 !src/strategies/mean_rev_fader.rs
 !src/strategies/late_sniper_cb.rs
 
+# Working plan documents (not part of the published repo)
+SPORTS-BETTING.md
+
 # Added by cargo
 
 /target

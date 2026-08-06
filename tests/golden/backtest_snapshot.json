@@ -1,0 +1,4106 @@
+{
+  "config": {
+    "execution_mode": "book",
+    "fees": true,
+    "num_sessions": 90,
+    "sample_interval": 0.5,
+    "starting_cash": 100.0,
+    "window_duration": 300.0
+  },
+  "strategies": {
+    "DriftSniper": {
+      "entry_rate": 0.5,
+      "mean_pnl": 18.537935,
+      "num_sessions": 90,
+      "per_session": [
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.545686,
+          "pnl": 86.814314,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.220053,
+          "pnl": 47.949947,
+          "trades": 1
+        },
+        {
+          "fees": 1.458648,
+          "pnl": 67.831352,
+          "trades": 1
+        },
+        {
+          "fees": 1.479964,
+          "pnl": 70.760036,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.385186,
+          "pnl": 59.794814,
+          "trades": 1
+        },
+        {
+          "fees": 1.498096,
+          "pnl": 73.751904,
+          "trades": 1
+        },
+        {
+          "fees": 1.545686,
+          "pnl": 86.814314,
+          "trades": 1
+        },
+        {
+          "fees": 1.479964,
+          "pnl": 70.760036,
+          "trades": 1
+        },
+        {
+          "fees": 1.541021,
+          "pnl": 83.558979,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 2.553754,
+          "pnl": -8.593754,
+          "trades": 2
+        },
+        {
+          "fees": 1.498096,
+          "pnl": 73.751904,
+          "trades": 1
+        },
+        {
+          "fees": 1.28679,
+          "pnl": 52.26321,
+          "trades": 1
+        },
+        {
+          "fees": 1.13651,
+          "pnl": 43.50349,
+          "trades": 1
+        },
+        {
+          "fees": 1.524515,
+          "pnl": 79.925485,
+          "trades": 1
+        },
+        {
+          "fees": 1.183271,
+          "pnl": 45.856729,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.458648,
+          "pnl": 67.831352,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.385186,
+          "pnl": 59.794814,
+          "trades": 1
+        },
+        {
+          "fees": 1.183271,
+          "pnl": 45.856729,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 2.965705,
+          "pnl": -10.205705,
+          "trades": 2
+        },
+        {
+          "fees": 1.516003,
+          "pnl": 125.603997,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.053511,
+          "pnl": 39.546489,
+          "trades": 1
+        },
+        {
+          "fees": 0.734986,
+          "pnl": 27.425014,
+          "trades": 1
+        },
+        {
+          "fees": 1.13651,
+          "pnl": 43.50349,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.512967,
+          "pnl": -101.192967,
+          "trades": 1
+        },
+        {
+          "fees": 0.876709,
+          "pnl": 32.373291,
+          "trades": 1
+        },
+        {
+          "fees": 2.368841,
+          "pnl": -11.008841,
+          "trades": 2
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.277223,
+          "pnl": 13.282777,
+          "trades": 1
+        },
+        {
+          "fees": 1.498096,
+          "pnl": 73.751904,
+          "trades": 1
+        },
+        {
+          "fees": 1.220053,
+          "pnl": -101.050053,
+          "trades": 1
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 102.479374,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.684905,
+          "pnl": 25.775095,
+          "trades": 1
+        },
+        {
+          "fees": 1.220053,
+          "pnl": -101.050053,
+          "trades": 1
+        },
+        {
+          "fees": 1.479964,
+          "pnl": 70.760036,
+          "trades": 1
+        },
+        {
+          "fees": 0.277223,
+          "pnl": 13.282777,
+          "trades": 1
+        },
+        {
+          "fees": 0.778857,
+          "pnl": 28.891143,
+          "trades": 1
+        },
+        {
+          "fees": 1.498096,
+          "pnl": 73.751904,
+          "trades": 1
+        },
+        {
+          "fees": 0.734986,
+          "pnl": 27.425014,
+          "trades": 1
+        },
+        {
+          "fees": 1.479964,
+          "pnl": 70.760036,
+          "trades": 1
+        },
+        {
+          "fees": 0.317168,
+          "pnl": 14.502832,
+          "trades": 1
+        },
+        {
+          "fees": 2.954593,
+          "pnl": -10.074593,
+          "trades": 2
+        },
+        {
+          "fees": 0.166332,
+          "pnl": 9.643668,
+          "trades": 1
+        },
+        {
+          "fees": 1.43424,
+          "pnl": 64.96576,
+          "trades": 1
+        },
+        {
+          "fees": 0.924519,
+          "pnl": 34.175481,
+          "trades": 1
+        },
+        {
+          "fees": 0.238843,
+          "pnl": 12.081157,
+          "trades": 1
+        },
+        {
+          "fees": 2.770501,
+          "pnl": -9.210501,
+          "trades": 2
+        }
+      ],
+      "sample_tape": [
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0030.json",
+          "trades": [
+            {
+              "amount": 99.64,
+              "elapsed_seconds": 156.5,
+              "price": 0.53,
+              "side": "buy_down",
+              "tokens": 188.0
+            }
+          ]
+        },
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0032.json",
+          "trades": [
+            {
+              "amount": 99.83,
+              "elapsed_seconds": 246.5,
+              "price": 0.67,
+              "side": "buy_up",
+              "tokens": 149.0
+            }
+          ]
+        },
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0033.json",
+          "trades": [
+            {
+              "amount": 99.71,
+              "elapsed_seconds": 171.5,
+              "price": 0.59,
+              "side": "buy_down",
+              "tokens": 169.0
+            }
+          ]
+        }
+      ],
+      "sharpe": 0.470938,
+      "total_fees": 60.045811,
+      "total_pnl": 1668.414189,
+      "version": "9",
+      "win_rate": 0.822222
+    },
+    "GapFader": {
+      "entry_rate": 0.1,
+      "mean_pnl": -9.505875,
+      "num_sessions": 90,
+      "per_session": [
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.106458,
+          "pnl": -55.096458,
+          "trades": 6
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.009604,
+          "pnl": -100.009604,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.056406,
+          "pnl": -100.056406,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.021168,
+          "pnl": -100.011168,
+          "trades": 1
+        },
+        {
+          "fees": 0.009604,
+          "pnl": -100.009604,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.105908,
+          "pnl": -100.065908,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.105908,
+          "pnl": -100.065908,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.131164,
+          "pnl": -100.011164,
+          "trades": 3
+        },
+        {
+          "fees": 0.2025,
+          "pnl": -100.2025,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        }
+      ],
+      "sample_tape": [
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0065.json",
+          "trades": [
+            {
+              "amount": 100.0,
+              "elapsed_seconds": 178.0,
+              "price": 0.05,
+              "side": "buy_down",
+              "tokens": 2000.0
+            },
+            {
+              "amount": 60.0,
+              "elapsed_seconds": 186.5,
+              "price": 0.03,
+              "side": "sell_down",
+              "tokens": 2000.0
+            },
+            {
+              "amount": 59.92,
+              "elapsed_seconds": 188.5,
+              "price": 0.04,
+              "side": "buy_down",
+              "tokens": 1498.0
+            },
+            {
+              "amount": 29.96,
+              "elapsed_seconds": 192.0,
+              "price": 0.02,
+              "side": "sell_down",
+              "tokens": 1498.0
+            },
+            {
+              "amount": 29.94,
+              "elapsed_seconds": 193.5,
+              "price": 0.02,
+              "side": "buy_down",
+              "tokens": 1497.0
+            },
+            {
+              "amount": 44.91,
+              "elapsed_seconds": 201.5,
+              "price": 0.03,
+              "side": "sell_down",
+              "tokens": 1497.0
+            }
+          ]
+        },
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0067.json",
+          "trades": [
+            {
+              "amount": 100.0,
+              "elapsed_seconds": 217.0,
+              "price": 0.02,
+              "side": "buy_down",
+              "tokens": 5000.0
+            }
+          ]
+        },
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0070.json",
+          "trades": [
+            {
+              "amount": 100.0,
+              "elapsed_seconds": 168.0,
+              "price": 0.05,
+              "side": "buy_down",
+              "tokens": 2000.0
+            }
+          ]
+        }
+      ],
+      "sharpe": -0.327481,
+      "total_fees": 0.748719,
+      "total_pnl": -855.528719,
+      "version": "7",
+      "win_rate": 0.0
+    },
+    "LateSniperCB": {
+      "entry_rate": 0.066667,
+      "mean_pnl": -0.797336,
+      "num_sessions": 90,
+      "per_session": [
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.876709,
+          "pnl": 32.373291,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.876709,
+          "pnl": 32.373291,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.876709,
+          "pnl": 32.373291,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.876709,
+          "pnl": 32.373291,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.876709,
+          "pnl": -100.626709,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.876709,
+          "pnl": -100.626709,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        }
+      ],
+      "sample_tape": [
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0041.json",
+          "trades": [
+            {
+              "amount": 99.75,
+              "elapsed_seconds": 264.0,
+              "price": 0.75,
+              "side": "buy_down",
+              "tokens": 133.0
+            }
+          ]
+        },
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0050.json",
+          "trades": [
+            {
+              "amount": 99.75,
+              "elapsed_seconds": 257.0,
+              "price": 0.75,
+              "side": "buy_up",
+              "tokens": 133.0
+            }
+          ]
+        },
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0055.json",
+          "trades": [
+            {
+              "amount": 99.75,
+              "elapsed_seconds": 242.0,
+              "price": 0.75,
+              "side": "buy_up",
+              "tokens": 133.0
+            }
+          ]
+        }
+      ],
+      "sharpe": -0.048168,
+      "total_fees": 5.260254,
+      "total_pnl": -71.760254,
+      "version": "2",
+      "win_rate": 0.666667
+    },
+    "MeanRevFader": {
+      "entry_rate": 0.266667,
+      "mean_pnl": 2.738355,
+      "num_sessions": 90,
+      "per_session": [
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 102.479374,
+          "trades": 1
+        },
+        {
+          "fees": 2.923025,
+          "pnl": -13.123025,
+          "trades": 2
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 2.981659,
+          "pnl": -10.981659,
+          "trades": 2
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.555012,
+          "pnl": 106.604988,
+          "trades": 1
+        },
+        {
+          "fees": 3.283388,
+          "pnl": 12.716612,
+          "trades": 2
+        },
+        {
+          "fees": 5.635335,
+          "pnl": -20.755335,
+          "trades": 4
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 102.479374,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 102.479374,
+          "trades": 1
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 102.479374,
+          "trades": 1
+        },
+        {
+          "fees": 1.560626,
+          "pnl": -101.520626,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.545686,
+          "pnl": -101.185686,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 3.315931,
+          "pnl": 15.044069,
+          "trades": 2
+        },
+        {
+          "fees": 5.88509,
+          "pnl": -0.76509,
+          "trades": 4
+        },
+        {
+          "fees": 1.5625,
+          "pnl": 98.4375,
+          "trades": 1
+        },
+        {
+          "fees": 4.294838,
+          "pnl": 75.975162,
+          "trades": 3
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 5.428069,
+          "pnl": -23.188069,
+          "trades": 4
+        },
+        {
+          "fees": 5.227859,
+          "pnl": -22.667859,
+          "trades": 4
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 3.974018,
+          "pnl": 123.145982,
+          "trades": 3
+        },
+        {
+          "fees": 4.314827,
+          "pnl": -100.994827,
+          "trades": 3
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 5.348637,
+          "pnl": -23.628637,
+          "trades": 4
+        },
+        {
+          "fees": 5.502831,
+          "pnl": -21.502831,
+          "trades": 4
+        },
+        {
+          "fees": 4.521284,
+          "pnl": -26.721284,
+          "trades": 4
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 5.315156,
+          "pnl": -26.995156,
+          "trades": 4
+        },
+        {
+          "fees": 1.539787,
+          "pnl": -101.359787,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        }
+      ],
+      "sample_tape": [
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0010.json",
+          "trades": [
+            {
+              "amount": 99.96,
+              "elapsed_seconds": 76.0,
+              "price": 0.49,
+              "side": "buy_down",
+              "tokens": 204.0
+            }
+          ]
+        },
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0011.json",
+          "trades": [
+            {
+              "amount": 99.96,
+              "elapsed_seconds": 75.5,
+              "price": 0.49,
+              "side": "buy_down",
+              "tokens": 204.0
+            },
+            {
+              "amount": 89.76,
+              "elapsed_seconds": 241.5,
+              "price": 0.44,
+              "side": "sell_down",
+              "tokens": 204.0
+            }
+          ]
+        },
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0029.json",
+          "trades": [
+            {
+              "amount": 100.0,
+              "elapsed_seconds": 75.5,
+              "price": 0.5,
+              "side": "buy_up",
+              "tokens": 200.0
+            },
+            {
+              "amount": 92.0,
+              "elapsed_seconds": 118.5,
+              "price": 0.46,
+              "side": "sell_up",
+              "tokens": 200.0
+            }
+          ]
+        }
+      ],
+      "sharpe": 0.071935,
+      "total_fees": 81.95806,
+      "total_pnl": 246.45194,
+      "version": "2",
+      "win_rate": 0.416667
+    },
+    "PoissonKelly": {
+      "entry_rate": 0.1,
+      "mean_pnl": 11.309807,
+      "num_sessions": 90,
+      "per_session": [
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.616489,
+          "pnl": -13.136489,
+          "trades": 2
+        },
+        {
+          "fees": 1.458648,
+          "pnl": 67.831352,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.457478,
+          "pnl": 141.912522,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.036845,
+          "pnl": -11.556845,
+          "trades": 2
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.362259,
+          "pnl": 613.677741,
+          "trades": 1
+        },
+        {
+          "fees": 1.324981,
+          "pnl": 54.835019,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.458648,
+          "pnl": 67.831352,
+          "trades": 1
+        },
+        {
+          "fees": 0.069108,
+          "pnl": -40.069108,
+          "trades": 2
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.482931,
+          "pnl": 136.557069,
+          "trades": 1
+        }
+      ],
+      "sample_tape": [
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0060.json",
+          "trades": [
+            {
+              "amount": 99.84,
+              "elapsed_seconds": 227.5,
+              "price": 0.26,
+              "side": "buy_down",
+              "tokens": 384.0
+            },
+            {
+              "amount": 88.32,
+              "elapsed_seconds": 235.0,
+              "price": 0.23,
+              "side": "sell_down",
+              "tokens": 384.0
+            }
+          ]
+        },
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0061.json",
+          "trades": [
+            {
+              "amount": 99.71,
+              "elapsed_seconds": 217.5,
+              "price": 0.59,
+              "side": "buy_up",
+              "tokens": 169.0
+            }
+          ]
+        },
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0066.json",
+          "trades": [
+            {
+              "amount": 99.63,
+              "elapsed_seconds": 199.0,
+              "price": 0.41,
+              "side": "buy_down",
+              "tokens": 243.0
+            }
+          ]
+        }
+      ],
+      "sharpe": 0.16503,
+      "total_fees": 10.267387,
+      "total_pnl": 1017.882613,
+      "version": "12",
+      "win_rate": 0.666667
+    },
+    "PoissonKellyDynamic": {
+      "entry_rate": 0.566667,
+      "mean_pnl": 25.326981,
+      "num_sessions": 90,
+      "per_session": [
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.545686,
+          "pnl": 110.814314,
+          "trades": 1
+        },
+        {
+          "fees": 1.352142,
+          "pnl": 57.107858,
+          "trades": 1
+        },
+        {
+          "fees": 4.317154,
+          "pnl": 65.852846,
+          "trades": 3
+        },
+        {
+          "fees": 1.406845,
+          "pnl": 62.163155,
+          "trades": 1
+        },
+        {
+          "fees": 1.545686,
+          "pnl": 86.814314,
+          "trades": 1
+        },
+        {
+          "fees": 1.479964,
+          "pnl": 70.760036,
+          "trades": 1
+        },
+        {
+          "fees": 1.28679,
+          "pnl": 52.26321,
+          "trades": 1
+        },
+        {
+          "fees": 1.324981,
+          "pnl": 54.835019,
+          "trades": 1
+        },
+        {
+          "fees": 1.498096,
+          "pnl": -101.248096,
+          "trades": 1
+        },
+        {
+          "fees": 1.5625,
+          "pnl": 98.4375,
+          "trades": 1
+        },
+        {
+          "fees": 1.385186,
+          "pnl": 59.794814,
+          "trades": 1
+        },
+        {
+          "fees": 1.406845,
+          "pnl": 62.163155,
+          "trades": 1
+        },
+        {
+          "fees": 1.524515,
+          "pnl": 79.925485,
+          "trades": 1
+        },
+        {
+          "fees": 4.339486,
+          "pnl": 65.990514,
+          "trades": 3
+        },
+        {
+          "fees": 1.555012,
+          "pnl": 90.604988,
+          "trades": 1
+        },
+        {
+          "fees": 4.312881,
+          "pnl": -101.012881,
+          "trades": 3
+        },
+        {
+          "fees": 1.28679,
+          "pnl": 52.26321,
+          "trades": 1
+        },
+        {
+          "fees": 1.254604,
+          "pnl": 50.085396,
+          "trades": 1
+        },
+        {
+          "fees": 1.220053,
+          "pnl": 47.949947,
+          "trades": 1
+        },
+        {
+          "fees": 1.13651,
+          "pnl": 43.50349,
+          "trades": 1
+        },
+        {
+          "fees": 1.545686,
+          "pnl": 110.814314,
+          "trades": 1
+        },
+        {
+          "fees": 1.254604,
+          "pnl": 50.085396,
+          "trades": 1
+        },
+        {
+          "fees": 1.512967,
+          "pnl": 76.807033,
+          "trades": 1
+        },
+        {
+          "fees": 1.352142,
+          "pnl": 57.107858,
+          "trades": 1
+        },
+        {
+          "fees": 1.555012,
+          "pnl": -101.395012,
+          "trades": 1
+        },
+        {
+          "fees": 1.555012,
+          "pnl": 90.604988,
+          "trades": 1
+        },
+        {
+          "fees": 1.498096,
+          "pnl": 73.751904,
+          "trades": 1
+        },
+        {
+          "fees": 4.17116,
+          "pnl": 58.74884,
+          "trades": 3
+        },
+        {
+          "fees": 1.324981,
+          "pnl": 54.835019,
+          "trades": 1
+        },
+        {
+          "fees": 1.009561,
+          "pnl": 37.630439,
+          "trades": 1
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 94.479374,
+          "trades": 1
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 94.479374,
+          "trades": 1
+        },
+        {
+          "fees": 1.324981,
+          "pnl": 54.835019,
+          "trades": 1
+        },
+        {
+          "fees": 1.220053,
+          "pnl": 47.949947,
+          "trades": 1
+        },
+        {
+          "fees": 1.512967,
+          "pnl": 76.807033,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.404171,
+          "pnl": 17.145829,
+          "trades": 1
+        },
+        {
+          "fees": 0.361534,
+          "pnl": 15.878466,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.44,
+          "pnl": 148.56,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.734986,
+          "pnl": -100.574986,
+          "trades": 1
+        },
+        {
+          "fees": 0.924519,
+          "pnl": 34.175481,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.876709,
+          "pnl": 32.373291,
+          "trades": 1
+        },
+        {
+          "fees": 0.828084,
+          "pnl": -100.388084,
+          "trades": 1
+        },
+        {
+          "fees": 1.220053,
+          "pnl": 47.949947,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 2.311101,
+          "pnl": -12.251101,
+          "trades": 2
+        },
+        {
+          "fees": 1.324981,
+          "pnl": 54.835019,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.361534,
+          "pnl": 15.878466,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.361534,
+          "pnl": 15.878466,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.458648,
+          "pnl": 67.831352,
+          "trades": 1
+        },
+        {
+          "fees": 0.126479,
+          "pnl": -16.786479,
+          "trades": 2
+        },
+        {
+          "fees": 0.964218,
+          "pnl": 35.755782,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.482931,
+          "pnl": 136.557069,
+          "trades": 1
+        }
+      ],
+      "sample_tape": [
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0027.json",
+          "trades": [
+            {
+              "amount": 99.64,
+              "elapsed_seconds": 198.0,
+              "price": 0.47,
+              "side": "buy_down",
+              "tokens": 212.0
+            }
+          ]
+        },
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0028.json",
+          "trades": [
+            {
+              "amount": 99.54,
+              "elapsed_seconds": 214.0,
+              "price": 0.63,
+              "side": "buy_down",
+              "tokens": 158.0
+            }
+          ]
+        },
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0029.json",
+          "trades": [
+            {
+              "amount": 99.84,
+              "elapsed_seconds": 198.5,
+              "price": 0.48,
+              "side": "buy_up",
+              "tokens": 208.0
+            },
+            {
+              "amount": 91.52,
+              "elapsed_seconds": 255.5,
+              "price": 0.44,
+              "side": "sell_up",
+              "tokens": 208.0
+            },
+            {
+              "amount": 88.51,
+              "elapsed_seconds": 259.5,
+              "price": 0.53,
+              "side": "buy_down",
+              "tokens": 167.0
+            }
+          ]
+        }
+      ],
+      "sharpe": 0.520324,
+      "total_fees": 75.881674,
+      "total_pnl": 2279.428326,
+      "version": "7",
+      "win_rate": 0.862745
+    },
+    "RegimeSniper": {
+      "entry_rate": 0.144444,
+      "mean_pnl": 4.227337,
+      "num_sessions": 90,
+      "per_session": [
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.183271,
+          "pnl": 45.856729,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 94.479374,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.458648,
+          "pnl": 67.831352,
+          "trades": 1
+        },
+        {
+          "fees": 1.545686,
+          "pnl": -101.185686,
+          "trades": 1
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 94.479374,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.5625,
+          "pnl": -101.5625,
+          "trades": 1
+        },
+        {
+          "fees": 1.220053,
+          "pnl": 47.949947,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.28679,
+          "pnl": 52.26321,
+          "trades": 1
+        },
+        {
+          "fees": 1.555012,
+          "pnl": 90.604988,
+          "trades": 1
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 94.479374,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.924519,
+          "pnl": 34.175481,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.406845,
+          "pnl": 62.163155,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.524515,
+          "pnl": -101.074515,
+          "trades": 1
+        }
+      ],
+      "sample_tape": [
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0048.json",
+          "trades": [
+            {
+              "amount": 99.96,
+              "elapsed_seconds": 203.5,
+              "price": 0.68,
+              "side": "buy_down",
+              "tokens": 147.0
+            }
+          ]
+        },
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0060.json",
+          "trades": [
+            {
+              "amount": 99.96,
+              "elapsed_seconds": 171.5,
+              "price": 0.51,
+              "side": "buy_up",
+              "tokens": 196.0
+            }
+          ]
+        },
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0071.json",
+          "trades": [
+            {
+              "amount": 99.71,
+              "elapsed_seconds": 152.0,
+              "price": 0.59,
+              "side": "buy_up",
+              "tokens": 169.0
+            }
+          ]
+        }
+      ],
+      "sharpe": 0.140199,
+      "total_fees": 18.349714,
+      "total_pnl": 380.460286,
+      "version": "8",
+      "win_rate": 0.769231
+    },
+    "TrendDrift": {
+      "entry_rate": 0.044444,
+      "mean_pnl": 2.31628,
+      "num_sessions": 90,
+      "per_session": [
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.876709,
+          "pnl": 32.373291,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.183271,
+          "pnl": 45.856729,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 0.964218,
+          "pnl": 35.755782,
+          "trades": 1
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": -0.0,
+          "pnl": 0.0,
+          "trades": 0
+        },
+        {
+          "fees": 1.560626,
+          "pnl": 94.479374,
+          "trades": 1
+        }
+      ],
+      "sample_tape": [
+        {
+          "outcome": "Up",
+          "session_file": "golden/session-0064.json",
+          "trades": [
+            {
+              "amount": 99.75,
+              "elapsed_seconds": 168.5,
+              "price": 0.75,
+              "side": "buy_up",
+              "tokens": 133.0
+            }
+          ]
+        },
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0082.json",
+          "trades": [
+            {
+              "amount": 99.96,
+              "elapsed_seconds": 168.0,
+              "price": 0.68,
+              "side": "buy_down",
+              "tokens": 147.0
+            }
+          ]
+        },
+        {
+          "outcome": "Down",
+          "session_file": "golden/session-0086.json",
+          "trades": [
+            {
+              "amount": 99.28,
+              "elapsed_seconds": 191.0,
+              "price": 0.73,
+              "side": "buy_down",
+              "tokens": 136.0
+            }
+          ]
+        }
+      ],
+      "sharpe": 0.192597,
+      "total_fees": 4.584823,
+      "total_pnl": 208.465177,
+      "version": "2",
+      "win_rate": 1.0
+    }
+  }
+}
