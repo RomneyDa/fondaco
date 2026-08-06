@@ -98,6 +98,7 @@ export function Sidebar({ prefixNames, livePrefixes, botStatus, pings, balance }
           />
           Optimizer
         </NavLink>
+        <SportsNav />
       </div>
 
       <div className="py-3 border-b border-border flex-1 overflow-y-auto scrollbar-none">
@@ -290,5 +291,37 @@ function MarketSection({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Sports leagues. Rendered only when a league has collected data, so the nav
+ * stays empty for a crypto-only install.
+ */
+function SportsNav() {
+  const leagues = trpc.sports.leagues.useQuery(undefined, {
+    refetchInterval: 30000,
+  });
+  const names = leagues.data ?? [];
+  if (names.length === 0) return null;
+
+  return (
+    <>
+      <div className="px-5 pt-3 pb-1 text-[10px] uppercase tracking-wider text-dim">
+        Sports
+      </div>
+      {names.map((league) => (
+        <NavLink
+          key={league}
+          href={`/sports/${league}`}
+          className={({ isActive }) =>
+            `flex items-center gap-2 px-5 py-1.5 text-sm cursor-pointer transition-colors ${isActive ? "bg-accent/15 text-accent" : "text-txt hover:bg-accent/10"}`
+          }
+        >
+          <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0 bg-dim" />
+          {league.toUpperCase()}
+        </NavLink>
+      ))}
+    </>
   );
 }

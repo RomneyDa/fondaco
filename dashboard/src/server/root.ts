@@ -7,6 +7,7 @@ import { optimizerRouter } from "./routers/optimizer";
 import { portfolioRouter } from "./routers/portfolio";
 import { strategyRouter } from "./routers/strategy";
 import { marketRouter } from "./routers/market";
+import { sportsRouter } from "./routers/sports";
 
 export const appRouter = router({
   sessions: sessionsRouter,
@@ -17,6 +18,7 @@ export const appRouter = router({
   portfolio: portfolioRouter,
   strategy: strategyRouter,
   market: marketRouter,
+  sports: sportsRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -20,6 +20,24 @@ Events are hierarchical — subscribing to a parent catches all children.
 | `clob_down`       | CLOB flat line detected (midpoints stale) |
 | `report:hourly`   | Periodic summary (coming soon)         |
 
+### Sports
+
+| Event                   | Description                                          |
+|-------------------------|------------------------------------------------------|
+| `sports`                | Everything sports-related                            |
+| `sports:game`           | Game start + end                                     |
+| `sports:game:start`     | Started tracking a game                              |
+| `sports:game:end`       | Game resolved                                        |
+| `sports:score`          | Score change on a tracked game                       |
+| `sports:stale_book`     | Book has not repriced after a score — the layer-0 signal |
+| `sports:review_pending` | Play or goal under official review; trading suspended |
+| `risk`                  | All risk events                                      |
+| `risk:exposure_limit`   | Allocator refused or throttled a position            |
+
+`sports:stale_book` and `risk:exposure_limit` are sent at **high** priority.
+The first is a fleeting opportunity worth interrupting for; the second means the
+portfolio is at a limit and something you expected to happen did not.
+
 ## Desktop
 
 Enabled by default. Uses native macOS Notification Center via `notify-rust`. No setup required.

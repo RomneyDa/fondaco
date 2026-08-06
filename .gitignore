@@ -74,6 +74,16 @@ src/strategies/*.rs
 !src/strategies/mean_rev_fader.rs
 !src/strategies/late_sniper_cb.rs
 
+# Same convention for sports strategies.
+src/sports/strategies/*.rs
+!src/sports/strategies/mod.rs
+!src/sports/strategies/stale_book.rs
+!src/sports/strategies/model_edge.rs
+
+# Fitted model parameters (regenerate with `model-server --fit-dir`)
+model-server/params/
+model-server/data/
+
 # Working plan documents (not part of the published repo)
 SPORTS-BETTING.md
 
