@@ -30,6 +30,10 @@ path = "src/bin/sports_collector.rs"
 name = "sports-backtest"
 path = "src/bin/sports_backtest.rs"
 
+[[bin]]
+name = "sports-bot-worker"
+path = "src/bin/sports_bot_worker.rs"
+
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
