@@ -20,6 +20,7 @@ use log::{error, info, warn};
 use reqwest::blocking::Client;
 use serde_json::Value;
 
+use fondaco::clob_order::{build_order, OrderError};
 use fondaco::defaults::{API_TIMEOUT_DEFAULT, DEFAULT_EXPIRATION_SECONDS, TOKEN_DECIMALS};
 use fondaco::notifications::{NotificationEvent, NotificationManager};
 use fondaco::session_io::write_pid_file;
@@ -99,8 +100,7 @@ impl ClobExecutor {
             return TradeResult::skip();
         }
 
-        let parsed = action.parsed_side();
-        let is_sell = parsed.is_sell();
+        let is_sell = action.parsed_side().is_sell();
 
         // Sell cooldown after failures
         if is_sell {
@@ -111,42 +111,33 @@ impl ClobExecutor {
             }
         }
 
-        // Route by leg index. Substring matching on the side string would map
-        // any leg whose key merely contains "up" onto the up token.
-        let leg = match parsed.leg() {
-            Some(l) => l,
-            None => return TradeResult::error("unroutable side"),
-        };
-        let token_id = match session_meta.leg_token_id(leg) {
-            Some(t) if !t.is_empty() => t,
-            _ => return TradeResult::error("missing token_id"),
-        };
-
-        // Determine order type and price
-        let (order_type, price) = if let Some(p) = action.price {
-            ("GTD", p)
-        } else {
-            return TradeResult::error("FAK not supported without book data");
+        // Routing, sizing and wire encoding all live in `clob_order`, which is
+        // snapshot-tested. Substring matching on the side string would map any
+        // leg whose key merely contains "up" onto the up token.
+        let order = match build_order(
+            action,
+            position,
+            &session_meta.economics,
+            DEFAULT_EXPIRATION_SECONDS,
+            |leg| session_meta.leg_token_id(leg),
+        ) {
+            Ok(o) => o,
+            Err(OrderError::NothingToDo) => return TradeResult::skip(),
+            Err(e) => return TradeResult::error(e.as_str()),
         };
 
+        let tokens = order.tokens;
+        let price = order.price_value;
         let econ = &session_meta.economics;
-
-        // Compute trade size
-        let (tokens, _cost) =
-            position.compute_trade_size(&action.side, Some(price), action.amount, econ);
-        if tokens <= 0.0 || tokens < econ.min_order_tokens {
-            return TradeResult::error("insufficient size");
-        }
 
         // Balance reconciliation for sells
         if is_sell {
-            match self.get_balance(&token_id) {
+            match self.get_balance(&order.token_id) {
                 Some(balance) => {
-                    let needed = tokens;
-                    if balance < needed - 0.01 {
+                    if balance < tokens - 0.01 {
                         warn!(
                             "Balance reconciliation: have {:.4} need {:.4} for {} sell",
-                            balance, needed, action.side
+                            balance, tokens, action.side
                         );
                         return TradeResult::error("insufficient balance on-chain");
                     }
@@ -157,22 +148,7 @@ impl ClobExecutor {
             }
         }
 
-        let clob_side = if parsed.is_buy() { "BUY" } else { "SELL" };
-
-        let expiration = action
-            .expiration_seconds
-            .unwrap_or(DEFAULT_EXPIRATION_SECONDS);
-
-        // Price precision follows the market's tick size, not a hardcoded 2dp —
-        // sending 2dp into a market that ticks at 0.001 rounds away real edge.
-        let body = serde_json::json!({
-            "token_id": token_id,
-            "side": clob_side,
-            "price": format!("{:.*}", econ.price_decimals() as usize, price),
-            "size": format!("{:.*}", econ.token_decimals as usize, tokens),
-            "order_type": order_type,
-            "expiration_seconds": expiration as u64,
-        });
+        let body = order.body();
 
         let url = format!("{}/create_and_post_order", self.bridge_url);
         let resp = match self.client.post(&url).json(&body).send() {

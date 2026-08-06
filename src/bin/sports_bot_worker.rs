@@ -36,6 +36,7 @@ use fondaco::defaults::API_TIMEOUT_DEFAULT;
 use fondaco::economics::MarketEconomics;
 use fondaco::notifications::{NotificationEvent, NotificationManager};
 use fondaco::session_io::{remove_file_silent, write_pid_file};
+use fondaco::clob_order::build_order;
 use fondaco::sports::allocator::{Allocator, AllocatorLimits, AllocationVerdict};
 use fondaco::sports::book::MultiBookClient;
 use fondaco::sports::confirmation::{ConfirmationConfig, ConfirmationGate, ConfirmationStatus};
@@ -721,6 +722,7 @@ fn run(cli: Cli) {
                         leg,
                         &decision.action,
                         &leg_books,
+                        &session.position,
                     );
 
                     match executed {
@@ -842,6 +844,7 @@ fn run(cli: Cli) {
 ///
 /// Returns `(tokens, price)` on success. All live orders go through the same
 /// clob-bridge endpoint as the crypto worker — there are no ad-hoc order paths.
+#[allow(clippy::too_many_arguments)]
 fn execute(
     http: &Client,
     cli: &Cli,
@@ -850,42 +853,37 @@ fn execute(
     leg: usize,
     action: &TradeAction,
     books: &[LegBook],
+    position: &Position,
 ) -> Option<(f64, f64)> {
     let book = books.get(leg)?;
     let parsed = action.parsed_side();
 
+    // Fall back to the touch when the strategy gave no explicit price.
     let price = action.price.or(if parsed.is_buy() {
         book.best_ask
     } else {
         book.best_bid
     })?;
-    let price = econ.round_price(price);
-    if price <= 0.0 || price >= 1.0 {
-        return None;
-    }
-
-    let tokens = if parsed.is_buy() {
-        (action.amount / price).floor()
-    } else {
-        action.amount
+    let priced = TradeAction {
+        side: action.side.clone(),
+        amount: action.amount,
+        price: Some(econ.round_price(price)),
+        expiration_seconds: action.expiration_seconds,
+        cancel_after_s: action.cancel_after_s,
     };
-    if tokens < econ.min_order_tokens {
-        return None;
-    }
+
+    // Same tested builder as the crypto worker — one definition of what
+    // reaches the venue.
+    let order = build_order(&priced, position, econ, 120.0, |l| {
+        group.legs.get(l).map(|leg| leg.token_id.clone())
+    })
+    .ok()?;
 
     if !cli.live {
-        return Some((tokens, price));
+        return Some((order.tokens, order.price_value));
     }
 
-    let token_id = group.legs.get(leg).map(|l| l.token_id.clone())?;
-    let body = serde_json::json!({
-        "token_id": token_id,
-        "side": if parsed.is_buy() { "BUY" } else { "SELL" },
-        "price": format!("{:.*}", econ.price_decimals() as usize, price),
-        "size": format!("{:.*}", econ.token_decimals as usize, tokens),
-        "order_type": "GTD",
-        "expiration_seconds": action.expiration_seconds.unwrap_or(120.0) as u64,
-    });
+    let body = order.body();
 
     let resp = http
         .post(format!("{}/create_and_post_order", cli.clob_bridge.trim_end_matches('/')))
@@ -906,7 +904,7 @@ fn execute(
         return None;
     }
 
-    Some((tokens, price))
+    Some((order.tokens, order.price_value))
 }
 
 /// Append skip records so an unselected game is explainable from the logs.
