@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::sports::fair_value::{FairValue, OutcomeProbs};
 use crate::sports::fair_value::coherence::CoherenceReport;
 use crate::sports::fair_value::staleness::StaleSignal;
-use crate::sports::models::{GameSample, MarketGroup, Sport};
+use crate::sports::models::{GameSample, MarketGroup, Sport, SportsMarketKind};
 use crate::strategy::{Param, ParamValue};
 use crate::trader::{Position, TradeAction};
 
@@ -126,6 +126,9 @@ pub struct SportsTickContext<'a> {
     pub under_review: bool,
     /// True when the primary and secondary feeds report the same score.
     pub feeds_agree: bool,
+    /// Market kinds the operator selected with `--market-kind`. Empty means
+    /// moneyline only, which is the default the bundled strategies assume.
+    pub market_kinds: &'a [SportsMarketKind],
 }
 
 impl SportsTickContext<'_> {
@@ -153,6 +156,23 @@ impl SportsTickContext<'_> {
     /// Whether any leg is held.
     pub fn has_position(&self) -> bool {
         crate::strategy::held_leg(self.position).is_some()
+    }
+
+    /// Legs the operator has allowed trading on, as `(index, leg)`.
+    ///
+    /// Strategies should iterate this rather than `group.moneyline_legs()`, so
+    /// `--market-kind spread` actually reaches the spread legs instead of being
+    /// silently ignored.
+    pub fn tradeable_legs(&self) -> Vec<(usize, &crate::sports::models::SportsLeg)> {
+        if self.market_kinds.is_empty() {
+            return self.group.moneyline_legs();
+        }
+        self.group
+            .legs
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| self.market_kinds.contains(&l.kind))
+            .collect()
     }
 }
 
@@ -379,6 +399,7 @@ mod tests {
             stale_signal: None,
             under_review,
             feeds_agree,
+            market_kinds: &[],
         }
     }
 

@@ -130,6 +130,7 @@ fn main() {
         fees: !cli.no_fees,
         endgame_minutes: 5.0,
         record_decisions: cli.decisions_out.is_some(),
+        market_kinds: Vec::new(),
     };
 
     let registry = all_sports_strategies();

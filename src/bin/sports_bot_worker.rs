@@ -46,6 +46,9 @@ use fondaco::sports::fair_value::staleness::{StalenessConfig, StalenessDetector}
 use fondaco::sports::fair_value::{self, FairValue};
 use fondaco::sports::feed::SportsFeedClient;
 use fondaco::sports::model_client::{ModelClient, DEFAULT_MODEL_SERVER};
+use fondaco::sports::selection::{
+    describe, filter_from_flags, rank, Candidate, SelectionPolicy, SkipReason,
+};
 use fondaco::sports::models::{
     outcome_key_from_state, GameSample, GameStatus, League, LegBook, MarketGroup, Sport,
 };
@@ -102,6 +105,47 @@ struct Cli {
     /// defences against acting on a retracted score.
     #[arg(long)]
     no_espn: bool,
+
+    // ---- Game selection (flags only; restart to change) ----------------
+    /// Only games involving this team. Repeatable. Substring match.
+    #[arg(long = "team", value_name = "NAME")]
+    teams: Vec<String>,
+
+    /// Never these teams. Repeatable. Substring match.
+    #[arg(long = "exclude-team", value_name = "NAME")]
+    exclude_teams: Vec<String>,
+
+    /// A specific game: feed gameId, or a slug/title fragment. Repeatable.
+    /// Overrides --team / --exclude-team.
+    #[arg(long = "game", value_name = "ID_OR_SLUG")]
+    games: Vec<String>,
+
+    /// Only games kicking off at or after this. RFC3339, or HH:MM for today UTC.
+    #[arg(long, value_name = "TIME")]
+    min_start: Option<String>,
+
+    /// Only games kicking off at or before this.
+    #[arg(long, value_name = "TIME")]
+    max_start: Option<String>,
+
+    /// Require this market type: moneyline, spread, total. Repeatable.
+    /// Default is moneyline only.
+    #[arg(long = "market-kind", value_name = "KIND")]
+    market_kinds: Vec<String>,
+
+    /// Print the games that match the flags, then exit without collecting.
+    #[arg(long)]
+    list_games: bool,
+
+    /// How to choose when more games are eligible than --max-concurrent:
+    /// random, edge, scheduled, liquidity.
+    #[arg(long, default_value = "random")]
+    select: String,
+
+    /// Seed for --select random. Fixed by default so restarts pick the same
+    /// games; change it to resample the slate.
+    #[arg(long, default_value_t = 0)]
+    select_seed: u64,
 }
 
 /// Per-game live state.
@@ -115,6 +159,9 @@ struct GameSession {
     last_books: Vec<LegBook>,
     last_state: Option<fondaco::sports::models::GameState>,
     entry_cost: f64,
+    /// Last observed |model - market| and book depth, used by --select.
+    last_edge: Option<f64>,
+    last_depth: Option<f64>,
     trade_count: usize,
     resolved: bool,
     started_at: Instant,
@@ -158,10 +205,95 @@ fn run(cli: Cli) {
         }
     };
 
+    let policy = match SelectionPolicy::parse(&cli.select) {
+        Some(p) => p,
+        None => {
+            error!(
+                "Unknown --select '{}'. Expected: random, edge, scheduled, liquidity",
+                cli.select
+            );
+            std::process::exit(2);
+        }
+    };
+
+    let filter = match filter_from_flags(
+        &cli.teams,
+        &cli.exclude_teams,
+        &cli.games,
+        cli.min_start.as_deref(),
+        cli.max_start.as_deref(),
+        &cli.market_kinds,
+        Utc::now(),
+    ) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("{e}");
+            std::process::exit(2);
+        }
+    };
+
     if !cli.live {
         info!("DRY RUN — no orders will be placed. Pass --live to trade for real.");
     } else {
         warn!("LIVE MODE — real orders will be placed with real money.");
+    }
+
+    // --list-games: show what these flags would trade, then exit. Nothing is
+    // started, so it is always safe to run.
+    if cli.list_games {
+        let http = Client::builder()
+            .timeout(Duration::from_secs(API_TIMEOUT_DEFAULT))
+            .build()
+            .expect("build HTTP client");
+        let feed = SportsFeedClient::new();
+        feed.register_league(&league.feed_abbreviation, league.sport);
+        feed.start();
+        thread::sleep(Duration::from_secs(5));
+        let feed_games = feed.games_for_league(&league.feed_abbreviation);
+        let groups = discover_league(&http, &league, &feed_games);
+        feed.stop();
+
+        let (kept, skipped) = filter.apply(&groups);
+        println!(
+            "{} discovered, {} selected  (--select {}, seed {}, --max-concurrent {})\n",
+            groups.len(),
+            kept.len(),
+            policy.as_str(),
+            cli.select_seed,
+            cli.max_concurrent,
+        );
+
+        // Show the order the cap would actually apply in.
+        let mut cands: Vec<Candidate> = kept
+            .iter()
+            .filter_map(|g| {
+                Some(Candidate {
+                    game_id: g.game_id?,
+                    edge: None,
+                    liquidity: None,
+                    start_epoch: chrono::DateTime::parse_from_rfc3339(&g.start_time_utc)
+                        .ok()
+                        .map(|d| d.timestamp()),
+                    already_open: false,
+                })
+            })
+            .collect();
+        rank(&mut cands, policy, cli.select_seed);
+
+        println!("SELECTED (in --select order; first {} would get slots)", cli.max_concurrent);
+        for (i, c) in cands.iter().enumerate() {
+            if let Some(g) = kept.iter().find(|g| g.game_id == Some(c.game_id)) {
+                let marker = if i < cli.max_concurrent { "*" } else { " " };
+                println!("  {marker} {}", describe(g));
+            }
+        }
+        if !skipped.is_empty() {
+            println!("\nSKIPPED");
+            for (g, r) in &skipped {
+                println!("    {}  <- {}", describe(g), r.as_str());
+            }
+        }
+        return;
     }
 
     let notifier = NotificationManager::load();
@@ -257,7 +389,18 @@ fn run(cli: Cli) {
             let feed_games = feed.games_for_league(&league.feed_abbreviation);
             let found = discover_league(&http, &league, &feed_games);
             if !found.is_empty() {
-                groups = found;
+                let (kept, skipped) = filter.apply(&found);
+                if !skipped.is_empty() {
+                    record_skips(&market_dir, &league.key, &skipped);
+                }
+                info!(
+                    "[{}:{}] {} discovered, {} selected by flags",
+                    league.key,
+                    cli.strategy,
+                    found.len(),
+                    kept.len()
+                );
+                groups = kept.into_iter().cloned().collect();
             }
         }
 
@@ -332,6 +475,8 @@ fn run(cli: Cli) {
                     last_books: vec![LegBook::default(); group.legs.len()],
                     last_state: None,
                     entry_cost: 0.0,
+                    last_edge: None,
+                    last_depth: None,
                     trade_count: 0,
                     resolved: false,
                     started_at: now,
@@ -348,7 +493,26 @@ fn run(cli: Cli) {
         books.set_tokens(&tokens);
 
         // ---- Per-game tick ---------------------------------------------
-        let game_ids: Vec<i64> = sessions.keys().copied().collect();
+        // Rank before iterating. `sessions.keys()` is a HashMap and Rust
+        // randomises its iteration order per process, so the previous
+        // first-come loop filled --max-concurrent with a different arbitrary
+        // subset on every restart — silently discarding the best games. Ranking
+        // makes the choice explicit, deterministic and reproducible.
+        let mut candidates: Vec<Candidate> = sessions
+            .iter()
+            .map(|(gid, s)| Candidate {
+                game_id: *gid,
+                edge: s.last_edge,
+                liquidity: s.last_depth,
+                start_epoch: chrono::DateTime::parse_from_rfc3339(&s.group.start_time_utc)
+                    .ok()
+                    .map(|d| d.timestamp()),
+                already_open: s.position.total_tokens() > 0.0,
+            })
+            .collect();
+        rank(&mut candidates, policy, cli.select_seed);
+        let game_ids: Vec<i64> = candidates.into_iter().map(|c| c.game_id).collect();
+
         for gid in game_ids {
             let feed_game = match feed.fresh_game(gid) {
                 Some(g) => g,
@@ -493,6 +657,7 @@ fn run(cli: Cli) {
                 stale_signal: stale_signal.as_ref(),
                 under_review: state.under_review,
                 feeds_agree: conf_status != ConfirmationStatus::FeedsDisagree,
+                market_kinds: &filter.market_kinds,
             };
 
             // Confirmation gate outranks everything: a retracted goal is the
@@ -608,6 +773,16 @@ fn run(cli: Cli) {
                 }
             }
 
+            session.last_edge = decision.edge.map(f64::abs);
+            session.last_depth = Some(
+                leg_books
+                    .iter()
+                    .map(|b| {
+                        b.bid_levels.iter().map(|(_, s)| s).sum::<f64>()
+                            + b.ask_levels.iter().map(|(_, s)| s).sum::<f64>()
+                    })
+                    .sum(),
+            );
             session.last_books = leg_books;
         }
 
@@ -724,6 +899,30 @@ fn execute(
     }
 
     Some((tokens, price))
+}
+
+/// Append skip records so an unselected game is explainable from the logs.
+fn record_skips(
+    market_dir: &str,
+    league_key: &str,
+    skipped: &[(&fondaco::sports::models::MarketGroup, SkipReason)],
+) {
+    let path = std::path::Path::new(market_dir).join("skipped.jsonl");
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    for (g, reason) in skipped {
+        let line = serde_json::json!({
+            "timestamp": now_utc(),
+            "league": league_key,
+            "game_id": g.game_id,
+            "event_slug": g.event_slug,
+            "away_team": g.away_team,
+            "home_team": g.home_team,
+            "reason": reason.as_str(),
+        });
+        let _ = writeln!(f, "{}", serde_json::to_string(&line).unwrap_or_default());
+    }
 }
 
 /// Which leg just scored. `None` when nothing changed, which keeps the

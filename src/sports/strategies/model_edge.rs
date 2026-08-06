@@ -107,7 +107,7 @@ impl SportsStrategy for ModelEdge {
         // would actually pay. Measuring edge against the midpoint would count
         // half the spread as profit.
         let mut best: Option<(usize, f64, f64, f64)> = None;
-        for (leg, _) in ctx.group.moneyline_legs() {
+        for (leg, _) in ctx.tradeable_legs() {
             let model_p = match probs.for_leg(leg) {
                 Some(p) => p,
                 None => continue,
@@ -319,6 +319,7 @@ mod tests {
             stale_signal: None,
             under_review: false,
             feeds_agree: true,
+            market_kinds: &[],
         }
     }
 

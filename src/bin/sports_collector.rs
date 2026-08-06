@@ -36,6 +36,7 @@ use fondaco::sports::espn;
 use fondaco::sports::fair_value::{self, GameParams};
 use fondaco::sports::feed::SportsFeedClient;
 use fondaco::sports::latency::{summarize, LatencyTracker};
+use fondaco::sports::selection::{describe, filter_from_flags, SkipReason};
 use fondaco::sports::models::{
     outcome_key_from_state, GameSample, GameSessionMeta, GameState, GameStatus, League, LegBook,
     MarketGroup,
@@ -72,6 +73,37 @@ struct Cli {
     /// Exit after this many games complete (0 = unlimited)
     #[arg(long, default_value_t = 0)]
     max_games: usize,
+
+    // ---- Game selection (flags only; restart to change) ----------------
+    /// Only games involving this team. Repeatable. Substring match.
+    #[arg(long = "team", value_name = "NAME")]
+    teams: Vec<String>,
+
+    /// Never these teams. Repeatable. Substring match.
+    #[arg(long = "exclude-team", value_name = "NAME")]
+    exclude_teams: Vec<String>,
+
+    /// A specific game: feed gameId, or a slug/title fragment. Repeatable.
+    /// Overrides --team / --exclude-team.
+    #[arg(long = "game", value_name = "ID_OR_SLUG")]
+    games: Vec<String>,
+
+    /// Only games kicking off at or after this. RFC3339, or HH:MM for today UTC.
+    #[arg(long, value_name = "TIME")]
+    min_start: Option<String>,
+
+    /// Only games kicking off at or before this.
+    #[arg(long, value_name = "TIME")]
+    max_start: Option<String>,
+
+    /// Require this market type: moneyline, spread, total. Repeatable.
+    /// Default is moneyline only.
+    #[arg(long = "market-kind", value_name = "KIND")]
+    market_kinds: Vec<String>,
+
+    /// Print the games that match the flags, then exit without collecting.
+    #[arg(long)]
+    list_games: bool,
 }
 
 /// Everything the collector tracks for one in-flight game.
@@ -134,6 +166,53 @@ fn run(cli: Cli) {
             std::process::exit(1);
         }
     };
+
+    let filter = match filter_from_flags(
+        &cli.teams,
+        &cli.exclude_teams,
+        &cli.games,
+        cli.min_start.as_deref(),
+        cli.max_start.as_deref(),
+        &cli.market_kinds,
+        Utc::now(),
+    ) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("{e}");
+            std::process::exit(2);
+        }
+    };
+
+    // --list-games: show the slate the flags select, then exit. Lets you see
+    // what a command would collect before committing to it.
+    if cli.list_games {
+        let http = Client::builder()
+            .timeout(Duration::from_secs(API_TIMEOUT_DEFAULT))
+            .build()
+            .expect("build HTTP client");
+        let feed = SportsFeedClient::new();
+        feed.register_league(&league.feed_abbreviation, league.sport);
+        feed.start();
+        // Give the feed a moment to populate so the gameId join can succeed.
+        thread::sleep(Duration::from_secs(5));
+        let feed_games = feed.games_for_league(&league.feed_abbreviation);
+        let groups = discover_league(&http, &league, &feed_games);
+        feed.stop();
+
+        let (kept, skipped) = filter.apply(&groups);
+        println!("{} discovered, {} selected\n", groups.len(), kept.len());
+        println!("SELECTED");
+        for g in &kept {
+            println!("  {}", describe(g));
+        }
+        if !skipped.is_empty() {
+            println!("\nSKIPPED");
+            for (g, r) in &skipped {
+                println!("  {}  <- {}", describe(g), r.as_str());
+            }
+        }
+        return;
+    }
 
     // PID lock, mirroring the crypto collector.
     let pid_path = format!("/tmp/fondaco-sports-{}-collector.pid", league.key);
@@ -206,11 +285,22 @@ fn run(cli: Cli) {
             let feed_games = feed.games_for_league(&league.feed_abbreviation);
             let discovered = discover_league(&http, &league, &feed_games);
             if !discovered.is_empty() {
-                known_groups = discovered;
+                let (kept, skipped) = filter.apply(&discovered);
+                if !skipped.is_empty() {
+                    record_skips(&cli.output_dir, &league.key, &skipped);
+                }
+                info!(
+                    "[{}] {} discovered, {} selected by flags",
+                    league.key,
+                    discovered.len(),
+                    kept.len()
+                );
+                known_groups = kept.into_iter().cloned().collect();
             } else {
                 // Re-attempt the join on existing groups: the feed may only now
                 // have published a game that discovery already found.
                 join_to_feed(&mut known_groups, &feed_games);
+                known_groups.retain(|g| filter.evaluate(g).is_ok());
             }
 
             let untradeable = known_groups.iter().filter(|g| !g.is_tradeable()).count();
@@ -573,6 +663,34 @@ fn run(cli: Cli) {
             league.key,
             summary.fraction_book_first * 100.0
         );
+    }
+}
+
+/// Append skip records so "why wasn't this game collected" is answerable from
+/// the logs rather than by re-deriving the filter by hand.
+fn record_skips(output_dir: &str, league_key: &str, skipped: &[(&MarketGroup, SkipReason)]) {
+    let path = std::path::Path::new(output_dir)
+        .join("markets")
+        .join(league_key)
+        .join("skipped.jsonl");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    for (g, reason) in skipped {
+        let line = serde_json::json!({
+            "timestamp": now_utc(),
+            "league": league_key,
+            "game_id": g.game_id,
+            "event_slug": g.event_slug,
+            "away_team": g.away_team,
+            "home_team": g.home_team,
+            "start_time_utc": g.start_time_utc,
+            "reason": reason.as_str(),
+        });
+        let _ = writeln!(f, "{}", serde_json::to_string(&line).unwrap_or_default());
     }
 }
 

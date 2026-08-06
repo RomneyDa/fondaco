@@ -314,6 +314,7 @@ mod tests {
             stale_signal: stale,
             under_review: false,
             feeds_agree: true,
+            market_kinds: &[],
         }
     }
 

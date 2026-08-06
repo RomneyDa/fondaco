@@ -50,6 +50,10 @@ New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 
 - **Judge on calibration and CLV, not PnL.** PnL has almost no statistical power at sports sample sizes. Walk-forward splits by season, never randomly.
 - **Confirmation before action.** A goal can be disallowed and a touchdown reversed. `ConfirmationGate` applies a delay, two-feed agreement, and review suspension.
 - **Staleness is not flatline.** Crypto's `FlatlineDetector` treats a frozen book as broken data and suppresses trading. Sports `staleness` treats it as the opportunity — gate it on the book being alive.
+- **Selection is flags only, never a config file.** `--team`, `--exclude-team`, `--game`, `--min-start`/`--max-start`, `--market-kind`. `--game` overrides team filters. Bad flag values exit 2 before anything starts.
+- **Never fill the concurrency cap by iteration order.** `sessions` is a `HashMap` and Rust randomises its order per process, so first-come gave a different arbitrary subset every restart. Rank with `selection::rank` — `--select random` is seeded and reproducible; `edge`/`scheduled`/`liquidity` are deterministic. Open positions always outrank contenders so they can exit.
+- **Strategies iterate `ctx.tradeable_legs()`, not `group.moneyline_legs()`**, so `--market-kind` actually reaches spread and total legs.
+- **Every rejected game is logged** to `markets/<league>/skipped.jsonl` with a reason.
 - **Storage is append-only JSONL.** `write_live_session` rewrites the whole session and is quadratic over a 3-hour game.
 
 ## Rules
@@ -89,15 +93,34 @@ New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 
 
 **Sports CLI:**
 
+Game selection is **flags only** — there is no persisted config. To change what
+a bot trades, kill it and restart with different flags. `--list-games` prints
+the slate a command would select and exits, so it is always safe to run first.
+
 ```bash
+# See what a command would pick, without starting anything
+./target/release/sports-collector --league nfl --list-games
+
 # Collect a league (read-only; no trading)
 ./target/release/sports-collector --league nfl --log-file
+
+# Narrow the slate
+./target/release/sports-collector --league nfl --team Chiefs --team Bills
+./target/release/sports-collector --league epl --exclude-team "Sheffield"
+./target/release/sports-collector --league nfl --game 5127839
+./target/release/sports-collector --league nfl --game kc-phi --game "eagles vs"
+./target/release/sports-collector --league nfl --min-start 18:00 --max-start 23:59
+./target/release/sports-collector --league nfl --market-kind moneyline --market-kind total
 
 # Backtest with season-split walk-forward
 ./target/release/sports-backtest --league nfl --walk-forward
 
 # Dry-run a strategy live (add --live to trade for real)
 ./target/release/sports-bot-worker --league epl --strategy ModelEdge --cash 500
+
+# Choose how the concurrency cap is filled when more games are eligible
+./target/release/sports-bot-worker --league nfl --strategy ModelEdge --select edge
+./target/release/sports-bot-worker --league nfl --strategy StaleBook --select random --select-seed 7
 
 # Fit soccer team strengths from football-data.co.uk CSVs
 cd model-server && uv run python main.py --fit-dir ./data/epl --league epl
