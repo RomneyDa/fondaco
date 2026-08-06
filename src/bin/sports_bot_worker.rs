@@ -137,15 +137,15 @@ struct Cli {
     #[arg(long)]
     list_games: bool,
 
-    /// How to choose when more games are eligible than --max-concurrent:
+    /// Which games win a slot when more are eligible than --max-concurrent:
     /// random, edge, scheduled, liquidity.
     #[arg(long, default_value = "random")]
-    select: String,
+    prefer: String,
 
-    /// Seed for --select random. Fixed by default so restarts pick the same
+    /// Seed for --prefer random. Fixed by default so restarts pick the same
     /// games; change it to resample the slate.
     #[arg(long, default_value_t = 0)]
-    select_seed: u64,
+    prefer_seed: u64,
 }
 
 /// Per-game live state.
@@ -159,7 +159,7 @@ struct GameSession {
     last_books: Vec<LegBook>,
     last_state: Option<fondaco::sports::models::GameState>,
     entry_cost: f64,
-    /// Last observed |model - market| and book depth, used by --select.
+    /// Last observed |model - market| and book depth, used by --prefer.
     last_edge: Option<f64>,
     last_depth: Option<f64>,
     trade_count: usize,
@@ -205,12 +205,12 @@ fn run(cli: Cli) {
         }
     };
 
-    let policy = match SelectionPolicy::parse(&cli.select) {
+    let policy = match SelectionPolicy::parse(&cli.prefer) {
         Some(p) => p,
         None => {
             error!(
-                "Unknown --select '{}'. Expected: random, edge, scheduled, liquidity",
-                cli.select
+                "Unknown --prefer '{}'. Expected: random, edge, scheduled, liquidity",
+                cli.prefer
             );
             std::process::exit(2);
         }
@@ -255,11 +255,11 @@ fn run(cli: Cli) {
 
         let (kept, skipped) = filter.apply(&groups);
         println!(
-            "{} discovered, {} selected  (--select {}, seed {}, --max-concurrent {})\n",
+            "{} discovered, {} selected  (--prefer {}, seed {}, --max-concurrent {})\n",
             groups.len(),
             kept.len(),
             policy.as_str(),
-            cli.select_seed,
+            cli.prefer_seed,
             cli.max_concurrent,
         );
 
@@ -278,9 +278,9 @@ fn run(cli: Cli) {
                 })
             })
             .collect();
-        rank(&mut cands, policy, cli.select_seed);
+        rank(&mut cands, policy, cli.prefer_seed);
 
-        println!("SELECTED (in --select order; first {} would get slots)", cli.max_concurrent);
+        println!("SELECTED (in --prefer order; first {} would get slots)", cli.max_concurrent);
         for (i, c) in cands.iter().enumerate() {
             if let Some(g) = kept.iter().find(|g| g.game_id == Some(c.game_id)) {
                 let marker = if i < cli.max_concurrent { "*" } else { " " };
@@ -510,7 +510,7 @@ fn run(cli: Cli) {
                 already_open: s.position.total_tokens() > 0.0,
             })
             .collect();
-        rank(&mut candidates, policy, cli.select_seed);
+        rank(&mut candidates, policy, cli.prefer_seed);
         let game_ids: Vec<i64> = candidates.into_iter().map(|c| c.game_id).collect();
 
         for gid in game_ids {

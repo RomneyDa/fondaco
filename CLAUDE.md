@@ -51,7 +51,7 @@ New market every 5 min. **Up** and **Down** tokens — winner pays $1, loser $0 
 - **Confirmation before action.** A goal can be disallowed and a touchdown reversed. `ConfirmationGate` applies a delay, two-feed agreement, and review suspension.
 - **Staleness is not flatline.** Crypto's `FlatlineDetector` treats a frozen book as broken data and suppresses trading. Sports `staleness` treats it as the opportunity — gate it on the book being alive.
 - **Selection is flags only, never a config file.** `--team`, `--exclude-team`, `--game`, `--min-start`/`--max-start`, `--market-kind`. `--game` overrides team filters. Bad flag values exit 2 before anything starts.
-- **Never fill the concurrency cap by iteration order.** `sessions` is a `HashMap` and Rust randomises its order per process, so first-come gave a different arbitrary subset every restart. Rank with `selection::rank` — `--select random` is seeded and reproducible; `edge`/`scheduled`/`liquidity` are deterministic. Open positions always outrank contenders so they can exit.
+- **Never fill the concurrency cap by iteration order.** `sessions` is a `HashMap` and Rust randomises its order per process, so first-come gave a different arbitrary subset every restart. Rank with `selection::rank` — `--prefer random` is seeded and reproducible; `edge`/`scheduled`/`liquidity` are deterministic. Open positions always outrank contenders so they can exit.
 - **Strategies iterate `ctx.tradeable_legs()`, not `group.moneyline_legs()`**, so `--market-kind` actually reaches spread and total legs.
 - **Every rejected game is logged** to `markets/<league>/skipped.jsonl` with a reason.
 - **Storage is append-only JSONL.** `write_live_session` rewrites the whole session and is quadratic over a 3-hour game.
@@ -119,8 +119,8 @@ the slate a command would select and exits, so it is always safe to run first.
 ./target/release/sports-bot-worker --league epl --strategy ModelEdge --cash 500
 
 # Choose how the concurrency cap is filled when more games are eligible
-./target/release/sports-bot-worker --league nfl --strategy ModelEdge --select edge
-./target/release/sports-bot-worker --league nfl --strategy StaleBook --select random --select-seed 7
+./target/release/sports-bot-worker --league nfl --strategy ModelEdge --prefer edge
+./target/release/sports-bot-worker --league nfl --strategy StaleBook --prefer random --prefer-seed 7
 
 # Fit soccer team strengths from football-data.co.uk CSVs
 cd model-server && uv run python main.py --fit-dir ./data/epl --league epl
