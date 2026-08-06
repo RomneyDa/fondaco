@@ -13,14 +13,17 @@
 //!    Edge appears in bursts around scoring events, so sampling follows the
 //!    game rather than the clock.
 
+pub mod allocator;
 pub mod backtest;
 pub mod book;
+pub mod confirmation;
 pub mod cadence;
 pub mod discovery;
 pub mod espn;
 pub mod feed;
 pub mod fair_value;
 pub mod latency;
+pub mod model_client;
 pub mod models;
 pub mod storage;
 pub mod strategies;
