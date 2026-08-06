@@ -1,5 +1,6 @@
 //! Market-specific constants for known Polymarket up/down markets.
 
+use crate::economics::MarketEconomics;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -8,6 +9,8 @@ pub struct MarketConfig {
     pub window_duration_seconds: u64,
     pub max_session_gap_seconds: u64,
     pub poll_interval_seconds: Option<f64>,
+    /// Fees, tick size and order-size limits for this market.
+    pub economics: MarketEconomics,
 }
 
 impl MarketConfig {
@@ -23,7 +26,13 @@ impl MarketConfig {
             max_session_gap_seconds: max_session_gap_seconds
                 .unwrap_or(window_duration_seconds * 2),
             poll_interval_seconds,
+            economics: MarketEconomics::crypto(),
         }
+    }
+
+    pub fn with_economics(mut self, economics: MarketEconomics) -> Self {
+        self.economics = economics;
+        self
     }
 }
 

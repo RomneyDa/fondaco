@@ -3,6 +3,7 @@
 //! Core library for backtesting and live trading of crypto prediction markets.
 
 pub mod defaults;
+pub mod economics;
 pub mod markets;
 pub mod math_utils;
 pub mod models;

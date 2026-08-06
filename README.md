@@ -8,16 +8,20 @@ An open-source trading framework for binary outcome markets — strategies, back
 
 Currently targets **Polymarket** crypto up/down prediction markets, with support for other binary market platforms planned. Supports multiple market durations simultaneously (e.g. `btc-updown-5m-` and `btc-updown-15m-`).
 
-> **WARNING — Please read before using this software.**
->
-> Trading on prediction markets is **essentially gambling**. You can and likely will lose money. This project exists for **fun, education, and exploration** — not as a path to profit.
->
-> - **The example strategies included in this repo have not been proven effective.** The author does not use them and makes no claims about their profitability. They exist solely to demonstrate the framework's API.
-> - **Dry-run and backtest first.** Use the backtester extensively before even considering live execution. When you do go live, start with tiny amounts you can afford to lose entirely.
-> - **You are solely responsible for any financial losses.** This software is provided as-is under the Apache 2.0 license with no warranty. The authors and contributors are not liable for any losses incurred through its use.
-> - **Understand what you're running.** This bot places real orders with real money on real markets. Review the code, understand the risks, and proceed at your own discretion.
+---
 
-> **A note on code quality:** This project was built almost entirely with the help of AI (Claude). I am not a skilled Rust engineer — expect rough edges, non-idiomatic patterns, and possibly baffling design decisions throughout. PRs and feedback welcome.
+**WARNING — Please read before using this software.**
+
+Trading on prediction markets is **essentially gambling**. You can and likely will lose money. This project exists for **fun, education, and exploration** — not as a path to profit.
+
+- The example strategies included in this repo **have not been proven effective.** The author does not use them and makes no claims about their profitability. They exist solely to demonstrate the framework's API.
+- **Dry-run and backtest first.** Use the backtester extensively before even considering live execution. When you do go live, start with tiny amounts you can afford to lose entirely.
+- **You are solely responsible for any financial losses.** This software is provided as-is under the Apache 2.0 license with no warranty. The authors and contributors are not liable for any losses incurred through its use.
+- **Understand what you're running.** This bot places real orders with real money on real markets. Review the code, understand the risks, and proceed at your own discretion.
+
+**A note on code quality:** This project was built almost entirely with the help of AI (Claude). I am not a skilled Rust engineer — expect rough edges, non-idiomatic patterns, and possibly baffling design decisions throughout. PRs and feedback welcome.
+
+---
 
 ## Quick Start
 
@@ -26,7 +30,7 @@ Currently targets **Polymarket** crypto up/down prediction markets, with support
 - [Rust](https://rustup.rs/) (stable)
 - [Node.js](https://nodejs.org/) 18+ (for the dashboard)
 - [Python](https://www.python.org/) 3.10+ with [uv](https://docs.astral.sh/uv/) (for clob-bridge and claim-server)
-- A Polymarket account with API credentials
+- A Polymarket account with API credentials (see below)
 
 ### 1. Clone and build
 
@@ -36,18 +40,41 @@ cd fondaco
 cargo build --release
 ```
 
-### 2. Configure environment
+### 2. Get your Polymarket API keys
+
+You need credentials from Polymarket to trade via the CLOB API. See the [CLOB authentication docs](https://docs.polymarket.com/developers/CLOB/authentication) for full details.
+
+**`POLYMARKET_PRIVATE_KEY`** (required) — Your Polygon wallet private key.
+
+1. Go to [polymarket.com](https://polymarket.com) and create an account (or log in)
+2. Deposit USDC on Polygon via the Polymarket UI
+3. Export your private key from your wallet (MetaMask: Account Details > Export Private Key)
+4. This is the only **required** credential — the CLOB bridge auto-derives your Safe address and CLOB API credentials on first run, caching them in `.cache/auth.json`
+
+**`POLYMARKET_BUILDER_*`** (optional) — Builder API credentials, needed only for the claim-server to auto-redeem resolved positions.
+
+1. Go to [polymarket.com/settings?tab=builder](https://polymarket.com/settings?tab=builder) and sign in
+2. Under **Builder Keys**, click **Create New**
+3. Copy the key, secret, and passphrase immediately — the secret and passphrase are **only shown once**
+
+See the [Builder API docs](https://docs.polymarket.com/developers/builders/builder-profile) for more details.
+
+### 3. Configure environment
 
 ```bash
 cp .env.example .env
-# Edit .env with your Polymarket API credentials:
-#   POLYMARKET_PRIVATE_KEY=
-#   POLYMARKET_BUILDER_API_KEY=
-#   POLYMARKET_BUILDER_SECRET=
-#   POLYMARKET_BUILDER_PASSPHRASE=
+# Edit .env — at minimum set POLYMARKET_PRIVATE_KEY
 ```
 
-### 3. Set up the CLOB bridge (order signing)
+### 4. Configure notifications (optional)
+
+```bash
+cp settings.example.json settings.json
+# Edit settings.json — enable desktop/ntfy notifications
+# See NOTIFICATIONS.md for full setup guide
+```
+
+### 5. Set up the CLOB bridge (order signing)
 
 ```bash
 cd clob-bridge
@@ -56,7 +83,7 @@ pip install -r requirements.txt
 python main.py  # runs on :8421
 ```
 
-### 4. Collect data
+### 6. Collect data
 
 ```bash
 # Start a collector for 5-minute BTC markets
@@ -65,7 +92,7 @@ python main.py  # runs on :8421
 
 Let it run for a while to accumulate session data for backtesting.
 
-### 5. Backtest
+### 7. Backtest
 
 ```bash
 # Run all example strategies on 30 recent sessions
@@ -75,7 +102,7 @@ Let it run for a while to accumulate session data for backtesting.
 ./target/release/backtest data/markets/btc-updown-5m/sessions --strategy DriftSniper --sweep --recent 30
 ```
 
-### 6. Dashboard
+### 8. Dashboard
 
 ```bash
 cd dashboard
@@ -83,7 +110,7 @@ npm install
 npm run dev  # runs on :3456
 ```
 
-### 7. Live trading (use extreme caution)
+### 9. Live trading (use extreme caution)
 
 ```bash
 # Option A: orchestrator manages everything
@@ -162,16 +189,16 @@ Your own strategies added to `src/strategies/` are **gitignored by default** so 
 
 Trait: `src/strategy.rs` (`Strategy` — `on_session_start`, `on_tick`, `param_grid`, `requires_full_session`). Registry: `src/strategies/mod.rs` (`all_strategies()`).
 
-| Strategy | Ver | Type | Key Logic |
-|---|---|---|---|
-| PoissonKelly | 11 | Jump-based | Poisson jump counting, Kelly sizing, edge-based entry |
-| PoissonKellyDynamic | 7 | Adaptive | Vol-scaled jump_bps, trend bias, dynamic thresholds |
-| DriftSniper | 9 | Momentum | OLS velocity confirmation, 50%+ elapsed |
-| GapFader | 7 | Mean reversion | Dip entry at 0.50, TP 45% / SL 35%, vol boost |
-| RegimeSniper | 7 | Drift + filter | Consistency window filter, sliding max_price |
-| TrendDrift | 2 | Regime-gated | Medium/High vol + Trending only, late entry |
-| MeanRevFader | 2 | Regime-gated | Flat trend only, small take-profits (15%) |
-| LateSniperCB | 1 | Regime-gated + CB | Medium/High vol, late entry, circuit breaker |
+| Strategy | Type | Idea |
+|---|---|---|
+| PoissonKelly | Jump-based | Poisson jump counting, Kelly sizing, edge-based entry |
+| PoissonKellyDynamic | Adaptive | Vol-scaled jump_bps, trend bias, dynamic thresholds |
+| DriftSniper | Momentum | OLS velocity confirmation, 50%+ elapsed |
+| GapFader | Mean reversion | Dip entry at 0.50, TP 45% / SL 35%, vol boost |
+| RegimeSniper | Drift + filter | Consistency window filter, sliding max_price |
+| TrendDrift | Regime-gated | Medium/High vol + Trending only, late entry |
+| MeanRevFader | Regime-gated | Flat trend only, small take-profits (15%) |
+| LateSniperCB | Regime-gated + CB | Medium/High vol, late entry, circuit breaker |
 
 ### Writing Your Own Strategy
 

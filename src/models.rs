@@ -22,6 +22,32 @@ pub struct Sample {
 }
 
 impl Sample {
+    /// Midpoint for a leg index. Leg 0 is `up`, leg 1 is `down`; the crypto
+    /// up/down market has no other legs.
+    pub fn leg_midpoint(&self, leg: usize) -> Option<f64> {
+        match leg {
+            0 => self.up_token_midpoint,
+            1 => self.down_token_midpoint,
+            _ => None,
+        }
+    }
+
+    pub fn leg_best_ask(&self, leg: usize) -> Option<f64> {
+        match leg {
+            0 => self.up_token_best_ask,
+            1 => self.down_token_best_ask,
+            _ => None,
+        }
+    }
+
+    pub fn leg_best_bid(&self, leg: usize) -> Option<f64> {
+        match leg {
+            0 => self.up_token_best_bid,
+            1 => self.down_token_best_bid,
+            _ => None,
+        }
+    }
+
     /// Get a field by name (for backward compatibility with dict-style access).
     pub fn get_f64(&self, key: &str) -> Option<f64> {
         match key {

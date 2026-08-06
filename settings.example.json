@@ -1,0 +1,18 @@
+{
+  "notifications": {
+    "desktop": {
+      "enabled": true,
+      "events": ["trades", "session:end", "error", "process:start", "process:stop"]
+    },
+    "ntfy": {
+      "enabled": false,
+      "topic": "fondaco-CHANGE-ME",
+      "server": "https://ntfy.sh",
+      "events": ["session:end:loss", "error", "process:stop"],
+      "priority": {
+        "error": "urgent",
+        "session:end:loss": "high"
+      }
+    }
+  }
+}
