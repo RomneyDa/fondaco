@@ -20,4 +20,5 @@ pub mod market_discovery;
 pub mod session_io;
 pub mod tick_broadcast;
 pub mod notifications;
+pub mod sports;
 pub mod window_ops;
