@@ -26,6 +26,10 @@ path = "src/bin/orchestrator.rs"
 name = "sports-collector"
 path = "src/bin/sports_collector.rs"
 
+[[bin]]
+name = "sports-backtest"
+path = "src/bin/sports_backtest.rs"
+
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
