@@ -86,7 +86,7 @@ function SystemDiagram() {
           detail={["Spawns collectors + workers", "HTTP control API"]} />
         <Node label="clob-bridge" sub="Python Flask · :8421" scheme={C.python}
           detail={["py_clob_client SDK wrapper", "Signs + posts limit orders"]} />
-        <Node label="Dashboard" sub="Next.js + tRPC · :3456" scheme={C.ts}
+        <Node label="Dashboard" sub="Next.js + tRPC · :3456 · loopback" scheme={C.ts}
           detail={["SSE file watching", "Proxies to orchestrator"]} />
       </div>
 

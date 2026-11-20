@@ -4,18 +4,36 @@ import next from "next";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { resolveListen, tokenAccepted } from "./src/server/controlGuard";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const dev = process.env.NODE_ENV !== "production";
 const PORT = parseInt(process.env.PORT || "3456", 10);
+let listen: { host: string; token: string };
+try {
+  listen = resolveListen(process.env.HOST, process.env.FONDACO_DASHBOARD_TOKEN);
+} catch (err) {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+}
 
 const DATA_DIR = path.resolve(__dirname, "../data");
 const MARKETS_DIR = path.join(DATA_DIR, "markets");
 const APP_JSON = path.join(DATA_DIR, "app.json");
 
 const app = express();
+app.use((req, res, nextFn) => {
+  if (!listen.token) return nextFn();
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return nextFn();
+  const presented = req.get("x-fondaco-token") || "";
+  if (!tokenAccepted(listen.token, presented)) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  nextFn();
+});
 // Only parse JSON for express-handled routes (SSE etc), NOT /api/trpc
 // which Next.js handles directly — express.json() consumes the body stream
 // before Next.js can read it, breaking tRPC mutations.
@@ -159,8 +177,8 @@ async function main() {
     return handle(req, res);
   });
 
-  app.listen(PORT, () => {
-    console.log(`Dashboard running at http://localhost:${PORT} (${dev ? "dev" : "production"})`);
+  app.listen(PORT, listen.host, () => {
+    console.log(`Dashboard running at http://${listen.host}:${PORT} (${dev ? "dev" : "production"})`);
     console.log(`Markets dir: ${MARKETS_DIR}`);
   });
 

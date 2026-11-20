@@ -8,6 +8,7 @@ import {
   marketLiveDir, marketSessionsDir, marketWorkersDir, marketTradesFile,
   proxyToControl, getControlPort,
 } from "../helpers";
+import { safeName, safeSlugKey } from "../controlGuard";
 
 function enrichWorkers(slugKey: string, workers: any[]): any[] {
   const posDir = path.join(MARKETS_DIR, slugKey, "bot_positions");
@@ -127,6 +128,11 @@ export const botRouter = router({
         return { ok: true, pid: data?.pid };
       }
 
+      if (!safeSlugKey(slug_prefix)) return { ok: false, error: "invalid slug_prefix" };
+      for (const strat of input.strategies ?? []) {
+        if (!safeName(strat)) return { ok: false, error: "invalid strategy" };
+      }
+
       const pids: Record<string, number | undefined> = {};
       const errors: string[] = [];
 
@@ -177,6 +183,7 @@ export const botRouter = router({
       restore: z.boolean().optional(),
     }))
     .mutation(async ({ input }) => {
+      if (!safeSlugKey(input.slug_prefix)) return { ok: false, error: "invalid slug_prefix" };
       const { status, data } = await proxyToControl("/market-on", "POST", input);
       return status < 400 ? { ok: true, ...data } : { ok: false, error: data?.error };
     }),
@@ -187,6 +194,7 @@ export const botRouter = router({
       after_session: z.boolean().optional(),
     }))
     .mutation(async ({ input }) => {
+      if (!safeSlugKey(input.slug_prefix)) return { ok: false, error: "invalid slug_prefix" };
       const { status, data } = await proxyToControl("/market-off", "POST", input);
       return status < 400 ? { ok: true, ...data } : { ok: false, error: data?.error };
     }),
@@ -202,6 +210,8 @@ export const botRouter = router({
       session_cash_ratio: z.object({ ratio: z.number(), max: z.number() }).optional(),
     }))
     .mutation(async ({ input }) => {
+      if (!safeSlugKey(input.slug_prefix)) return { ok: false, error: "invalid slug_prefix" };
+      if (!safeName(input.strategy)) return { ok: false, error: "invalid strategy" };
       const { status, data } = await proxyToControl("/trade-on", "POST", input);
       return status < 400 ? { ok: true, ...data } : { ok: false, error: data?.error };
     }),
@@ -212,6 +222,8 @@ export const botRouter = router({
       strategy: z.string().optional(),
     }))
     .mutation(async ({ input }) => {
+      if (!safeSlugKey(input.slug_prefix)) return { ok: false, error: "invalid slug_prefix" };
+      if (input.strategy && !safeName(input.strategy)) return { ok: false, error: "invalid strategy" };
       const { status, data } = await proxyToControl("/trade-off", "POST", input);
       return status < 400 ? { ok: true, ...data } : { ok: false, error: data?.error };
     }),
@@ -219,6 +231,8 @@ export const botRouter = router({
   reload: procedure
     .input(z.object({ slug_prefix: z.string(), strategy: z.string() }))
     .mutation(async ({ input }) => {
+      if (!safeSlugKey(input.slug_prefix)) return { ok: false, error: "invalid slug_prefix" };
+      if (!safeName(input.strategy)) return { ok: false, error: "invalid strategy" };
       const { status, data } = await proxyToControl("/reload", "POST", input);
       return status < 400 ? { ok: true, ...data } : { ok: false, error: data?.error };
     }),
@@ -230,6 +244,8 @@ export const botRouter = router({
       strategy: z.string().optional(),
     }))
     .mutation(async ({ input }) => {
+      if (!safeSlugKey(input.slug_prefix)) return { ok: false, error: "invalid slug_prefix" };
+      if (input.strategy && !safeName(input.strategy)) return { ok: false, error: "invalid strategy" };
       const { status, data } = await proxyToControl("/set-cash", "POST", input);
       return status < 400 ? { ok: true, ...data } : { ok: false, error: data?.error };
     }),
