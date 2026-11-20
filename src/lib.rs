@@ -15,6 +15,7 @@ pub mod session_cache;
 pub mod engine;
 pub mod rtds;
 pub mod clob_order;
+pub mod control_guard;
 pub mod clob_ws;
 pub mod price_fetcher;
 pub mod market_discovery;
