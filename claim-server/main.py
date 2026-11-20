@@ -15,6 +15,8 @@ Required env vars:
 Optional env vars:
     CLAIM_INTERVAL  — seconds between claim cycles (default: 300)
     UI_PORT         — HTTP port for the web UI (default: 8080)
+    UI_HOST         — listen address (default: 127.0.0.1)
+    CLAIM_UI_TOKEN  — required for POST /claim when UI_HOST is not loopback
 """
 
 import json
@@ -26,6 +28,7 @@ import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+from bind_policy import resolve_ui_bind, token_matches
 from logging_setup import setup_logging
 
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claim-server.log")
@@ -38,6 +41,7 @@ _claim_ctx = {
     "lock": threading.Lock(),
     "running": False,
     "last_result": None,
+    "ui_token": "",
 }
 
 HTML_PAGE = """\
@@ -58,6 +62,8 @@ HTML_PAGE = """\
 </head>
 <body>
   <h1>Polymarket Claim</h1>
+  <input id="token" type="password" autocomplete="off" placeholder="Token, if one is set"
+         style="display:block;margin:0 auto 16px;padding:8px;width:100%;box-sizing:border-box">
   <button id="btn" onclick="doClaim()">CLAIM</button>
   <div id="status"></div>
 <script>
@@ -67,7 +73,10 @@ async function doClaim() {
   btn.disabled = true;
   status.textContent = 'Claiming...';
   try {
-    const r = await fetch('/claim', { method: 'POST' });
+    const token = document.getElementById('token').value;
+    const headers = {};
+    if (token) headers['X-Fondaco-Token'] = token;
+    const r = await fetch('/claim', { method: 'POST', headers });
     const d = await r.json();
     if (d.error) {
       status.textContent = 'Error: ' + d.error;
@@ -99,6 +108,11 @@ class ClaimHandler(BaseHTTPRequestHandler):
             return
 
         ctx = _claim_ctx
+        expected = ctx.get("ui_token") or ""
+        presented = self.headers.get("X-Fondaco-Token", "")
+        if expected and not token_matches(expected, presented):
+            self._json_response(401, {"error": "unauthorized"})
+            return
         if not ctx["lock"].acquire(blocking=False):
             self._json_response(409, {"error": "Claim already in progress"})
             return
@@ -152,6 +166,15 @@ def main():
 
     interval = int(os.environ.get("CLAIM_INTERVAL", "900"))
     ui_port = int(os.environ.get("UI_PORT", "8080"))
+    try:
+        ui_host, ui_token = resolve_ui_bind(
+            os.environ.get("UI_HOST"),
+            os.environ.get("CLAIM_UI_TOKEN"),
+        )
+    except ValueError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+    _claim_ctx["ui_token"] = ui_token
 
     # Derive Safe address once at startup
     from auth import derive_safe_address
@@ -163,10 +186,10 @@ def main():
     _claim_ctx["safe_address"] = safe_address
 
     # Start web UI in a daemon thread
-    server = HTTPServer(("0.0.0.0", ui_port), ClaimHandler)
+    server = HTTPServer((ui_host, ui_port), ClaimHandler)
     ui_thread = threading.Thread(target=server.serve_forever, daemon=True)
     ui_thread.start()
-    logger.info("UI running on http://0.0.0.0:%d", ui_port)
+    logger.info("UI running on http://%s:%d", ui_host, ui_port)
 
     from claim import claim_redeemable
 

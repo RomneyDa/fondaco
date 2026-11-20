@@ -136,7 +136,7 @@ function SystemDiagram() {
           detail={["TickSubscriber (reads tick.sock)", "strategy.on_tick() → TradeAction", "ClobExecutor → clob-bridge"]} />
         <Node label="Bot Worker" sub="DriftSniper · Rust" scheme={C.rust}
           detail={["Same architecture", "Different strategy instance"]} />
-        <Node label="Claim Server" sub="Python · :8080" scheme={C.python}
+        <Node label="Claim Server" sub="Python · :8080 · loopback" scheme={C.python}
           detail={["Periodic position redemption", "Builder Relayer API"]} />
       </div>
 
