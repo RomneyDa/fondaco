@@ -36,6 +36,7 @@ use fondaco::defaults::API_TIMEOUT_DEFAULT;
 use fondaco::economics::MarketEconomics;
 use fondaco::notifications::{NotificationEvent, NotificationManager};
 use fondaco::session_io::{remove_file_silent, write_pid_file};
+use fondaco::clob_fill::{interpret_post, PostedFill};
 use fondaco::clob_order::build_order;
 use fondaco::sports::allocator::{Allocator, AllocatorLimits, AllocationVerdict};
 use fondaco::sports::book::MultiBookClient;
@@ -726,6 +727,14 @@ fn run(cli: Cli) {
                     );
 
                     match executed {
+                        Some((tokens, _)) if tokens <= 0.0 => {
+                            info!(
+                                "[{}:{}] Resting {}: nothing matched, not booked",
+                                league.key,
+                                cli.strategy,
+                                decision.action.side,
+                            );
+                        }
                         Some((tokens, price)) if parsed.is_buy() => {
                             let cost = tokens * price;
                             session.position.add_leg(leg, tokens);
@@ -895,16 +904,26 @@ fn execute(
         return None;
     }
     let json: Value = resp.json().ok()?;
-    let ok = json.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
-    if !ok {
-        warn!(
-            "[SPORTS-BOT] order rejected: {}",
-            json.get("error").and_then(|v| v.as_str()).unwrap_or("unknown")
-        );
-        return None;
+    // Acceptance is not a fill. Book only the size the venue matched.
+    match interpret_post(&json, order.tokens) {
+        PostedFill::Rejected { error, .. } => {
+            warn!("[SPORTS-BOT] order rejected: {error}");
+            None
+        }
+        PostedFill::Accepted {
+            tokens,
+            resting,
+            ..
+        } => {
+            if tokens > 0.0 {
+                Some((tokens, order.price_value))
+            } else if resting {
+                Some((0.0, order.price_value))
+            } else {
+                None
+            }
+        }
     }
-
-    Some((order.tokens, order.price_value))
 }
 
 /// Append skip records so an unselected game is explainable from the logs.

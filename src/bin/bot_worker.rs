@@ -20,6 +20,7 @@ use log::{error, info, warn};
 use reqwest::blocking::Client;
 use serde_json::Value;
 
+use fondaco::clob_fill::{interpret_post, PostedFill};
 use fondaco::clob_order::{build_order, OrderError};
 use fondaco::defaults::{API_TIMEOUT_DEFAULT, DEFAULT_EXPIRATION_SECONDS, TOKEN_DECIMALS};
 use fondaco::notifications::{NotificationEvent, NotificationManager};
@@ -177,53 +178,55 @@ impl ClobExecutor {
             }
         };
 
-        let order_id = resp_json
-            .get("order_id")
-            .or_else(|| resp_json.get("orderID"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let success = resp_json
-            .get("success")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-
-        if !success {
-            let err_msg = resp_json
-                .get("error")
-                .or_else(|| resp_json.get("errorMsg"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error");
-            if is_sell {
-                self.last_sell_fail_time = Some(Instant::now());
+        // Bridge `success` means the venue accepted the order. A GTD limit
+        // can be accepted and still match nothing. Book only the matched size.
+        match interpret_post(&resp_json, tokens) {
+            PostedFill::Rejected { order_id, error } => {
+                if is_sell {
+                    self.last_sell_fail_time = Some(Instant::now());
+                }
+                TradeResult {
+                    executed: true,
+                    success: false,
+                    resting: false,
+                    order_id,
+                    tokens: 0.0,
+                    price: 0.0,
+                    fee: 0.0,
+                    error: Some(error),
+                }
             }
-            return TradeResult {
-                executed: true,
-                success: false,
+            PostedFill::Accepted {
                 order_id,
-                tokens: 0.0,
-                price: 0.0,
-                fee: 0.0,
-                error: Some(err_msg.to_string()),
-            };
-        }
-
-        position.apply_trade(&action.side, price, tokens);
-        let fee = econ.taker_fee(price, tokens, true);
-        position.cash -= fee;
-
-        if is_sell {
-            self.last_sell_fail_time = None;
-        }
-
-        TradeResult {
-            executed: true,
-            success: true,
-            order_id,
-            tokens,
-            price,
-            fee,
-            error: None,
+                tokens: filled,
+                resting,
+            } => {
+                let fee = if filled > 0.0 {
+                    position.apply_trade(&action.side, price, filled);
+                    let fee = econ.taker_fee(price, filled, true);
+                    position.cash -= fee;
+                    fee
+                } else {
+                    0.0
+                };
+                if is_sell && filled > 0.0 {
+                    self.last_sell_fail_time = None;
+                }
+                TradeResult {
+                    executed: true,
+                    success: filled > 0.0,
+                    resting: resting && filled <= 0.0,
+                    order_id,
+                    tokens: filled,
+                    price,
+                    fee,
+                    error: if filled > 0.0 || resting {
+                        None
+                    } else {
+                        Some("no fill".to_string())
+                    },
+                }
+            }
         }
     }
 
@@ -280,6 +283,9 @@ impl ClobExecutor {
 struct TradeResult {
     executed: bool,
     success: bool,
+    /// Accepted by the venue and matched nothing. Not a failure: the
+    /// strategy already counted the attempt, and retrying would post again.
+    resting: bool,
     order_id: Option<String>,
     tokens: f64,
     price: f64,
@@ -292,6 +298,7 @@ impl TradeResult {
         Self {
             executed: false,
             success: false,
+            resting: false,
             order_id: None,
             tokens: 0.0,
             price: 0.0,
@@ -304,6 +311,7 @@ impl TradeResult {
         Self {
             executed: true,
             success: false,
+            resting: false,
             order_id: None,
             tokens: 0.0,
             price: 0.0,
@@ -695,7 +703,15 @@ fn run_bot_worker(cli: Cli) {
                                     result.error.as_deref(),
                                 );
 
-                                if result.success {
+                                if result.resting {
+                                    info!(
+                                        "[{}:{}] Resting {} order {}: nothing matched, not booked",
+                                        slug_key,
+                                        cli.strategy,
+                                        action.side,
+                                        result.order_id.as_deref().unwrap_or("-"),
+                                    );
+                                } else if result.success {
                                     trade_count += 1;
                                     info!(
                                         "[{}:{}] Trade: {} @ {:.2} x {:.2} | order={}",
