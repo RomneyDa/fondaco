@@ -35,6 +35,14 @@ struct Cli {
     #[arg(long, default_value_t = 8420)]
     port: u16,
 
+    /// Address to listen on. Anything other than loopback requires --token.
+    #[arg(long, default_value = "127.0.0.1")]
+    bind: String,
+
+    /// Shared secret for every control request. Required when --bind is not loopback.
+    #[arg(long)]
+    token: Option<String>,
+
     /// CLOB bridge port
     #[arg(long, default_value_t = 8421)]
     clob_bridge_port: u16,
@@ -93,11 +101,25 @@ mod libc {
     }
 }
 
+fn signalable(pid: u32) -> Option<i32> {
+    fondaco::control_guard::signalable_pid(u64::from(pid))
+}
+
 fn pid_alive(pid: u32) -> bool {
+    let Some(pid) = signalable(pid) else {
+        return false;
+    };
     unsafe {
-        libc::waitpid(pid as i32, std::ptr::null_mut(), libc::WNOHANG);
+        libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG);
     }
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+fn signal_owned(pid: u32, sig: i32) -> bool {
+    let Some(pid) = signalable(pid) else {
+        return false;
+    };
+    unsafe { libc::kill(pid, sig) == 0 }
 }
 
 fn read_pid_file(path: &str) -> Option<u32> {
@@ -118,11 +140,18 @@ fn read_pid_file_alive(path: &str) -> Option<u32> {
 
 /// Get collector PID for a market from its PID file.
 fn collector_pid(slug_key: &str) -> Option<u32> {
+    if fondaco::control_guard::slug_key(slug_key).is_none() {
+        return None;
+    }
     read_pid_file_alive(&format!("/tmp/fondaco-{}-collector.pid", slug_key))
 }
 
 /// Get worker PID for a strategy from its PID file.
 fn worker_pid(slug_key: &str, strategy: &str) -> Option<u32> {
+    if fondaco::control_guard::slug_key(slug_key).is_none() {
+        return None;
+    }
+    let strategy = fondaco::control_guard::strategy_name(strategy)?;
     read_pid_file_alive(&format!("/tmp/fondaco-{}-bot-{}.pid", slug_key, strategy))
 }
 
@@ -290,6 +319,16 @@ fn main() {
 
     let cli = Cli::parse();
     let port = cli.port;
+    let token = cli
+        .token
+        .clone()
+        .or_else(|| std::env::var("FONDACO_ORCHESTRATOR_TOKEN").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Err(reason) = fondaco::control_guard::bind_allowed(&cli.bind, token.as_deref()) {
+        error!("{reason}");
+        std::process::exit(1);
+    }
 
     // Write app.json so the dashboard can find us
     let app_json_path = PathBuf::from(&cli.data_dir).join("app.json");
@@ -346,7 +385,7 @@ fn main() {
     }
 
     // Start HTTP server
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("{}:{}", cli.bind, port);
     let server = match Server::http(&addr) {
         Ok(s) => {
             info!("Orchestrator listening on {}", addr);
@@ -370,6 +409,12 @@ fn main() {
 
         let method = req.method().clone();
         let url = req.url().to_string();
+        if let Some(expected) = token.as_deref() {
+            if !fondaco::control_guard::token_matches(expected, &presented_token(&req)) {
+                let _ = req.respond(json_response(401, &json!({"error": "unauthorized"})));
+                continue;
+            }
+        }
         handle_request(req, &method, &url, &state);
     }
 
@@ -377,6 +422,20 @@ fn main() {
     info!("Orchestrator exiting (children left running).");
     let _ = fs::remove_file(&app_json_path);
     info!("Orchestrator stopped.");
+}
+
+fn presented_token(req: &tiny_http::Request) -> String {
+    for header in req.headers() {
+        if header.field.equiv("X-Fondaco-Token") {
+            return header.value.as_str().trim().to_string();
+        }
+        if header.field.equiv("Authorization") {
+            if let Some(rest) = header.value.as_str().strip_prefix("Bearer ") {
+                return rest.trim().to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 fn handle_request(
@@ -397,17 +456,27 @@ fn handle_request(
             if slug_prefix.is_empty() {
                 json_response(400, &json!({"error": "Missing slug_prefix"}))
             } else {
-                let slug_key = slug_prefix.trim_end_matches('-');
+                let Some(slug_key) = fondaco::control_guard::slug_key(slug_prefix) else {
+                    let _ =
+                        req.respond(json_response(400, &json!({"error": "invalid slug_prefix"})));
+                    return;
+                };
 
                 // Check PID file
                 if let Some(pid) = collector_pid(slug_key) {
-                    let _ = req.respond(json_response(200, &json!({"ok": true, "already_running": true, "pid": pid})));
+                    let _ = req.respond(json_response(
+                        200,
+                        &json!({"ok": true, "already_running": true, "pid": pid}),
+                    ));
                     return;
                 }
 
                 let bin = find_binary("collector");
                 if !bin.exists() {
-                    let _ = req.respond(json_response(500, &json!({"error": "collector binary not found"})));
+                    let _ = req.respond(json_response(
+                        500,
+                        &json!({"error": "collector binary not found"}),
+                    ));
                     return;
                 }
 
@@ -436,9 +505,10 @@ fn handle_request(
                         );
                         json_response(200, &json!({"ok": true, "pid": pid}))
                     }
-                    Err(e) => {
-                        json_response(500, &json!({"error": format!("Failed to start collector: {}", e)}))
-                    }
+                    Err(e) => json_response(
+                        500,
+                        &json!({"error": format!("Failed to start collector: {}", e)}),
+                    ),
                 }
             }
         }
@@ -449,13 +519,20 @@ fn handle_request(
             if slug_prefix.is_empty() {
                 json_response(400, &json!({"error": "Missing slug_prefix"}))
             } else {
-                let slug_key = slug_prefix.trim_end_matches('-');
+                let Some(slug_key) = fondaco::control_guard::slug_key(slug_prefix) else {
+                    let _ =
+                        req.respond(json_response(400, &json!({"error": "invalid slug_prefix"})));
+                    return;
+                };
                 let after_session = body["after_session"].as_bool().unwrap_or(false);
 
                 if let Some(pid) = collector_pid(slug_key) {
                     let sig = if after_session { 10 } else { 15 }; // SIGUSR1 or SIGTERM
-                    unsafe { libc::kill(pid as i32, sig); }
-                    info!("Sent signal {} to collector {} (PID {})", sig, slug_key, pid);
+                    let _ = signal_owned(pid, sig);
+                    info!(
+                        "Sent signal {} to collector {} (PID {})",
+                        sig, slug_key, pid
+                    );
                     let st = state.lock().unwrap();
                     st.notifier.notify(
                         NotificationEvent::ProcessStop,
@@ -476,15 +553,26 @@ fn handle_request(
             if slug_prefix.is_empty() || strategy.is_empty() {
                 json_response(400, &json!({"error": "Missing slug_prefix or strategy"}))
             } else {
-                let slug_key = slug_prefix.trim_end_matches('-');
+                let Some(slug_key) = fondaco::control_guard::slug_key(slug_prefix) else {
+                    let _ =
+                        req.respond(json_response(400, &json!({"error": "invalid slug_prefix"})));
+                    return;
+                };
+                let Some(strategy) = fondaco::control_guard::strategy_name(strategy) else {
+                    let _ = req.respond(json_response(400, &json!({"error": "invalid strategy"})));
+                    return;
+                };
 
                 // Check if already running
                 if let Some(pid) = worker_pid(slug_key, strategy) {
-                    let _ = req.respond(json_response(200, &json!({
-                        "ok": true,
-                        "already_running": true,
-                        "pid": pid
-                    })));
+                    let _ = req.respond(json_response(
+                        200,
+                        &json!({
+                            "ok": true,
+                            "already_running": true,
+                            "pid": pid
+                        }),
+                    ));
                     return;
                 }
 
@@ -492,34 +580,50 @@ fn handle_request(
 
                 // Validation: check clob-bridge
                 if !st.clob_bridge_healthy() {
-                    let _ = req.respond(json_response(503, &json!({"error": "clob-bridge not healthy"})));
+                    let _ = req.respond(json_response(
+                        503,
+                        &json!({"error": "clob-bridge not healthy"}),
+                    ));
                     return;
                 }
 
                 // Validation: check collector running
                 if collector_pid(slug_key).is_none() {
-                    let _ = req.respond(json_response(503, &json!({"error": "No collector running for this market"})));
+                    let _ = req.respond(json_response(
+                        503,
+                        &json!({"error": "No collector running for this market"}),
+                    ));
                     return;
                 }
 
                 // Validation: check tick socket
                 let sock_path = format!("{}/markets/{}/tick.sock", st.data_dir, slug_key);
                 if !Path::new(&sock_path).exists() {
-                    let _ = req.respond(json_response(503, &json!({"error": "Tick socket not found"})));
+                    let _ = req.respond(json_response(
+                        503,
+                        &json!({"error": "Tick socket not found"}),
+                    ));
                     return;
                 }
 
                 let bin = find_binary("bot-worker");
                 if !bin.exists() {
-                    let _ = req.respond(json_response(500, &json!({"error": "bot-worker binary not found"})));
+                    let _ = req.respond(json_response(
+                        500,
+                        &json!({"error": "bot-worker binary not found"}),
+                    ));
                     return;
                 }
 
                 let mut args = vec![
-                    "--slug-prefix".to_string(), slug_prefix.to_string(),
-                    "--strategy".to_string(), strategy.to_string(),
-                    "--data-dir".to_string(), st.data_dir.clone(),
-                    "--clob-bridge".to_string(), format!("http://127.0.0.1:{}", st.clob_bridge_port),
+                    "--slug-prefix".to_string(),
+                    slug_prefix.to_string(),
+                    "--strategy".to_string(),
+                    strategy.to_string(),
+                    "--data-dir".to_string(),
+                    st.data_dir.clone(),
+                    "--clob-bridge".to_string(),
+                    format!("http://127.0.0.1:{}", st.clob_bridge_port),
                 ];
                 if let Some(cash) = body["cash"].as_f64() {
                     args.push("--cash".to_string());
@@ -555,7 +659,10 @@ fn handle_request(
                 {
                     Ok(child) => {
                         let pid = child.id();
-                        info!("Started bot-worker {} for {} (PID {})", strategy, slug_key, pid);
+                        info!(
+                            "Started bot-worker {} for {} (PID {})",
+                            strategy, slug_key, pid
+                        );
                         st.notifier.notify(
                             NotificationEvent::ProcessStart,
                             "Bot Worker Started",
@@ -563,9 +670,10 @@ fn handle_request(
                         );
                         json_response(200, &json!({"ok": true, "pid": pid}))
                     }
-                    Err(e) => {
-                        json_response(500, &json!({"error": format!("Failed to start bot-worker: {}", e)}))
-                    }
+                    Err(e) => json_response(
+                        500,
+                        &json!({"error": format!("Failed to start bot-worker: {}", e)}),
+                    ),
                 }
             }
         }
@@ -574,29 +682,46 @@ fn handle_request(
             let body = read_body(&mut req);
             let slug_prefix = body["slug_prefix"].as_str().unwrap_or("");
             let strategy = body["strategy"].as_str().unwrap_or("");
-            let target_pid = body["pid"].as_u64().map(|p| p as u32);
 
-            let slug_key = slug_prefix.trim_end_matches('-');
+            let Some(slug_key) = fondaco::control_guard::slug_key(slug_prefix) else {
+                let _ = req.respond(json_response(400, &json!({"error": "invalid slug_prefix"})));
+                return;
+            };
             let mut stopped = 0;
 
-            if let Some(pid) = target_pid {
-                // Kill specific PID
-                if pid_alive(pid) {
-                    unsafe { libc::kill(pid as i32, 15); }
+            if body.get("pid").is_some() {
+                // Only a pid we already recorded for this market. A raw value
+                // that does not fit in a positive i32 must not reach kill.
+                let Some(raw) = body["pid"].as_u64() else {
+                    let _ = req.respond(json_response(400, &json!({"error": "invalid pid"})));
+                    return;
+                };
+                let owned: Vec<u32> = discover_workers(slug_key)
+                    .into_iter()
+                    .map(|(_, pid)| pid)
+                    .collect();
+                let Some(pid) = fondaco::control_guard::owned_signal_pid(raw, &owned) else {
+                    let _ = req.respond(json_response(
+                        400,
+                        &json!({"error": "pid is not a fondaco worker for this market"}),
+                    ));
+                    return;
+                };
+                if signal_owned(pid, 15) {
                     info!("Stopping worker PID {}", pid);
                     stopped += 1;
                 }
             } else if !strategy.is_empty() {
                 // Kill specific strategy
                 if let Some(pid) = worker_pid(slug_key, strategy) {
-                    unsafe { libc::kill(pid as i32, 15); }
+                    let _ = signal_owned(pid, 15);
                     info!("Stopping worker {} (PID {})", strategy, pid);
                     stopped += 1;
                 }
             } else {
                 // Kill all workers for this market
                 for (strat, pid) in discover_workers(slug_key) {
-                    unsafe { libc::kill(pid as i32, 15); }
+                    let _ = signal_owned(pid, 15);
                     info!("Stopping worker {} (PID {})", strat, pid);
                     stopped += 1;
                 }
@@ -612,11 +737,25 @@ fn handle_request(
             let cash = body["cash"].as_f64().unwrap_or(0.0);
 
             if slug_prefix.is_empty() || strategy.is_empty() || cash <= 0.0 {
-                json_response(400, &json!({"error": "Missing slug_prefix, strategy, or cash"}))
+                json_response(
+                    400,
+                    &json!({"error": "Missing slug_prefix, strategy, or cash"}),
+                )
             } else {
                 let st = state.lock().unwrap();
-                let slug_key = slug_prefix.trim_end_matches('-');
-                let state_file = format!("{}/markets/{}/bot_positions/{}.json", st.data_dir, slug_key, strategy);
+                let Some(slug_key) = fondaco::control_guard::slug_key(slug_prefix) else {
+                    let _ =
+                        req.respond(json_response(400, &json!({"error": "invalid slug_prefix"})));
+                    return;
+                };
+                let Some(strategy) = fondaco::control_guard::strategy_name(strategy) else {
+                    let _ = req.respond(json_response(400, &json!({"error": "invalid strategy"})));
+                    return;
+                };
+                let state_file = format!(
+                    "{}/markets/{}/bot_positions/{}.json",
+                    st.data_dir, slug_key, strategy
+                );
                 match fs::read_to_string(&state_file) {
                     Ok(contents) => {
                         if let Ok(mut data) = serde_json::from_str::<Value>(&contents) {
@@ -643,16 +782,27 @@ fn handle_request(
                 json_response(400, &json!({"error": "Missing slug_prefix or strategy"}))
             } else {
                 let st = state.lock().unwrap();
-                let slug_key = slug_prefix.trim_end_matches('-');
+                let Some(slug_key) = fondaco::control_guard::slug_key(slug_prefix) else {
+                    let _ =
+                        req.respond(json_response(400, &json!({"error": "invalid slug_prefix"})));
+                    return;
+                };
+                let Some(strategy) = fondaco::control_guard::strategy_name(strategy) else {
+                    let _ = req.respond(json_response(400, &json!({"error": "invalid strategy"})));
+                    return;
+                };
 
                 // Find and read config from running process before killing
                 let old_pid = worker_pid(slug_key, strategy);
                 let old_args = old_pid.and_then(read_process_args);
                 let old_ratio = old_args.as_ref().and_then(|a| parse_ratio_from_args(a));
-                let old_dry_run = old_args.as_ref().map(|a| parse_dry_run_from_args(a)).unwrap_or(false);
+                let old_dry_run = old_args
+                    .as_ref()
+                    .map(|a| parse_dry_run_from_args(a))
+                    .unwrap_or(false);
 
                 if let Some(pid) = old_pid {
-                    unsafe { libc::kill(pid as i32, 15); }
+                    let _ = signal_owned(pid, 15);
                     info!("Killing worker {} (PID {}) for reload", strategy, pid);
                 } else {
                     let _ = req.respond(json_response(404, &json!({"error": "Worker not found"})));
@@ -664,7 +814,10 @@ fn handle_request(
                 let bin = find_binary("bot-worker");
 
                 // Read bankroll from state file
-                let state_file = format!("{}/markets/{}/bot_positions/{}.json", st.data_dir, slug_key, strategy);
+                let state_file = format!(
+                    "{}/markets/{}/bot_positions/{}.json",
+                    st.data_dir, slug_key, strategy
+                );
                 let cash = fs::read_to_string(&state_file)
                     .ok()
                     .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -672,11 +825,16 @@ fn handle_request(
                     .unwrap_or(100.0);
 
                 let mut args = vec![
-                    "--slug-prefix".to_string(), slug_prefix.to_string(),
-                    "--strategy".to_string(), strategy.to_string(),
-                    "--data-dir".to_string(), st.data_dir.clone(),
-                    "--clob-bridge".to_string(), format!("http://127.0.0.1:{}", st.clob_bridge_port),
-                    "--cash".to_string(), cash.to_string(),
+                    "--slug-prefix".to_string(),
+                    slug_prefix.to_string(),
+                    "--strategy".to_string(),
+                    strategy.to_string(),
+                    "--data-dir".to_string(),
+                    st.data_dir.clone(),
+                    "--clob-bridge".to_string(),
+                    format!("http://127.0.0.1:{}", st.clob_bridge_port),
+                    "--cash".to_string(),
+                    cash.to_string(),
                 ];
                 if let Some(ref ratio) = old_ratio {
                     args.push("--session-cash-ratio".to_string());
@@ -686,12 +844,19 @@ fn handle_request(
                     args.push("--dry-run".to_string());
                 }
 
-                match Command::new(&bin).args(&args).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+                match Command::new(&bin)
+                    .args(&args)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
                     Ok(child) => {
                         let pid = child.id();
                         json_response(200, &json!({"ok": true, "pid": pid, "cash": cash}))
                     }
-                    Err(e) => json_response(500, &json!({"error": format!("Respawn failed: {}", e)})),
+                    Err(e) => {
+                        json_response(500, &json!({"error": format!("Respawn failed: {}", e)}))
+                    }
                 }
             }
         }
@@ -723,7 +888,7 @@ fn handle_request(
                             }
                             saved_workers.push(w);
                         }
-                        unsafe { libc::kill(pid as i32, 15); }
+                        let _ = signal_owned(pid, 15);
                         info!("Stopped worker {} (PID {})", strategy, pid);
                     }
                 }
@@ -734,7 +899,10 @@ fn handle_request(
                 if let Ok(mut f) = fs::File::create(&restore_path) {
                     let _ = serde_json::to_writer_pretty(&mut f, &json!(saved_workers));
                 }
-                info!("Saved {} workers to restore_workers.json", saved_workers.len());
+                info!(
+                    "Saved {} workers to restore_workers.json",
+                    saved_workers.len()
+                );
             }
 
             // Kill clob-bridge
@@ -785,19 +953,33 @@ fn handle_request(
                 if slug_prefix.is_empty() || strategy.is_empty() {
                     continue;
                 }
-                let slug_key = slug_prefix.trim_end_matches('-');
+                let Some(slug_key) = fondaco::control_guard::slug_key(slug_prefix) else {
+                    warn!("Skipping restore with an invalid slug_prefix");
+                    continue;
+                };
+                let Some(strategy) = fondaco::control_guard::strategy_name(strategy) else {
+                    warn!("Skipping restore with an invalid strategy name");
+                    continue;
+                };
 
                 // Only restore if collector is running
                 if collector_pid(slug_key).is_none() {
-                    info!("Skipping restore of {} — no collector for {}", strategy, slug_key);
+                    info!(
+                        "Skipping restore of {} — no collector for {}",
+                        strategy, slug_key
+                    );
                     continue;
                 }
 
                 let mut args = vec![
-                    "--slug-prefix".to_string(), slug_prefix.to_string(),
-                    "--strategy".to_string(), strategy.to_string(),
-                    "--data-dir".to_string(), st.data_dir.clone(),
-                    "--clob-bridge".to_string(), format!("http://127.0.0.1:{}", st.clob_bridge_port),
+                    "--slug-prefix".to_string(),
+                    slug_prefix.to_string(),
+                    "--strategy".to_string(),
+                    strategy.to_string(),
+                    "--data-dir".to_string(),
+                    st.data_dir.clone(),
+                    "--clob-bridge".to_string(),
+                    format!("http://127.0.0.1:{}", st.clob_bridge_port),
                 ];
                 if let Some(cash) = w["cash"].as_f64() {
                     args.push("--cash".to_string());
@@ -811,13 +993,26 @@ fn handle_request(
                     args.push("--dry-run".to_string());
                 }
 
-                match Command::new(&bin).args(&args).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+                match Command::new(&bin)
+                    .args(&args)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
                     Ok(child) => {
-                        info!("Restored worker {} for {} (PID {})", strategy, slug_key, child.id());
+                        info!(
+                            "Restored worker {} for {} (PID {})",
+                            strategy,
+                            slug_key,
+                            child.id()
+                        );
                         restored += 1;
                     }
                     Err(e) => {
-                        warn!("Failed to restore worker {} for {}: {}", strategy, slug_key, e);
+                        warn!(
+                            "Failed to restore worker {} for {}: {}",
+                            strategy, slug_key, e
+                        );
                     }
                 }
             }
@@ -836,10 +1031,10 @@ fn handle_request(
                 for entry in entries.flatten() {
                     let slug_key = entry.file_name().to_string_lossy().to_string();
                     if let Some(pid) = collector_pid(&slug_key) {
-                        unsafe { libc::kill(pid as i32, 15); }
+                        let _ = signal_owned(pid, 15);
                     }
                     for (_, pid) in discover_workers(&slug_key) {
-                        unsafe { libc::kill(pid as i32, 15); }
+                        let _ = signal_owned(pid, 15);
                     }
                 }
             }
@@ -869,11 +1064,11 @@ fn handle_request(
                 for entry in entries.flatten() {
                     let slug_key = entry.file_name().to_string_lossy().to_string();
                     if let Some(pid) = collector_pid(&slug_key) {
-                        unsafe { libc::kill(pid as i32, 9); }
+                        let _ = signal_owned(pid, 9);
                         killed += 1;
                     }
                     for (_, pid) in discover_workers(&slug_key) {
-                        unsafe { libc::kill(pid as i32, 9); }
+                        let _ = signal_owned(pid, 9);
                         killed += 1;
                     }
                 }
@@ -886,9 +1081,7 @@ fn handle_request(
             json_response(200, &json!({"ok": true, "killed": killed}))
         }
 
-        _ => {
-            json_response(404, &json!({"error": "Not found"}))
-        }
+        _ => json_response(404, &json!({"error": "Not found"})),
     };
 
     let _ = req.respond(resp);

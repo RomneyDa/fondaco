@@ -82,8 +82,8 @@ function SystemDiagram() {
 
       {/* Row 1: Orchestrator | clob-bridge | Dashboard */}
       <div className="grid grid-cols-[1fr_1fr_1fr] gap-3">
-        <Node label="Orchestrator" sub=":8420 · optional" scheme={C.rust} dashed
-          detail={["Spawns collectors + workers", "HTTP control API"]} />
+        <Node label="Orchestrator" sub=":8420 · loopback" scheme={C.rust} dashed
+          detail={["Spawns collectors + workers", "Loopback control API"]} />
         <Node label="clob-bridge" sub="Python Flask · :8421" scheme={C.python}
           detail={["py_clob_client SDK wrapper", "Signs + posts limit orders"]} />
         <Node label="Dashboard" sub="Next.js + tRPC · :3456" scheme={C.ts}
@@ -258,7 +258,7 @@ export function ArchitecturePage() {
           {[
             { name: "orchestrator", lang: "Rust", color: "#d29922", port: ":8420",
               desc: "Process manager. Starts/stops clob-bridge, collectors, and bot workers. Optional — all processes can run standalone.",
-              cmd: "./target/release/orchestrator [--port 8420] [--no-clob-bridge]" },
+              cmd: "./target/release/orchestrator [--port 8420] [--bind 127.0.0.1] [--no-clob-bridge]" },
             { name: "collector", lang: "Rust", color: "#d29922", port: "—",
               desc: "One per market. RTDS WebSocket + CLOB polling. Writes session JSON + .summary.json sidecars. Broadcasts ticks via Unix socket.",
               cmd: "./target/release/collector --slug-prefix btc-updown-5m-" },
