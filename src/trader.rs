@@ -303,6 +303,21 @@ impl Position {
         self.tokens.iter().sum()
     }
 
+    /// Cash view used when building an order.
+    ///
+    /// Crypto stores the bankroll on `position.cash`, so this is a clone.
+    /// Sports stores the bankroll on the allocator and leaves `position.cash`
+    /// at zero. The buy amount is that budget, and without it `build_order`
+    /// refuses every sports buy as below the venue minimum. Sells still use
+    /// the token balances on `position`.
+    pub fn position_for_order(&self, action: &TradeAction) -> Self {
+        let mut sizing = self.clone();
+        if action.parsed_side().is_buy() {
+            sizing.cash = sizing.cash.max(action.amount);
+        }
+        sizing
+    }
+
     /// Compute the executable size for an action.
     ///
     /// Returns `(tokens, dollars)`. `(0.0, 0.0)` means "do not trade" — an
@@ -1199,6 +1214,35 @@ mod tests {
         assert!(tokens > 0.0);
         assert!((tokens - 200.0).abs() < 0.01);
         assert!((cost - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn sports_buy_with_zero_position_cash_uses_the_action_budget() {
+        let position = Position::new(0.0);
+        let action = TradeAction::buy("buy_home", 25.0, 0.40, None);
+        let (raw_tokens, _) =
+            position.compute_trade_size("buy_home", Some(0.40), action.amount, &econ_test());
+        assert_eq!(raw_tokens, 0.0);
+
+        let sizing = position.position_for_order(&action);
+        let (tokens, cost) =
+            sizing.compute_trade_size("buy_home", Some(0.40), action.amount, &econ_test());
+        assert!(tokens >= 5.0);
+        assert!((cost - 25.0).abs() < 0.01);
+        assert_eq!(position.cash, 0.0);
+        assert_eq!(position.total_tokens(), 0.0);
+    }
+
+    #[test]
+    fn sports_sell_still_uses_held_tokens_when_cash_is_zero() {
+        let mut position = Position::new(0.0);
+        position.set_leg(0, 12.0);
+        let action = TradeAction::sell("sell_home", 12.0, 0.55);
+        let sizing = position.position_for_order(&action);
+        let (tokens, _) =
+            sizing.compute_trade_size("sell_home", Some(0.55), action.amount, &econ_test());
+        assert_eq!(tokens, 12.0);
+        assert_eq!(sizing.cash, 0.0);
     }
 
     #[test]

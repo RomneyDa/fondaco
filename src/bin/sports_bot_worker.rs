@@ -872,9 +872,10 @@ fn execute(
         cancel_after_s: action.cancel_after_s,
     };
 
-    // Same tested builder as the crypto worker — one definition of what
-    // reaches the venue.
-    let order = build_order(&priced, position, econ, 120.0, |l| {
+    // Same tested builder as the crypto worker. Sports cash is on the
+    // allocator, so the buy budget is the action amount, not position.cash.
+    let sizing = position.position_for_order(&priced);
+    let order = build_order(&priced, &sizing, econ, 120.0, |l| {
         group.legs.get(l).map(|leg| leg.token_id.clone())
     })
     .ok()?;
