@@ -4,6 +4,7 @@ import * as path from "path";
 import { spawn } from "child_process";
 import { router, procedure } from "../trpc";
 import { DATA_DIR, MARKETS_DIR, PROJECT_ROOT, listMarketPrefixes } from "../helpers";
+import { safeName, safeSlugKey } from "../controlGuard";
 
 export const optimizerRouter = router({
   status: procedure.query(() => {
@@ -83,7 +84,11 @@ export const optimizerRouter = router({
       try {
         const slug_prefix = input.slug_prefix || listMarketPrefixes()[0];
         if (!slug_prefix) return { ok: false, error: "No markets available" };
-        const slugKey = slug_prefix.replace(/-$/, "");
+        const slugKey = safeSlugKey(slug_prefix);
+        if (!slugKey) return { ok: false, error: "invalid slug_prefix" };
+        if (input.strategy && input.strategy !== "all" && !safeName(input.strategy)) {
+          return { ok: false, error: "invalid strategy" };
+        }
         const sessionsDir = path.join(MARKETS_DIR, slugKey, "sessions");
         const bin = path.join(PROJECT_ROOT, "target", "release", "backtest");
         const args = [sessionsDir, "--strategy", input.strategy || "all", "--sweep", "--recent", "30"];

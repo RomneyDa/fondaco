@@ -4,6 +4,7 @@ import * as path from "path";
 import { spawn } from "child_process";
 import { router, procedure } from "../trpc";
 import { PROJECT_ROOT } from "../helpers";
+import { safeSlugKey } from "../controlGuard";
 
 const restartState: Record<string, { status: string; old_pid: number | null; new_pid: number | null; error?: string }> = {};
 
@@ -14,7 +15,9 @@ export const collectorRouter = router({
       window: z.number().optional(),
     }))
     .mutation(async ({ input }) => {
-      const slugKey = input.slug_prefix.replace(/-$/, "");
+      const slugPrefix = input.slug_prefix.trim();
+      const slugKey = safeSlugKey(slugPrefix);
+      if (!slugKey) return { ok: false, error: "invalid slug_prefix" };
       const pidFile = `/tmp/fondaco-${slugKey}-collector.pid`;
 
       if (fs.existsSync(pidFile)) {
@@ -25,7 +28,7 @@ export const collectorRouter = router({
         } catch {}
       }
 
-      const args = ["--slug-prefix", input.slug_prefix];
+      const args = ["--slug-prefix", slugPrefix];
       if (input.window) args.push("--window", String(input.window));
 
       const bin = path.join(PROJECT_ROOT, "target", "release", "collector");
@@ -52,7 +55,8 @@ export const collectorRouter = router({
       after_session: z.boolean().optional(),
     }))
     .mutation(({ input }) => {
-      const slugKey = input.slug_prefix.replace(/-$/, "");
+      const slugKey = safeSlugKey(input.slug_prefix);
+      if (!slugKey) return { ok: false, error: "invalid slug_prefix" };
       const pidFile = `/tmp/fondaco-${slugKey}-collector.pid`;
 
       if (!fs.existsSync(pidFile)) {
@@ -78,7 +82,9 @@ export const collectorRouter = router({
       rebuild: z.boolean().optional(),
     }))
     .mutation(({ input }) => {
-      const slugKey = input.slug_prefix.replace(/-$/, "");
+      const slugPrefix = input.slug_prefix.trim();
+      const slugKey = safeSlugKey(slugPrefix);
+      if (!slugKey) return { ok: false, error: "invalid slug_prefix" };
       const pidFile = `/tmp/fondaco-${slugKey}-collector.pid`;
       const bin = path.join(PROJECT_ROOT, "target", "release", "collector");
 
@@ -124,7 +130,7 @@ export const collectorRouter = router({
           }
 
           let spawnError: string | null = null;
-          const child = spawn(bin, ["--slug-prefix", input.slug_prefix], {
+          const child = spawn(bin, ["--slug-prefix", slugPrefix], {
             cwd: PROJECT_ROOT,
             detached: true,
             stdio: "ignore",
@@ -149,15 +155,18 @@ export const collectorRouter = router({
   restartStatus: procedure
     .input(z.object({ slug_prefix: z.string().optional() }))
     .query(({ input }) => {
-      const slugKey = (input.slug_prefix || "").replace(/-$/, "");
-      if (!slugKey) return { restarts: restartState };
+      const raw = input.slug_prefix || "";
+      if (!raw) return { restarts: restartState };
+      const slugKey = safeSlugKey(raw);
+      if (!slugKey) return { status: "none" };
       return restartState[slugKey] || { status: "none" };
     }),
 
   toggleBookSource: procedure
     .input(z.object({ slug_prefix: z.string() }))
     .mutation(({ input }) => {
-      const slugKey = input.slug_prefix.replace(/-$/, "");
+      const slugKey = safeSlugKey(input.slug_prefix);
+      if (!slugKey) return { ok: false, error: "invalid slug_prefix" };
       const pidFile = `/tmp/fondaco-${slugKey}-collector.pid`;
 
       if (!fs.existsSync(pidFile)) {
@@ -178,7 +187,8 @@ export const collectorRouter = router({
   bookSource: procedure
     .input(z.object({ slug_prefix: z.string() }))
     .query(({ input }) => {
-      const slugKey = input.slug_prefix.replace(/-$/, "");
+      const slugKey = safeSlugKey(input.slug_prefix);
+      if (!slugKey) return { book_source: "rest" };
       const statePath = path.join(PROJECT_ROOT, "data", "markets", slugKey, "collector_state.json");
       try {
         const data = JSON.parse(fs.readFileSync(statePath, "utf-8"));
